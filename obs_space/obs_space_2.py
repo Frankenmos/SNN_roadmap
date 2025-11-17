@@ -152,7 +152,7 @@ class ObservationExtractor:
         if isinstance(feature_units, torch.Tensor):
             feature_units = feature_units.cpu().numpy()
         # Rest of your logic...
-        if feature_units is not None and feature_units.size > 0:  # <-- FIXED
+        if feature_units is not None and len(feature_units) > 0:
             friendly = [u for u in feature_units
                         if u.alliance == _PLAYER_FRIENDLY and u.unit_type in [48, 51]]
             if friendly:
