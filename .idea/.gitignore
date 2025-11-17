@@ -6,3 +6,23 @@
 # Datasource local storage ignored files
 /dataSources/
 /dataSources.local.xml
+# Python artifacts (The junk)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyCharm / VS Code settings (The personal clutter)
+.idea/
+.vscode/
+
+# The Heavy Brains (Don't let him read these!)
+*.pth
+*.pt
+*.ckpt
+*.pkl
+*.db
+model_checkpoints/
+
+# Environment stuff
+env/
+venv/
