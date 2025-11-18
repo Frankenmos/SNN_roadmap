@@ -126,7 +126,7 @@ class RewardFunction:
         total_reward = np.clip(total_reward, -1, 1)
 
         # Log data
-        self.log_step({
+        log_data = {
             "step": self.episode_step,
             "health_reward": health_reward,
             "engagement_reward": engagement_reward,
@@ -135,7 +135,8 @@ class RewardFunction:
             "bonus_reward": bonus_reward,
             "end_of_episode_reward": end_of_episode_reward,
             "total_reward": total_reward
-        })
+        }
+        self.log_step({k: v.item() if hasattr(v, 'item') else v for k, v in log_data.items()})
 
         self.previous_observation = observation_vector.clone()
         if obs.last():

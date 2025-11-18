@@ -75,6 +75,7 @@ class PPO:
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # 4) Training loop
+        losses = []
         T = len(spatial_obs)  # total transitions
         for _ in range(epochs):
             perm = torch.randperm(T)
@@ -107,6 +108,7 @@ class PPO:
                 )
 
                 loss = policy_loss + value_loss - entropy_loss
+                losses.append(loss.item())
 
                 # Backprop
                 self.optimizer.zero_grad()
@@ -116,6 +118,8 @@ class PPO:
 
         # 5) Clear memory after update
         self.memory = []
+
+        return losses
 
     def _compute_advantages(self, rewards, values, dones):
         """
