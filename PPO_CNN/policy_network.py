@@ -30,7 +30,7 @@ class PolicyNetwork(nn.Module):
 
         # AMP config
         self.amp_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        self.scaler = torch.cuda.amp.GradScaler(enabled=(self.amp_dtype == torch.float16))
+        self.scaler = torch.amp.GradScaler('cuda', enabled=(self.amp_dtype == torch.float16))
 
         self.to(self.device)
 
