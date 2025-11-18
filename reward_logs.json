@@ -1,0 +1,512 @@
+[
+    {
+        "step": 1,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 2,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 3,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 4,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 5,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 6,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 7,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 8,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 9,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 10,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 11,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 12,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 13,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 14,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 15,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 16,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 17,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 18,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 19,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 20,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 21,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 22,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 23,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 24,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 25,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 26,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 27,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 28,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 29,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 30,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 31,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 32,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 33,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 34,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 35,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 36,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 37,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 38,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 39,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 40,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 41,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 42,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 43,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 44,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 45,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 46,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 47,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 48,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 49,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 50,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": 0.0,
+        "total_reward": -0.00016666666488163173
+    },
+    {
+        "step": 51,
+        "health_reward": 0.0,
+        "engagement_reward": -0.004999999888241291,
+        "positioning_reward": 0.0033333334140479565,
+        "score_reward": 0.0,
+        "bonus_reward": 0.0,
+        "end_of_episode_reward": -0.008333333333333333,
+        "total_reward": -0.05849999934434891
+    }
+]
