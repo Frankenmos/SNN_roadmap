@@ -4,6 +4,7 @@ import unittest
 import numpy as np
 import torch
 import types
+import os
 
 # --- MOCK pysc2 library ---
 # To create a fast and isolated unit test, we mock the entire pysc2 library.
@@ -34,7 +35,10 @@ sys.modules['pysc2.lib.actions'] = pysc2_mock.lib.actions
 sys.modules['pysc2.lib.features'] = pysc2_mock.lib.features
 
 # --- Imports ---
-# Now we can safely import our agent. It will use the mocked pysc2 library.
+# Tell Python to look in the parent directory (upstairs) for code
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# ... NOW you can import your agent
 from PPO_CNN_agent import DefeatRoaches
 
 # A mock class to simulate the pysc2 feature screen object (a NamedNumpyArray).
@@ -125,6 +129,49 @@ class TestAgent(unittest.TestCase):
 
         except Exception as e:
             self.fail(f"Agent.step() raised an exception unexpectedly: {e}")
+
+    def test_agent_backward_pass(self):
+        """
+        Test that a backward pass can be performed without errors, ensuring
+        that gradients flow correctly through the policy network.
+        """
+        mock_obs = self._create_mock_obs()
+
+        try:
+            # The observation extractor returns tensors. We unsqueeze to add a batch dimension.
+            spatial_obs, vector_obs = self.agent.extractor.extract_observation(mock_obs)
+            spatial_tensor = spatial_obs.unsqueeze(0)
+            vector_tensor = vector_obs.unsqueeze(0)
+
+            # Perform a forward pass through the policy network.
+            action_logits, _, state_value = self.agent.policy(spatial_tensor, vector_tensor)
+
+            # --- Actor Loss Component ---
+            # Calculate a sample log probability using a fixed action to ensure the
+            # computation graph is not broken by a random `.sample()` call.
+            action_probs = torch.softmax(action_logits, dim=-1)
+            action_dist = torch.distributions.Categorical(action_probs)
+            action = torch.tensor([0], device=self.agent.policy.device) # Dummy action
+            log_prob = action_dist.log_prob(action)
+
+            # --- Critic Loss Component ---
+            critic_loss = state_value.mean()
+
+            # Combine the losses and perform the backward pass.
+            # We negate the actor loss because the optimizer performs gradient descent,
+            # but we want to perform gradient ascent on the policy.
+            loss = critic_loss - log_prob.mean()
+            self.agent.ppo.optimizer.zero_grad()
+            loss.backward()
+
+            # Verify that gradients have been computed for all relevant parameters.
+            for name, param in self.agent.policy.named_parameters():
+                # The 'angle_fc' head is not used in our dummy loss, so it won't have a gradient.
+                if 'angle_fc' not in name:
+                    self.assertIsNotNone(param.grad, f"Gradient for {name} is None")
+
+        except Exception as e:
+            self.fail(f"Agent backward pass raised an exception unexpectedly: {e}")
 
 if __name__ == '__main__':
     unittest.main()
