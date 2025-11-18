@@ -6,10 +6,9 @@ import torch
 import types
 
 # --- MOCK pysc2 library ---
-# The pysc2 library has compatibility issues with modern Python environments.
-# To create a stable, self-contained unit test, we mock the entire pysc2
-# library in memory before it's imported by our agent. This ensures that the
-# test will run reliably without depending on the broken library.
+# To create a fast and isolated unit test, we mock the entire pysc2 library.
+# This allows us to test the agent's logic without needing to install or run
+# the full StarCraft II game environment, which is slow and resource-intensive.
 pysc2_mock = MagicMock()
 
 # 1. Mock the BaseAgent class. Our agent inherits from this, so we provide a
