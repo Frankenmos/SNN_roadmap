@@ -7,7 +7,7 @@ from PPO_CNN.policy_network import PolicyNetwork
 from PPO_CNN.PPO import PPO
 from obs_space.obs_space_2 import ObservationExtractor
 from action_space.action_space import ActionSpace
-from PPO_CNN.reward_function import RewardFunction
+from PPO_CNN.reward_function_2 import RewardFunctionV2
 
 _PLAYER_FRIENDLY = 1
 _PLAYER_ENEMY = 4
@@ -19,7 +19,7 @@ class DefeatRoaches(base_agent.BaseAgent):
         self.steps = 0
         self.extractor = ObservationExtractor()
         self.action_space = ActionSpace()
-        self.reward_function = RewardFunction()
+        self.reward_function = RewardFunctionV2()
 
         # Validate input shapes
         assert spatial_input_shape == (27, 84, 84), f"Invalid spatial_input_shape: {spatial_input_shape}"
