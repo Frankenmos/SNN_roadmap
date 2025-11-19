@@ -27,8 +27,18 @@ class PPO:
             value: State value
         """
         spatial_obs, vector_obs = observations
-        spatial_tensor = torch.FloatTensor(spatial_obs).unsqueeze(0).to(self.device)
-        vector_tensor = torch.FloatTensor(vector_obs).unsqueeze(0).to(self.device)
+        
+        # Handle spatial observation
+        if isinstance(spatial_obs, torch.Tensor):
+            spatial_tensor = spatial_obs.unsqueeze(0).to(self.device)
+        else:
+            spatial_tensor = torch.tensor(spatial_obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+            
+        # Handle vector observation
+        if isinstance(vector_obs, torch.Tensor):
+            vector_tensor = vector_obs.unsqueeze(0).to(self.device)
+        else:
+            vector_tensor = torch.tensor(vector_obs, dtype=torch.float32, device=self.device).unsqueeze(0)
         
         # Forward pass through policy network
         action_logits, angle, state_value = self.policy_net(spatial_tensor, vector_tensor)

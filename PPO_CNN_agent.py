@@ -43,17 +43,35 @@ class DefeatRoaches(base_agent.BaseAgent):
         action, angle, log_prob, value = self.ppo.select_action((spatial_observation, vector_observation))
         
         # Execute action
+        # Execute action
         player_relative = obs.observation.feature_screen.player_relative
+        
+        # Update selected armies (friendly units)
+        self.selected_armies = self.action_space.find_units(player_relative, _PLAYER_FRIENDLY)
+        
         action_func = actions.FUNCTIONS.no_op()
+        
+        # Check action availability
+        can_attack = actions.FUNCTIONS.Attack_screen.id in obs.observation.available_actions
+        can_move = actions.FUNCTIONS.Move_screen.id in obs.observation.available_actions
+        can_select_army = actions.FUNCTIONS.select_army.id in obs.observation.available_actions
 
         if action == 0:  # Attack
-            enemy_units = self.action_space.find_units(player_relative, _PLAYER_ENEMY)
-            if enemy_units:
-                action_func = self.action_space.attack(obs, target_position=enemy_units[0])
+            if can_attack:
+                enemy_units = self.action_space.find_units(player_relative, _PLAYER_ENEMY)
+                if enemy_units:
+                    action_func = self.action_space.attack(obs, target_position=enemy_units[0])
+            elif can_select_army:
+                # If we want to attack but can't, try selecting the army
+                action_func = actions.FUNCTIONS.select_army("select")
+                
         elif action == 1:  # Move
-            if self.selected_armies:
+            if can_move and self.selected_armies:
                 agent_position = self.selected_armies[0]
                 action_func = self.action_space.move(obs, agent_position, angle)
+            elif can_select_army:
+                # If we want to move but can't, try selecting the army
+                action_func = actions.FUNCTIONS.select_army("select")
 
         # Calculate reward
         reward = self.reward_function.calculate_reward(obs, vector_observation)

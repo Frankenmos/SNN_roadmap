@@ -22,12 +22,14 @@ class RewardFunctionV2:
         self.previous_agent_health = None
         self.previous_enemy_health = None
         self.enemy_unit_count = 0
+        self.last_reward_components = None
 
     def reset(self):
         """Resets the health and unit tracking for a new episode."""
         self.previous_agent_health = None
         self.previous_enemy_health = None
         self.enemy_unit_count = 0
+        self.last_reward_components = None
 
     def calculate_reward(self, obs, vector_observation):
         """
@@ -55,33 +57,65 @@ class RewardFunctionV2:
             self.enemy_unit_count = current_enemy_count
 
         total_reward = 0
+        
+        # Initialize components for logging
+        health_reward = 0.0
+        damage_reward = 0.0
+        kill_reward = 0.0
+        win_loss_reward = 0.0
 
         # --- Combat Rewards (Continuous) ---
         # Reward for damaging roaches.
         damage_dealt = self.previous_enemy_health - current_enemy_health
         if damage_dealt > 0:
-            total_reward += 0.5 * damage_dealt
+            r = 0.5 * damage_dealt
+            total_reward += r
+            damage_reward += r
 
         # Penalty for taking damage.
         damage_taken = self.previous_agent_health - current_agent_health
         if damage_taken > 0:
-            total_reward -= 0.5 * damage_taken
+            r = 0.5 * damage_taken
+            total_reward -= r
+            health_reward -= r # Negative reward for health loss
 
         # --- Major Event Rewards (Sparse) ---
         # Large reward for killing a roach.
         if current_enemy_count < self.enemy_unit_count:
-            total_reward += 10.0 * (self.enemy_unit_count - current_enemy_count)
+            r = 10.0 * (self.enemy_unit_count - current_enemy_count)
+            total_reward += r
+            kill_reward += r
 
         # Large terminal rewards for winning or losing.
         if obs.last():
             if obs.reward > 0:  # Win condition (all roaches defeated)
                 total_reward += 20.0
+                win_loss_reward += 20.0
             else:  # Lose condition (all friendly units defeated)
                 total_reward -= 20.0
+                win_loss_reward -= 20.0
 
         # --- Update State for Next Step ---
         self.previous_agent_health = current_agent_health
         self.previous_enemy_health = current_enemy_health
         self.enemy_unit_count = current_enemy_count
 
+        # Store components for logging
+        # Mapping to the keys expected by PPO_CNN_run.py (reward_components table)
+        # The table has: health_reward, engagement_reward, positioning_reward, score_reward, bonus_reward, end_of_episode_reward
+        # We map our V2 components to these best-fit categories or 0.0 if not applicable.
+        self.last_reward_components = {
+            'health_reward': health_reward, # Maps to health loss penalty
+            'engagement_reward': damage_reward, # Maps to damage dealt
+            'positioning_reward': 0.0, # Not explicitly tracked in V2
+            'score_reward': kill_reward, # Maps to kill reward
+            'bonus_reward': 0.0,
+            'end_of_episode_reward': win_loss_reward,
+            'total_reward': total_reward
+        }
+
         return total_reward
+
+    def get_last_reward_components(self):
+        """Return the components of the last calculated reward."""
+        return getattr(self, 'last_reward_components', None)

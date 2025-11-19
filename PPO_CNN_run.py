@@ -14,8 +14,6 @@ import time
 
 
 
-
-
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -49,7 +47,7 @@ def reset_environment():
 
 
 def save_checkpoint(agent, episode, best_avg_reward, episode_rewards, checkpoint_path="checkpoint.pth"):
-    """Save training checkpoint."""
+    """Save training checkpoint atomically."""
     checkpoint = {
         'agent_state': agent.policy.state_dict(),
         'optimizer_state': agent.ppo.optimizer.state_dict(),
@@ -57,21 +55,41 @@ def save_checkpoint(agent, episode, best_avg_reward, episode_rewards, checkpoint
         'best_avg_reward': best_avg_reward,
         'episode_rewards': list(episode_rewards),
     }
-    torch.save(checkpoint, checkpoint_path)
-    print(f"Checkpoint saved at episode {episode}.")
+    
+    # Save to a temporary file first
+    temp_path = checkpoint_path + ".tmp"
+    torch.save(checkpoint, temp_path)
+    
+    # Atomically rename to the final path
+    try:
+        os.replace(temp_path, checkpoint_path)
+        print(f"Checkpoint saved at episode {episode}.")
+    except OSError as e:
+        print(f"Error saving checkpoint: {e}")
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 def load_checkpoint(agent, checkpoint_path="checkpoint.pth"):
-    """Load training checkpoint."""
+    """Load training checkpoint with error handling."""
     if os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
-        agent.policy.load_state_dict(checkpoint['agent_state'])
-        agent.ppo.optimizer.load_state_dict(checkpoint['optimizer_state'])
-        episode = checkpoint['episode']
-        best_avg_reward = checkpoint['best_avg_reward']
-        episode_rewards = deque(checkpoint['episode_rewards'], maxlen=FLAGS.reward_window)
-        print(f"Checkpoint loaded from episode {episode}.")
-        return episode, best_avg_reward, episode_rewards
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
+            agent.policy.load_state_dict(checkpoint['agent_state'])
+            agent.ppo.optimizer.load_state_dict(checkpoint['optimizer_state'])
+            episode = checkpoint['episode']
+            best_avg_reward = checkpoint['best_avg_reward']
+            episode_rewards = deque(checkpoint['episode_rewards'], maxlen=FLAGS.reward_window)
+            print(f"Checkpoint loaded from episode {episode}.")
+            return episode, best_avg_reward, episode_rewards
+        except (EOFError, RuntimeError, Exception) as e:
+            print(f"Warning: Failed to load checkpoint '{checkpoint_path}': {e}")
+            print("Starting from scratch. The corrupted checkpoint will be renamed to avoid future errors.")
+            try:
+                os.rename(checkpoint_path, checkpoint_path + ".corrupted")
+            except OSError:
+                pass
+            return 0, float('-inf'), deque(maxlen=FLAGS.reward_window)
     return 0, float('-inf'), deque(maxlen=FLAGS.reward_window)
 
 
