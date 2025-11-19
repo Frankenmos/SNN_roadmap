@@ -2,7 +2,7 @@ import os
 import sqlite3
 import logging
 import json
-from absl import app, flags
+from absl import app
 from pysc2.env.run_loop import run_loop
 from PPO_CNN_agent import DefeatRoaches
 from obs_space.obs_space_2 import ObservationExtractor
@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from collections import deque
 import time
+from Utility.config import cfg
 
 
 
@@ -19,26 +20,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# Add flags for training parameters
-FLAGS = flags.FLAGS
-flags.DEFINE_bool("use_action_printer", False, "Whether to print available actions for debugging.")
-flags.DEFINE_integer("total_episodes", 10000, "Total number of training episodes.")
-flags.DEFINE_integer("steps_per_episode", 600, "Maximum steps per episode.")
-flags.DEFINE_integer("update_frequency", 10, "Number of episodes before updating the policy.")
-flags.DEFINE_float("target_reward", 25.0, "Target average reward to consider the environment solved.")
-flags.DEFINE_integer("reward_window", 200, "Window size for calculating average reward.")
-flags.DEFINE_string("checkpoint_path", "checkpoint.pth", "File path to save and load training checkpoints.")
-flags.DEFINE_integer("log_frequency", 10, "Number of episodes between logging progress.")
-flags.DEFINE_string("db_path", "training_logs.db", "Path to SQLite database for logging.")
-
-
 def reset_environment():
     """Resets the environment and ensures it is ready for a new training run."""
     try:
         env = create_env(
-            map_name="DefeatRoaches",
-            visualize=True,
-            use_action_printer=FLAGS.use_action_printer
+            map_name=cfg.environment.map_name,
+            visualize=cfg.environment.visualize,
+            use_action_printer=cfg.environment.use_action_printer
         )
     except Exception as e:
         print(f"Error during environment reset: {e}")
@@ -46,8 +34,10 @@ def reset_environment():
     return env
 
 
-def save_checkpoint(agent, episode, best_avg_reward, episode_rewards, checkpoint_path="checkpoint.pth"):
+def save_checkpoint(agent, episode, best_avg_reward, episode_rewards, checkpoint_path=None):
     """Save training checkpoint atomically."""
+    if checkpoint_path is None:
+        checkpoint_path = cfg.environment.checkpoint_path
     checkpoint = {
         'agent_state': agent.policy.state_dict(),
         'optimizer_state': agent.ppo.optimizer.state_dict(),
@@ -70,8 +60,10 @@ def save_checkpoint(agent, episode, best_avg_reward, episode_rewards, checkpoint
             os.remove(temp_path)
 
 
-def load_checkpoint(agent, checkpoint_path="checkpoint.pth"):
+def load_checkpoint(agent, checkpoint_path=None):
     """Load training checkpoint with error handling."""
+    if checkpoint_path is None:
+        checkpoint_path = cfg.environment.checkpoint_path
     if os.path.exists(checkpoint_path):
         try:
             checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
@@ -79,7 +71,7 @@ def load_checkpoint(agent, checkpoint_path="checkpoint.pth"):
             agent.ppo.optimizer.load_state_dict(checkpoint['optimizer_state'])
             episode = checkpoint['episode']
             best_avg_reward = checkpoint['best_avg_reward']
-            episode_rewards = deque(checkpoint['episode_rewards'], maxlen=FLAGS.reward_window)
+            episode_rewards = deque(checkpoint['episode_rewards'], maxlen=cfg.environment.reward_window)
             print(f"Checkpoint loaded from episode {episode}.")
             return episode, best_avg_reward, episode_rewards
         except (EOFError, RuntimeError, Exception) as e:
@@ -89,8 +81,8 @@ def load_checkpoint(agent, checkpoint_path="checkpoint.pth"):
                 os.rename(checkpoint_path, checkpoint_path + ".corrupted")
             except OSError:
                 pass
-            return 0, float('-inf'), deque(maxlen=FLAGS.reward_window)
-    return 0, float('-inf'), deque(maxlen=FLAGS.reward_window)
+            return 0, float('-inf'), deque(maxlen=cfg.environment.reward_window)
+    return 0, float('-inf'), deque(maxlen=cfg.environment.reward_window)
 
 
 def initialize_db(db_path):
@@ -151,15 +143,30 @@ def train_agent(
     env,
     agent,
     observation_extractor,
-    episode_count=1000,
-    steps_per_episode=600,
-    update_frequency=10,
-    target_reward=50.0,
-    reward_window=1000,
-    checkpoint_path="checkpoint.pth",
-    db_path="training_logs.db"
+    episode_count=None,
+    steps_per_episode=None,
+    update_frequency=None,
+    target_reward=None,
+    reward_window=None,
+    checkpoint_path=None,
+    db_path=None
 ):
     """Train the agent using PPO with enhanced logging."""
+    if episode_count is None:
+        episode_count = cfg.environment.total_episodes
+    if steps_per_episode is None:
+        steps_per_episode = cfg.environment.steps_per_episode
+    if update_frequency is None:
+        update_frequency = cfg.environment.update_frequency
+    if target_reward is None:
+        target_reward = cfg.environment.target_reward
+    if reward_window is None:
+        reward_window = cfg.environment.reward_window
+    if checkpoint_path is None:
+        checkpoint_path = cfg.environment.checkpoint_path
+    if db_path is None:
+        db_path = cfg.environment.db_path
+
     episode_rewards = deque(maxlen=reward_window)
     best_avg_reward = float('-inf')
 
@@ -264,7 +271,7 @@ def train_agent(
                     torch.save(agent.policy.state_dict(), 'best_model_CNN_Version2.pth')
                     logger.info(f"New best model saved with avg reward: {avg_reward:.2f}")
 
-                if (episode + 1) % FLAGS.log_frequency == 0:
+                if (episode + 1) % cfg.environment.log_frequency == 0:
                     save_checkpoint(agent, episode + 1, best_avg_reward, episode_rewards, checkpoint_path)
                     logger.info(f"Episode {episode + 1}/{episode_count} | Avg Reward: {avg_reward:.2f}")
 
@@ -283,9 +290,9 @@ def main(argv):
     """Main function to initialize and run training."""
     try:
         env = create_env(
-            map_name="DefeatRoaches",
-            visualize=True,
-            use_action_printer=FLAGS.use_action_printer,
+            map_name=cfg.environment.map_name,
+            visualize=cfg.environment.visualize,
+            use_action_printer=cfg.environment.use_action_printer,
         )
     except Exception as e:
         print(f"Environment setup failed: {e}")
@@ -299,20 +306,14 @@ def main(argv):
         agent = DefeatRoaches(
             spatial_input_shape=spatial_shape,
             vector_input_dim=vector_dim,
-            action_dim=3  # select, attack, move, no-op
+            action_dim=cfg.model.action_dim
         )
 
         print("Starting PPO training...")
         best_reward = train_agent(
             env=env,
             agent=agent,
-            observation_extractor=observation_extractor,
-            episode_count=FLAGS.total_episodes,
-            steps_per_episode=FLAGS.steps_per_episode,
-            update_frequency=FLAGS.update_frequency,
-            target_reward=FLAGS.target_reward,
-            reward_window=FLAGS.reward_window,
-            checkpoint_path=FLAGS.checkpoint_path
+            observation_extractor=observation_extractor
         )
 
         print(f"Training completed! Best average reward: {best_reward:.2f}")
