@@ -8,27 +8,40 @@ from PPO_CNN.PPO import PPO
 from obs_space.obs_space_2 import ObservationExtractor
 from action_space.action_space import ActionSpace
 from PPO_CNN.reward_function_2 import RewardFunctionV2
+from Utility.config import cfg
 
 _PLAYER_FRIENDLY = 1
 _PLAYER_ENEMY = 4
 
 
 class DefeatRoaches(base_agent.BaseAgent):
-    def __init__(self, spatial_input_shape, vector_input_dim, action_dim, lr=1e-4, gamma=0.99, clip_eps=0.18):
+    def __init__(self, spatial_input_shape=None, vector_input_dim=None, action_dim=None, lr=None, gamma=None, clip_eps=None):
         super(DefeatRoaches, self).__init__()
         self.steps = 0
         self.extractor = ObservationExtractor()
         self.action_space = ActionSpace()
         self.reward_function = RewardFunctionV2()
 
+        if spatial_input_shape is None:
+            spatial_input_shape = tuple(cfg.model.spatial_input_shape)
+        if vector_input_dim is None:
+            vector_input_dim = cfg.model.vector_input_dim
+        if action_dim is None:
+            action_dim = cfg.model.action_dim
+
         # Validate input shapes
-        assert spatial_input_shape == (27, 84, 84), f"Invalid spatial_input_shape: {spatial_input_shape}"
-        assert vector_input_dim == 100, f"Invalid vector_input_dim: {vector_input_dim}"
-        assert action_dim == 3, f"Invalid action_dim: {action_dim}. Expected 3 (attack, move, no_op)."
+        assert spatial_input_shape == tuple(cfg.model.spatial_input_shape), f"Invalid spatial_input_shape: {spatial_input_shape}"
+        assert vector_input_dim == cfg.model.vector_input_dim, f"Invalid vector_input_dim: {vector_input_dim}"
+        assert action_dim == cfg.model.action_dim, f"Invalid action_dim: {action_dim}. Expected 3 (attack, move, no_op)."
 
         # Initialize policy and PPO
         self.policy = PolicyNetwork(spatial_input_shape, vector_input_dim, action_dim)
-        self.ppo = PPO(policy_net=self.policy, lr=lr, gamma=gamma, clip_epsilon=clip_eps)
+        self.ppo = PPO(
+            policy_net=self.policy,
+            lr=lr if lr is not None else cfg.hyperparameters.lr,
+            gamma=gamma if gamma is not None else cfg.hyperparameters.gamma,
+            clip_epsilon=clip_eps if clip_eps is not None else cfg.hyperparameters.clip_eps
+        )
 
         self.selected_armies = []
 
@@ -90,4 +103,7 @@ class DefeatRoaches(base_agent.BaseAgent):
 
     def update_policy(self):
         """Train the PPO policy."""
-        self.ppo.update_policy(batch_size=128, epochs=20)
+        self.ppo.update_policy(
+            batch_size=cfg.hyperparameters.batch_size,
+            epochs=cfg.hyperparameters.epochs
+        )

@@ -1,0 +1,24 @@
+hyperparameters:
+  lr: 1.0e-4
+  gamma: 0.99
+  clip_eps: 0.18
+  batch_size: 128
+  epochs: 20
+
+environment:
+  map_name: "DefeatRoaches"
+  visualize: true
+  use_action_printer: false
+  total_episodes: 10000
+  steps_per_episode: 600
+  update_frequency: 10
+  target_reward: 25.0
+  reward_window: 200
+  checkpoint_path: "checkpoint.pth"
+  log_frequency: 10
+  db_path: "training_logs.db"
+
+model:
+  spatial_input_shape: [27, 84, 84]
+  vector_input_dim: 100
+  action_dim: 3
