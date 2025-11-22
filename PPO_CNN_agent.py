@@ -88,7 +88,7 @@ class DefeatRoaches(base_agent.BaseAgent):
         """Perform a step and return data useful for training/recording.
 
         Returns a tuple:
-            (action_func, action_id, log_prob, value, spatial_obs, vector_obs, reward)
+            (action_func, action_id, log_prob, value, spatial_obs, vector_obs, reward, xy_raw)
         """
         # Maintain step counter and call extractor
         self.steps += 1
@@ -96,13 +96,13 @@ class DefeatRoaches(base_agent.BaseAgent):
         spatial_observation, vector_observation = self.extractor.extract_observation(obs)
 
         # Policy now returns xy instead of angle
-        # select_action returns TENSORS now: action_id (Tensor), xy (Tensor), log_prob (Tensor), value (Tensor)
-        action_id_tensor, xy_tensor, log_prob_tensor, value_tensor, self.snn_state = self.ppo.select_action(
+        # select_action returns TENSORS now: action_id, xy_env, log_prob_total, value, next_state, xy_raw_sample
+        action_id_tensor, xy_env_tensor, log_prob_tensor, value_tensor, self.snn_state, xy_raw_tensor = self.ppo.select_action(
             (spatial_observation, vector_observation), state=self.snn_state
         )
         
         # For Action Space (needs CPU/Numpy)
-        xy_cpu = xy_tensor.squeeze(0).cpu().numpy()
+        xy_cpu = xy_env_tensor.squeeze(0).cpu().numpy()
         action_id_int = int(action_id_tensor.item())
         
         # CRITICAL FIX: Always keep army selected
@@ -124,8 +124,8 @@ class DefeatRoaches(base_agent.BaseAgent):
         # Reward is scalar float from reward_function
         
         # Return TENSORS for training data, Scalars for pysc2/logging where needed
-        # (action_func, action_id_tensor, log_prob_tensor, value_tensor, spatial, vector, reward_scalar)
-        return action_func, action_id_tensor, log_prob_tensor, value_tensor, spatial_observation, vector_observation, reward
+        # (action_func, action_id_tensor, log_prob_tensor, value_tensor, spatial, vector, reward_scalar, xy_raw_tensor)
+        return action_func, action_id_tensor, log_prob_tensor, value_tensor, spatial_observation, vector_observation, reward, xy_raw_tensor
 
     def reset(self):
         super(DefeatRoaches, self).reset()

@@ -108,8 +108,8 @@ def train_agent(env, agent, observation_extractor, log_queue):
         while True:
             # Agent Step
             # Use the data-rich step helper which returns the full tuple used for training
-            # Returns: action_func, action_id_tensor, log_prob_tensor, value_tensor, spatial, vector, reward_scalar
-            action_func, action_id_tensor, log_prob_tensor, value_tensor, spatial, vector, reward = agent.step_with_data(obs)
+            # Returns: action_func, action_id_tensor, log_prob_tensor, value_tensor, spatial, vector, reward_scalar, xy_raw_tensor
+            action_func, action_id_tensor, log_prob_tensor, value_tensor, spatial, vector, reward, xy_raw_tensor = agent.step_with_data(obs)
 
             next_obs = env.step([action_func])[0]
             done = next_obs.last()
@@ -123,6 +123,7 @@ def train_agent(env, agent, observation_extractor, log_queue):
             agent.ppo.store_transition(
                 spatial, vector,
                 action_id_tensor,
+                xy_raw_tensor.squeeze(0), # [2]
                 log_prob_tensor,
                 reward_tensor,
                 value_tensor,

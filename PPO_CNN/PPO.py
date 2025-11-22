@@ -36,13 +36,16 @@ class PPO:
     # ------------------------------------------------------------------
     # ACTING
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # ACTING
+    # ------------------------------------------------------------------
     def select_action(self, observations, state=None):
         """
         Args:
             observations: (spatial_obs, vector_obs) as np arrays or tensors.
             state: SNN hidden state.
         Returns:
-            action (Tensor), xy (Tensor), log_prob (Tensor), value (Tensor), next_state
+            action (Tensor), xy_env (Tensor), log_prob_total (Tensor), value (Tensor), next_state, xy_raw_sample (Tensor)
         """
         spatial_obs, vector_obs = observations
 
@@ -66,22 +69,40 @@ class PPO:
                 vector_tensor = vector_tensor.unsqueeze(0)
 
         with torch.no_grad():
-            action_logits, xy, state_value, next_state = self.policy_net(
+            action_logits, xy_mean_raw, state_value, next_state = self.policy_net(
                 spatial_tensor, vector_tensor, state=state
             )
 
+            # 1) Discrete action
             action_probs = torch.softmax(action_logits, dim=-1)
-            dist = torch.distributions.Categorical(action_probs)
-            action = dist.sample()          # [1]
-            log_prob = dist.log_prob(action)  # [1]
+            dist_a = torch.distributions.Categorical(action_probs)
+            action = dist_a.sample()          # [1]
+            logp_a = dist_a.log_prob(action)  # [1]
+
+            # 2) Continuous XY (raw)
+            if hasattr(self.policy_net, "log_std_xy"):
+                std = self.policy_net.log_std_xy.exp().unsqueeze(0).expand_as(xy_mean_raw)
+            else:
+                # Fallback if parameter missing (shouldn't happen with new policy_net)
+                std = torch.full_like(xy_mean_raw, 0.3)
+
+            dist_xy = torch.distributions.Normal(xy_mean_raw, std)
+            xy_raw_sample = dist_xy.sample()      # [1, 2]
+            logp_xy = dist_xy.log_prob(xy_raw_sample).sum(dim=-1)  # sum over x,y → [1]
+
+            # 3) Env action in [0,1]
+            xy_env = torch.sigmoid(xy_raw_sample)
+
+            logp_total = logp_a + logp_xy
 
         # Return TENSORS (detached) to avoid CPU sync
         return (
-            action.detach(),       # [1]
-            xy.detach(),           # [1, 2]
-            log_prob.detach(),     # [1]
-            state_value.detach(),  # [1] (squeezed inside forward?) No, forward returns value.squeeze(-1)
+            action.detach(),         # [1]
+            xy_env.detach(),         # [1, 2] used by action_space
+            logp_total.detach(),     # [1]
+            state_value.detach(),    # [1]
             next_state,
+            xy_raw_sample.detach(),  # [1, 2] for training
         )
 
     def store_transition(
@@ -89,6 +110,7 @@ class PPO:
         spatial_obs,
         vector_obs,
         action: torch.Tensor,
+        xy_raw: torch.Tensor,
         log_prob: torch.Tensor,
         reward: torch.Tensor,
         value: torch.Tensor,
@@ -106,6 +128,7 @@ class PPO:
              
         # Ensure scalar tensors have correct shape/device
         if action.device != self.device: action = action.to(self.device)
+        if xy_raw.device != self.device: xy_raw = xy_raw.to(self.device)
         if log_prob.device != self.device: log_prob = log_prob.to(self.device)
         if reward.device != self.device: reward = reward.to(self.device)
         if value.device != self.device: value = value.to(self.device)
@@ -116,7 +139,8 @@ class PPO:
                 "spatial_obs": spatial_obs,
                 "vector_obs": vector_obs,
                 "action": action,
-                "log_prob": log_prob,
+                "xy_raw": xy_raw,
+                "log_prob": log_prob,      # this is TOTAL log prob
                 "reward": reward,
                 "value": value,
                 "done": done,
@@ -136,6 +160,7 @@ class PPO:
         spatial_obs = torch.stack([t["spatial_obs"] for t in self.memory])
         vector_obs = torch.stack([t["vector_obs"] for t in self.memory])
         actions = torch.stack([t["action"] for t in self.memory]).squeeze() # [T]
+        xy_raws = torch.stack([t["xy_raw"] for t in self.memory]) # [T, 2]
         log_probs_old = torch.stack([t["log_prob"] for t in self.memory]).squeeze() # [T]
         rewards = torch.stack([t["reward"] for t in self.memory]).squeeze() # [T]
         values = torch.stack([t["value"] for t in self.memory]).squeeze() # [T]
@@ -174,21 +199,24 @@ class PPO:
                 batch_spatial = spatial_obs[idx]
                 batch_vector = vector_obs[idx]
                 batch_actions = actions[idx]
+                batch_xy_raw = xy_raws[idx]
                 batch_old_logp = log_probs_old[idx]
                 batch_adv = advantages[idx]
                 batch_returns = returns[idx]
 
                 # Vectorized forward pass (Stateless between steps, Stateful within SNN internal steps)
                 # This restores full GPU parallelism (Batch=256)
-                action_logits, _, state_values, _ = self.policy_net(
+                action_logits, xy_mean_raw, state_values, _ = self.policy_net(
                     batch_spatial, batch_vector, state=None
                 )
                 state_values = state_values.squeeze(-1)
 
                 policy_loss, value_loss, entropy_loss = self._calculate_losses(
                     action_logits,
+                    xy_mean_raw,
                     state_values,
                     batch_actions,
+                    batch_xy_raw,
                     batch_old_logp,
                     batch_adv,
                     batch_returns,
@@ -236,16 +264,30 @@ class PPO:
     def _calculate_losses(
         self,
         action_logits: torch.Tensor,
+        xy_mean_raw: torch.Tensor,
         state_values: torch.Tensor,
         actions: torch.Tensor,
+        xy_raw: torch.Tensor,
         old_log_probs: torch.Tensor,
         advantages: torch.Tensor,
         returns: torch.Tensor,
     ):
         """PPO loss for one minibatch (on GPU)."""
+        # Discrete
         probs = torch.softmax(action_logits, dim=-1)
-        dist = torch.distributions.Categorical(probs)
-        new_log_probs = dist.log_prob(actions)
+        dist_a = torch.distributions.Categorical(probs)
+        new_logp_a = dist_a.log_prob(actions)
+
+        # Continuous XY
+        if hasattr(self.policy_net, "log_std_xy"):
+            std = self.policy_net.log_std_xy.exp().unsqueeze(0).expand_as(xy_mean_raw)
+        else:
+            std = torch.full_like(xy_mean_raw, 0.3)
+
+        dist_xy = torch.distributions.Normal(xy_mean_raw, std)
+        new_logp_xy = dist_xy.log_prob(xy_raw).sum(dim=-1)
+
+        new_log_probs = new_logp_a + new_logp_xy
 
         # Policy loss
         ratio = torch.exp(new_log_probs - old_log_probs)
@@ -259,6 +301,8 @@ class PPO:
         value_loss = self.critic_loss_coef * (returns - state_values).pow(2).mean()
 
         # Entropy bonus
-        entropy_loss = self.entropy_coef * dist.entropy().mean()
+        entropy_a = dist_a.entropy().mean()
+        entropy_xy = dist_xy.entropy().sum(-1).mean()
+        entropy_loss = self.entropy_coef * (entropy_a + 0.01 * entropy_xy)
 
         return policy_loss, value_loss, entropy_loss
