@@ -11,8 +11,16 @@ import numpy as np
 import torch
 from collections import deque
 import time
+from Utility.logger_utils import LogListener, initialize_db
+from multiprocessing import Manager
 from Utility.config import cfg
+from PPO_CNN.PPO import PPO
+from PPO_CNN.policy_network import PolicyNetwork
 
+# Configure logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 # Configure logging
@@ -84,218 +92,113 @@ def load_checkpoint(agent, checkpoint_path=None):
             return 0, float('-inf'), deque(maxlen=cfg.environment.reward_window)
     return 0, float('-inf'), deque(maxlen=cfg.environment.reward_window)
 
+def train_agent(env, agent, observation_extractor, log_queue):
+    # Load config
+    episode_count = cfg.environment.total_episodes
+    update_frequency = cfg.environment.update_frequency # e.g., 10 episodes
+    
+    # Load Checkpoint
+    start_episode, best_avg_reward, episode_rewards = load_checkpoint(agent)
 
-def initialize_db(db_path):
-    """Initialize database with all required tables."""
-    conn = sqlite3.connect(db_path)
+    for episode in range(start_episode, episode_count):
+        obs = env.reset()[0]
+        episode_reward = 0
+        cumulative_reward = 0
+        step_count = 0
+        
+        # 1. Async Log: Start Episode (Pass simple int ID)
+        log_queue.put({'type': 'EPISODE_START', 'internal_ep': episode})
 
-    with conn:
-        # Episodes table
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS episodes (
-                episode_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                total_reward REAL,
-                average_reward REAL,
-                steps INTEGER,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        # --- FAST STEP LOOP ---
+        # Because logging is async, this loop runs at full 5090 speed
+        while True:
+            # Agent Step
+            action_func, action_id, log_prob, value, spatial, vector, reward = agent.step(obs)
+
+            next_obs = env.step([action_func])[0]
+            done = next_obs.last()
+
+            # Store Data (RAM only, fast)
+            agent.ppo.store_transition(
+                spatial, vector,
+                torch.tensor(action_id, device=agent.policy.device),
+                torch.tensor(log_prob, device=agent.policy.device),
+                torch.tensor(reward, device=agent.policy.device),
+                torch.tensor(value, device=agent.policy.device),
+                torch.tensor(done, device=agent.policy.device),
             )
-        """)
 
-        # Steps table
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS steps (
-                step_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                episode_id INTEGER,
-                step_number INTEGER,
-                action INTEGER,
-                reward REAL,
-                cumulative_reward REAL,
-                FOREIGN KEY(episode_id) REFERENCES episodes(episode_id)
-            )
-        """)
+            episode_reward += reward
+            cumulative_reward += reward
+            step_count += 1
 
-        # Reward components table - Removed WITHOUT ROWID and changed PRIMARY KEY
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS reward_components (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                episode INTEGER,
-                step INTEGER,
-                health_reward REAL,
-                engagement_reward REAL,
-                positioning_reward REAL,
-                score_reward REAL,
-                bonus_reward REAL,
-                end_of_episode_reward REAL,
-                total_reward REAL
-            )
-        """)
+            # NEW: hard cap from YAML
+            if step_count >= cfg.environment.steps_per_episode:
+                done = True
 
-        # Create index for faster queries but allow duplicates
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_episode_step 
-            ON reward_components(episode, step)
-        """)
+            # Async logging...
+            # 2. Async Log: Step Data
+            log_queue.put({
+                'type': 'STEP', 'internal_ep': episode, 'step': step_count,
+                'act': int(action_id), 'rew': float(reward), 'cum_rew': float(cumulative_reward)
+            })
+            
+            # 3. Async Log: Components (Optional: Only log every 10 steps to save overhead?)
+            reward_info = agent.reward_function.get_last_reward_components()
+            if reward_info:
+                log_queue.put({
+                    'type': 'REWARD_COMP', 'internal_ep': episode, 'step': step_count,
+                    'h_rew': float(reward_info['health_reward']),
+                    'e_rew': float(reward_info['engagement_reward']),
+                    'p_rew': float(reward_info['positioning_reward']),
+                    's_rew': float(reward_info['score_reward']),
+                    'b_rew': float(reward_info['bonus_reward']),
+                    'end_rew': float(reward_info['end_of_episode_reward']),
+                    'tot_rew': float(reward_info['total_reward'])
+                })
 
-    return conn
+            if done: break
+            obs = next_obs
 
+        # --- END OF EPISODE ---
+        episode_rewards.append(episode_reward)
+        avg_reward = np.mean(episode_rewards)
+        
+        log_queue.put({
+            'type': 'EPISODE_END', 'internal_ep': episode, 
+            'total': float(episode_reward), 'avg': float(avg_reward), 'steps': step_count
+        })
 
-def train_agent(
-    env,
-    agent,
-    observation_extractor,
-    episode_count=None,
-    steps_per_episode=None,
-    update_frequency=None,
-    target_reward=None,
-    reward_window=None,
-    checkpoint_path=None,
-    db_path=None
-):
-    """Train the agent using PPO with enhanced logging."""
-    if episode_count is None:
-        episode_count = cfg.environment.total_episodes
-    if steps_per_episode is None:
-        steps_per_episode = cfg.environment.steps_per_episode
-    if update_frequency is None:
-        update_frequency = cfg.environment.update_frequency
-    if target_reward is None:
-        target_reward = cfg.environment.target_reward
-    if reward_window is None:
-        reward_window = cfg.environment.reward_window
-    if checkpoint_path is None:
-        checkpoint_path = cfg.environment.checkpoint_path
-    if db_path is None:
-        db_path = cfg.environment.db_path
+        # --- THE FREEZE FIX ---
+        # This will still pause the game, but with batch_size=1024 it will take 1s instead of 15s.
+        if (episode + 1) % update_frequency == 0:
+            agent.update_policy() # Now uses Optimized Big-Batch Update
 
-    episode_rewards = deque(maxlen=reward_window)
-    best_avg_reward = float('-inf')
-
-    # Initialize database
-    conn = initialize_db(db_path)
-
-    try:
-        start_episode, best_avg_reward, episode_rewards = load_checkpoint(agent, checkpoint_path)
-
-        for episode in range(start_episode, episode_count):
-            try:
-                obs = env.reset()[0]
-                episode_reward = 0
-                cumulative_reward = 0
-                step_count = 0
-
-                # Log episode start
-                with conn:
-                    cursor = conn.execute(
-                        "INSERT INTO episodes (total_reward, average_reward, steps) VALUES (0, 0, 0)"
-                    )
-                    episode_id = cursor.lastrowid
-
-                for step in range(steps_per_episode):
-                    # Get agent action and info
-                    action_func_call, action_id, log_prob, value, spatial_obs, vector_obs, reward = agent.step(obs)
-
-                    # Step environment
-                    next_obs = env.step([action_func_call])[0]
-                    done = next_obs.last()
-
-                    # Convert values to tensors before storing in PPO memory
-                    action_tensor = torch.tensor(action_id, device=agent.policy.device)
-                    log_prob_tensor = torch.tensor(log_prob, device=agent.policy.device)
-                    reward_tensor = torch.tensor(reward, device=agent.policy.device)
-                    value_tensor = torch.tensor(value, device=agent.policy.device)
-                    done_tensor = torch.tensor(done, device=agent.policy.device)
-
-                    # Store transition
-                    agent.ppo.store_transition(
-                        spatial_obs=spatial_obs,
-                        vector_obs=vector_obs,
-                        action=action_tensor,
-                        log_prob=log_prob_tensor,
-                        reward=reward_tensor,
-                        value=value_tensor,
-                        done=done_tensor
-                    )
-
-                    # For database logging, use the original values
-                    episode_reward += reward
-                    cumulative_reward += reward
-                    step_count += 1
-
-                    # Log step details - use original values for DB
-                    with conn:
-                        conn.execute(
-                            "INSERT INTO steps (episode_id, step_number, action, reward, cumulative_reward) VALUES (?, ?, ?, ?, ?)",
-                            (int(episode_id), int(step_count), int(action_id), float(reward), float(cumulative_reward))
-                        )
-
-                        # Log reward components
-                        reward_info = agent.reward_function.get_last_reward_components()
-                        if reward_info:
-                            conn.execute(
-                                """INSERT INTO reward_components 
-                                   (episode, step, health_reward, engagement_reward, positioning_reward, 
-                                    score_reward, bonus_reward, end_of_episode_reward, total_reward)
-                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                                (int(episode), int(step_count),
-                                 float(reward_info['health_reward']),
-                                 float(reward_info['engagement_reward']),
-                                 float(reward_info['positioning_reward']),
-                                 float(reward_info['score_reward']),
-                                 float(reward_info['bonus_reward']),
-                                 float(reward_info['end_of_episode_reward']),
-                                 float(reward_info['total_reward']))
-                            )
-
-                    if done:
-                        break
-
-                    obs = next_obs
-
-                # Update episode statistics
-                episode_rewards.append(episode_reward)
-                avg_reward = np.mean(episode_rewards)
-
-                # Update episode record - ensure all values are Python native types
-                with conn:
-                    conn.execute(
-                        "UPDATE episodes SET total_reward=?, average_reward=?, steps=? WHERE episode_id=?",
-                        (float(episode_reward), float(avg_reward), int(step_count), int(episode_id))
-                    )
-
-                # Rest of your existing training loop logic...
-                if (episode + 1) % update_frequency == 0:
-                    agent.update_policy()
-
-                if avg_reward > best_avg_reward:
-                    best_avg_reward = avg_reward
-                    torch.save(agent.policy.state_dict(), 'best_model_CNN_Version2.pth')
-                    logger.info(f"New best model saved with avg reward: {avg_reward:.2f}")
-
-                if (episode + 1) % cfg.environment.log_frequency == 0:
-                    save_checkpoint(agent, episode + 1, best_avg_reward, episode_rewards, checkpoint_path)
-                    logger.info(f"Episode {episode + 1}/{episode_count} | Avg Reward: {avg_reward:.2f}")
-
-            except Exception as e:
-                logger.error(f"Error in episode {episode + 1}: {str(e)}")
-                env.close()
-                env = reset_environment()
-
-    finally:
-        conn.close()
+        # Checkpointing
+        if (episode + 1) % cfg.environment.log_frequency == 0:
+            save_checkpoint(agent, episode + 1, best_avg_reward, episode_rewards)
+            logger.info(f"Ep {episode+1} | Avg: {avg_reward:.2f}")
 
     return best_avg_reward
 
-
 def main(argv):
-    """Main function to initialize and run training."""
+    # 1. Setup Async Queue
+    manager = Manager()
+    log_queue = manager.Queue()
+    
+    # 2. Start Background Logger
+    db_listener = LogListener(log_queue, cfg.environment.db_path)
+    db_listener.start()
+    
     try:
         env = create_env(
             map_name=cfg.environment.map_name,
-            visualize=cfg.environment.visualize,
+            visualize=False, # Force False for 5090 stability
             use_action_printer=cfg.environment.use_action_printer,
         )
     except Exception as e:
-        print(f"Environment setup failed: {e}")
+        print(f"Env setup failed: {e}")
+        db_listener.terminate()
         return
 
     try:
@@ -309,29 +212,24 @@ def main(argv):
             action_dim=cfg.model.action_dim
         )
 
-        print("Starting PPO training...")
+        print("Starting Async PPO training...")
         best_reward = train_agent(
             env=env,
             agent=agent,
-            observation_extractor=observation_extractor
+            observation_extractor=observation_extractor,
+            log_queue=log_queue # Pass queue instead of DB path
         )
 
-        print(f"Training completed! Best average reward: {best_reward:.2f}")
-
-        # Evaluation
-        model_path = 'best_model_CNN_Version2.pth'
-        if os.path.exists(model_path):
-            agent.policy.load_state_dict(torch.load(model_path, map_location='cpu'))
-            agent.policy.eval()
-            print("Running evaluation episodes...")
-            run_loop([agent], env, max_episodes=10)
+        print(f"Done! Best reward: {best_reward:.2f}")
 
     except Exception as e:
-        print(f"Critical error: {e}")
+        print(f"Critical: {e}")
         raise e
     finally:
         env.close()
-
+        # Ensure logger finishes writing
+        log_queue.put({'type': 'KILL'}) 
+        db_listener.join()
 
 if __name__ == '__main__':
     app.run(main)

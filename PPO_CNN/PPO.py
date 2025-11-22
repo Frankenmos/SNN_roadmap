@@ -3,9 +3,18 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 
+
 class PPO:
-    def __init__(self, policy_net, lr=3e-4, gamma=0.99, clip_epsilon=0.2,
-                 critic_loss_coef=0.5, entropy_coef=0.01):
+    def __init__(
+        self,
+        policy_net,
+        lr: float = 3e-4,
+        gamma: float = 0.99,
+        clip_epsilon: float = 0.2,
+        critic_loss_coef: float = 0.5,
+        entropy_coef: float = 0.01,
+    ):
+        """Proximal Policy Optimization for a discrete action + angle policy."""
         self.policy_net = policy_net
         self.device = policy_net.device
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
@@ -13,127 +22,176 @@ class PPO:
         self.clip_epsilon = clip_epsilon
         self.critic_loss_coef = critic_loss_coef
         self.entropy_coef = entropy_coef
-        self.memory = []  # Store transitions here
 
-    def select_action(self, observations):
+        # Each item is:
+        #  'spatial_obs', 'vector_obs', 'action', 'log_prob', 'reward', 'value', 'done'
+        self.memory = []
+
+    # ------------------------------------------------------------------
+    # ACTING
+    # ------------------------------------------------------------------
+    def select_action(self, observations, state=None):
         """
-        Select an action based on the current policy.
         Args:
-            observations: Tuple of (spatial_obs, vector_obs)
+            observations: (spatial_obs, vector_obs) as np arrays or tensors.
+            state: SNN hidden state.
         Returns:
-            action: Selected action (discrete)
-            angle: Angle value for movement (continuous)
-            log_prob: Log probability of the action
-            value: State value
+            action, angle, log_prob, value, next_state
         """
         spatial_obs, vector_obs = observations
-        
-        # Handle spatial observation
+
+        # Spatial obs -> [1, C, H, W] on device
         if isinstance(spatial_obs, torch.Tensor):
-            spatial_tensor = spatial_obs.unsqueeze(0).to(self.device)
+            spatial_tensor = spatial_obs.to(self.device).unsqueeze(0)
         else:
-            spatial_tensor = torch.tensor(spatial_obs, dtype=torch.float32, device=self.device).unsqueeze(0)
-            
-        # Handle vector observation
+            spatial_tensor = torch.tensor(
+                spatial_obs, dtype=torch.float32, device=self.device
+            ).unsqueeze(0)
+
+        # Vector obs -> [1, D] on device
         if isinstance(vector_obs, torch.Tensor):
-            vector_tensor = vector_obs.unsqueeze(0).to(self.device)
+            vector_tensor = vector_obs.to(self.device).unsqueeze(0)
         else:
-            vector_tensor = torch.tensor(vector_obs, dtype=torch.float32, device=self.device).unsqueeze(0)
-        
-        # Forward pass through policy network
-        action_logits, angle, state_value = self.policy_net(spatial_tensor, vector_tensor)
-        
-        # Sample action
-        action_probs = torch.softmax(action_logits, dim=-1)
-        action_dist = torch.distributions.Categorical(action_probs)
-        action = action_dist.sample()
-        log_prob = action_dist.log_prob(action)
-        
+            vector_tensor = torch.tensor(
+                vector_obs, dtype=torch.float32, device=self.device
+            ).unsqueeze(0)
+
+        with torch.no_grad():
+            action_logits, angle, state_value, next_state = self.policy_net(
+                spatial_tensor, vector_tensor, state=state
+            )
+
+            action_probs = torch.softmax(action_logits, dim=-1)
+            dist = torch.distributions.Categorical(action_probs)
+            action = dist.sample()          # [1]
+            log_prob = dist.log_prob(action)  # [1]
+
         return (
-            action.item(),
-            angle.item(),
-            log_prob.item(),
-            state_value.item()
+            int(action.item()),
+            float(angle.item()),
+            float(log_prob.item()),
+            float(state_value.squeeze(-1).item()),
+            next_state,
         )
 
-    def store_transition(self, spatial_obs, vector_obs, action, log_prob, reward, value, done):
-        self.memory.append({
-            'spatial_obs': spatial_obs,
-            'vector_obs': vector_obs,
-            'action': action,
-            'log_prob': log_prob,
-            'reward': reward,
-            'value': value,
-            'done': done
-        })
+    def store_transition(
+        self,
+        spatial_obs,
+        vector_obs,
+        action: torch.Tensor,
+        log_prob: torch.Tensor,
+        reward: torch.Tensor,
+        value: torch.Tensor,
+        done: torch.Tensor,
+    ):
+        """
+        spatial_obs/vector_obs are kept as raw numpy/CPU; they’re moved
+        to GPU in bulk inside update_policy. Scalars are tensors already.
+        """
+        self.memory.append(
+            {
+                "spatial_obs": spatial_obs,
+                "vector_obs": vector_obs,
+                "action": action.detach(),
+                "log_prob": log_prob.detach(),
+                "reward": reward.detach(),
+                "value": value.detach(),
+                "done": done.detach(),
+            }
+        )
 
-    def update_policy(self, batch_size=64, epochs=10):
-        # 1) Convert memory to stacked tensors
-        spatial_obs = torch.stack([t['spatial_obs'] for t in self.memory])
-        vector_obs = torch.stack([t['vector_obs'] for t in self.memory])
-        actions = torch.stack([t['action'] for t in self.memory])
-        log_probs_old = torch.stack([t['log_prob'] for t in self.memory])
-        rewards = torch.stack([t['reward'] for t in self.memory])
-        values = torch.stack([t['value'] for t in self.memory])
-        dones = torch.stack([t['done'] for t in self.memory])
+    # ------------------------------------------------------------------
+    # TRAINING
+    # ------------------------------------------------------------------
+    def update_policy(self, batch_size: int = 64, epochs: int = 10):
+        """Run a PPO update on all rollouts in memory (on self.device)."""
+        if not self.memory:
+            return []
 
-        # --- FIX 1: Handle Bootstrapping for the very last step ---
-        # We need the value of the state AFTER the last step in memory to calculate
-        # the advantage for the last step correctly.
-        # Ideally, you should store this or pass it. For now, we will estimate it
-        # as 0.0 if done, or just duplicate the last value (imperfect but runs)
-        # A better way is to query the network one last time before update.
+        # ---- 1) Convert memory to tensors on device ----
+        spatial_list = []
+        vector_list = []
+        for t in self.memory:
+            s = t["spatial_obs"]
+            v = t["vector_obs"]
+            if isinstance(s, torch.Tensor):
+                spatial_list.append(s.to(self.device))
+            else:
+                spatial_list.append(
+                    torch.tensor(s, dtype=torch.float32, device=self.device)
+                )
+            if isinstance(v, torch.Tensor):
+                vector_list.append(v.to(self.device))
+            else:
+                vector_list.append(
+                    torch.tensor(v, dtype=torch.float32, device=self.device)
+                )
+
+        spatial_obs = torch.stack(spatial_list, dim=0)   # [T, C, H, W]
+        vector_obs = torch.stack(vector_list, dim=0)     # [T, D]
+
+        actions = torch.stack([t["action"].to(self.device) for t in self.memory])
+        log_probs_old = torch.stack(
+            [t["log_prob"].to(self.device) for t in self.memory]
+        )
+        rewards = torch.stack([t["reward"].to(self.device) for t in self.memory])
+        values = torch.stack([t["value"].to(self.device) for t in self.memory])
+        dones = torch.stack([t["done"].to(self.device) for t in self.memory])
+
+        # ---- 2) Bootstrap from last state ----
         with torch.no_grad():
-             # Assuming the last state in memory was not terminal, we need a bootstrap.
-             # If you have the 'next_obs' available, query the network. 
-             # Without it, we default to 0 or self-consistency. 
-             last_next_value = 0.0 # or self.policy_net(last_obs)[2]
+            if dones[-1].item() == 1.0:
+                last_next_value = torch.zeros((), device=self.device)
+            else:
+                last_spatial = spatial_obs[-1].unsqueeze(0)
+                last_vector = vector_obs[-1].unsqueeze(0)
+                _, _, last_next_value, _ = self.policy_net(
+                    last_spatial, last_vector, state=None
+                )
+                last_next_value = last_next_value.squeeze(-1)
 
-        # 2) Compute advantages
-        advantages = self._compute_advantages(rewards, values, dones, last_next_value)
-
-        # --- FIX 2: Calculate Returns (The correct target for Critic) ---
-        # Return = Advantage + Value
-        # We detach to ensure we don't backpropagate into the old values/advantages
+        # ---- 3) GAE advantages + returns ----
+        advantages = self._compute_advantages(
+            rewards, values, dones, last_next_value
+        )  # [T]
         returns = (advantages + values).detach()
 
-        # 3) Normalize advantages (standard PPO stability trick)
+        # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        # 4) Training loop
+        # ---- 4) PPO minibatch training ----
+        T = spatial_obs.size(0)
         losses = []
-        T = len(spatial_obs)
-        for _ in range(epochs):
-            perm = torch.randperm(T)
-            for i in range(0, T, batch_size):
-                idx = perm[i : i + batch_size]
 
-                # Gather mini-batch
+        for _ in range(epochs):
+            perm = torch.randperm(T, device=self.device)
+            for start in range(0, T, batch_size):
+                idx = perm[start : start + batch_size]
+
                 batch_spatial = spatial_obs[idx]
                 batch_vector = vector_obs[idx]
                 batch_actions = actions[idx]
                 batch_old_logp = log_probs_old[idx]
-                batch_advantages = advantages[idx]
-                
-                # --- FIX 3: Use the pre-calculated Returns ---
-                batch_returns = returns[idx] 
+                batch_adv = advantages[idx]
+                batch_returns = returns[idx]
 
-                # Forward pass
-                action_logits, _, state_values = self.policy_net(batch_spatial, batch_vector)
+                # Stateless SNN during training
+                action_logits, _, state_values, _ = self.policy_net(
+                    batch_spatial, batch_vector, state=None
+                )
                 state_values = state_values.squeeze(-1)
 
-                # Calculate losses
                 policy_loss, value_loss, entropy_loss = self._calculate_losses(
                     action_logits,
                     state_values,
                     batch_actions,
                     batch_old_logp,
-                    batch_advantages,
-                    batch_returns # Pass the correct returns
+                    batch_adv,
+                    batch_returns,
                 )
 
                 loss = policy_loss + value_loss - entropy_loss
-                losses.append(loss.item())
+                losses.append(float(loss.item()))
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -143,69 +201,60 @@ class PPO:
         self.memory = []
         return losses
 
-    def _compute_advantages(self, rewards, values, dones, last_next_value):
-        """
-        GAE Calculation.
-        Added `last_next_value` for correct bootstrapping at the end of the batch.
-        """
+    # ------------------------------------------------------------------
+    # INTERNAL: advantage + losses
+    # ------------------------------------------------------------------
+    def _compute_advantages(
+        self,
+        rewards: torch.Tensor,
+        values: torch.Tensor,
+        dones: torch.Tensor,
+        last_next_value: torch.Tensor,
+        gae_lambda: float = 0.95,
+    ) -> torch.Tensor:
+        """GAE(λ) on self.device, shapes [T]."""
         gamma = self.gamma
-        gae_lambda = 0.95
+        T = rewards.size(0)
 
-        T = len(rewards)
         advantages = torch.zeros_like(rewards, device=self.device)
+        running_advantage = torch.zeros((), device=self.device)
+        next_value = last_next_value
 
-        reversed_rewards = torch.flip(rewards, [0])
-        reversed_values = torch.flip(values, [0])
-        reversed_dones  = torch.flip(dones,  [0])
-
-        running_advantage = 0.0
-        
-        for t in range(T):
-            if t == 0:
-                # --- FIX: Use the actual next value (bootstrap) ---
-                next_value = last_next_value
-            else:
-                next_value = reversed_values[t - 1]
-
-            not_done = 1.0 - reversed_dones[t].float()
-            
-            # GAE Formula: delta = r + gamma * V(s') * (1-done) - V(s)
-            delta = reversed_rewards[t] + gamma * next_value * not_done - reversed_values[t]
-            
+        for t in reversed(range(T)):
+            not_done = 1.0 - dones[t].float()
+            delta = rewards[t] + gamma * next_value * not_done - values[t]
             running_advantage = delta + gamma * gae_lambda * not_done * running_advantage
             advantages[t] = running_advantage
+            next_value = values[t]
 
-        advantages = torch.flip(advantages, [0])
         return advantages
-        
 
-    def _calculate_losses(self, action_logits, state_values, actions, old_log_probs, advantages, returns):
-        """
-        GPU-accelerated loss calculations for each mini-batch.
-        `action_logits` shape [batch_size, action_dim]
-        `state_values` shape [batch_size]
-        `actions` shape [batch_size]
-        `old_log_probs` shape [batch_size]
-        `advantages` shape [batch_size]
-        `returns` shape [batch_size] (currently we pass immediate rewards,
-                  but for proper PPO, you'd pass discounted returns)
-        """
-        # 1) New distribution & log_probs
+    def _calculate_losses(
+        self,
+        action_logits: torch.Tensor,
+        state_values: torch.Tensor,
+        actions: torch.Tensor,
+        old_log_probs: torch.Tensor,
+        advantages: torch.Tensor,
+        returns: torch.Tensor,
+    ):
+        """PPO loss for one minibatch (on GPU)."""
         probs = torch.softmax(action_logits, dim=-1)
         dist = torch.distributions.Categorical(probs)
-        new_log_probs = dist.log_prob(actions)  # shape [batch_size]
+        new_log_probs = dist.log_prob(actions)
 
-        # 2) Policy loss
-        ratio = (new_log_probs - old_log_probs).exp()  # shape [batch_size]
+        # Policy loss
+        ratio = torch.exp(new_log_probs - old_log_probs)
         surr1 = ratio * advantages
-        surr2 = torch.clamp(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * advantages
+        surr2 = torch.clamp(
+            ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon
+        ) * advantages
         policy_loss = -torch.min(surr1, surr2).mean()
 
-        # 3) Value loss: (returns - value)^2
-        #    state_values is [batch_size], returns is [batch_size]
+        # Value loss
         value_loss = self.critic_loss_coef * (returns - state_values).pow(2).mean()
 
-        # 4) Entropy bonus
+        # Entropy bonus
         entropy_loss = self.entropy_coef * dist.entropy().mean()
 
         return policy_loss, value_loss, entropy_loss

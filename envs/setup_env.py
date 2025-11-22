@@ -2,7 +2,7 @@ from pysc2.env import sc2_env
 from pysc2.lib import features, actions
 from Utility.available_actions_wrapper import AvailableActionsPrinter  # Ensure correct import
 
-def create_env(map_name="DefeatZerglingsAndBanelings", visualize=True, use_action_printer=False):
+def create_env(map_name="DefeatZerglingsAndBanelings", visualize=False, use_action_printer=False):
     """Create and return a PySC2 environment, optionally with wrappers."""
     env = sc2_env.SC2Env(
         map_name=map_name,

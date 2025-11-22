@@ -7,7 +7,7 @@ hyperparameters:
 
 environment:
   map_name: "DefeatRoaches"
-  visualize: true
+  visualize: false
   use_action_printer: false
   total_episodes: 10000
   steps_per_episode: 600
@@ -21,4 +21,4 @@ environment:
 model:
   spatial_input_shape: [27, 84, 84]
   vector_input_dim: 100
-  action_dim: 3
+  action_dim: 3   # 0=attack, 1=move, 2=no-op

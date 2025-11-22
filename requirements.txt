@@ -1,0 +1,28 @@
+# ============================
+# Core numerical + ML stack
+# ============================
+numpy>=1.26
+snntorch>=0.9.0
+
+# PyTorch is installed separately with the right CUDA build.
+# See README for the exact install command for RTX 5090.
+# torch
+# torchvision
+# torchaudio
+
+# ============================
+# StarCraft II / PySC2 stack
+# ============================
+pysc2
+protobuf<4
+absl-py>=1.4.0
+
+# ============================
+# Config / utilities
+# ============================
+pyyaml>=6.0            # Utility.config uses yaml-based config
+tqdm>=4.65.0          # Progress bars for training loops
+matplotlib>=3.7.0     # Plotting training curves and results
+seaborn>=0.12.0      # Enhanced plotting aesthetics
+pandas>=2.0.0        # Data handling and analysis
+opencv-python>=4.7.0  # Image processing utilities

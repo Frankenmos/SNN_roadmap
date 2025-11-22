@@ -56,35 +56,33 @@ class PolicyNetwork(nn.Module):
 
         self.to(self.device)
 
-    def forward(self, spatial_input, vector_input):
-        """
-        Forward pass simulating the SNN over 'num_steps'.
-        Returns match the original PolicyNetwork exactly.
-        """
+    def forward(self, spatial_input, vector_input, state=None):
         batch_size = spatial_input.size(0)
 
-        # Initialize membrane potentials (state) for LIF neurons
-        mem1 = self.lif1.init_leaky()
-        mem2 = self.lif2.init_leaky()
-        mem3 = self.lif3.init_leaky()
+        # 1. Handle State Initialization
+        # If this is the first frame (state is None), initialize fresh membranes
+        if state is None:
+            mem1 = self.lif1.init_leaky()
+            mem2 = self.lif2.init_leaky()
+            mem3 = self.lif3.init_leaky()
+        else:
+            # Unpack the saved state from the previous frame
+            mem1, mem2, mem3 = state
 
-        # We will record the output spikes of the final convolutional layer
         spk3_rec = [] 
 
         # --- SNN Time Loop ---
+        # We still run the internal loop, but now we start with PREVIOUS memory
         for step in range(self.num_steps):
-            # Layer 1: Conv -> LIF
             cur1 = self.conv1(spatial_input) 
-            spk1, mem1 = self.lif1(cur1, mem1)
+            spk1, mem1 = self.lif1(cur1, mem1) # Updates mem1
             
-            # Layer 2: Conv -> LIF -> Pool
-            cur2 = self.conv2(spk1) # Input is spikes from layer 1
-            spk2, mem2 = self.lif2(cur2, mem2)
-            x2 = self.pool(spk2)    # Pool the binary spikes
+            cur2 = self.conv2(spk1)
+            spk2, mem2 = self.lif2(cur2, mem2) # Updates mem2
+            x2 = self.pool(spk2)
             
-            # Layer 3: Conv -> LIF -> Pool
             cur3 = self.conv3(x2)
-            spk3, mem3 = self.lif3(cur3, mem3)
+            spk3, mem3 = self.lif3(cur3, mem3) # Updates mem3
             x3 = self.pool(spk3)
             
             spk3_rec.append(x3)
@@ -111,5 +109,5 @@ class PolicyNetwork(nn.Module):
 
         # Identical angle calculation
         angle = torch.atan2(angle_logits[:, 1], angle_logits[:, 0])
-
-        return action_logits, angle, state_value
+        next_state = (mem1.detach(), mem2.detach(), mem3.detach())
+        return action_logits, angle, state_value, next_state

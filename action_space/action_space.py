@@ -20,16 +20,31 @@ class ActionSpace:
     def move(self, obs, agent_position, angle, magnitude=10):
         """
         Move the agent based on a vector (angle, fixed magnitude).
+        Corrects for Numpy (y, x) vs Cartesian (x, y) mismatch.
         """
+        # 1. Calculate the Shift
+        # dx is change in Column (Index 1)
+        # dy is change in Row    (Index 0)
         dx = magnitude * np.cos(angle)
         dy = magnitude * np.sin(angle)
-        new_position = [int(agent_position[0] + dx), int(agent_position[1] + dy)]
+        
+        # 2. Apply to Numpy Coordinates (y, x)
+        # agent_position is (y, x) from np.argwhere
+        current_y, current_x = agent_position
+        
+        target_y = int(current_y + dy) # Apply Sine to Row
+        target_x = int(current_x + dx) # Apply Cosine to Column
 
-        # Ensure the new position is within the screen bounds
-        new_position = [max(0, min(83, new_position[0])), max(0, min(83, new_position[1]))]
+        # 3. Clamp to Screen Bounds (Safe for any resolution)
+        # usually 64 or 84 depending on your feature_screen_size
+        max_coord = 83 # Or self.screen_size - 1
+        target_y = np.clip(target_y, 0, max_coord)
+        target_x = np.clip(target_x, 0, max_coord)
 
         if actions.FUNCTIONS.Move_screen.id in obs.observation.available_actions:
-            return actions.FUNCTIONS.Move_screen("now", [new_position[1], new_position[0]])
+            # 4. Final Flip for PySC2 Action
+            # PySC2 expects (x, y) for the action command
+            return actions.FUNCTIONS.Move_screen("now", [target_x, target_y])
 
         return actions.FUNCTIONS.no_op()
 
