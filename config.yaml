@@ -1,17 +1,16 @@
 hyperparameters:
-  lr: 3.0e-5           # lower step size
-  gamma: 0.99          # fine
-  clip_eps: 0.10       # tighter trust region
-  batch_size: 256      # use bigger batches per gradient step
-  epochs: 6            # far fewer passes over same data
+  lr: 2.5e-4 # lower step size
+  gamma: 0.99 # fine
+  clip_eps: 0.10 # tighter trust region
+  batch_size: 256 # use bigger batches per gradient step
+  epochs: 6 # far fewer passes over same data
 
-  
 environment:
   map_name: "DefeatRoaches"
   visualize: false
   use_action_printer: false
   total_episodes: 10000
-  steps_per_episode: 600
+  steps_per_episode: 1200
   update_frequency: 10
   target_reward: 25.0
   reward_window: 200
@@ -22,4 +21,4 @@ environment:
 model:
   spatial_input_shape: [27, 84, 84]
   vector_input_dim: 100
-  action_dim: 3   # 0=attack, 1=move, 2=no-op
+  action_dim: 3 # 0=attack, 1=move, 2=no-op

@@ -17,49 +17,39 @@ class ActionSpace:
         units = np.argwhere(feature_layer == condition)  # Use the correct condition
         return [tuple(unit) for unit in units]  # Convert to a list of tuples (y, x)
 
-    def move(self, obs, agent_position, angle, magnitude=10):
+    def move(self, obs, xy_norm):
         """
-        Move the agent based on a vector (angle, fixed magnitude).
-        Corrects for Numpy (y, x) vs Cartesian (x, y) mismatch.
+        Move the agent to a specific screen location.
+        Args:
+            obs: Current observation.
+            xy_norm: (x, y) normalized coordinates in [0, 1].
         """
-        # 1. Calculate the Shift
-        # dx is change in Column (Index 1)
-        # dy is change in Row    (Index 0)
-        dx = magnitude * np.cos(angle)
-        dy = magnitude * np.sin(angle)
-        
-        # 2. Apply to Numpy Coordinates (y, x)
-        # agent_position is (y, x) from np.argwhere
-        current_y, current_x = agent_position
-        
-        target_y = int(current_y + dy) # Apply Sine to Row
-        target_x = int(current_x + dx) # Apply Cosine to Column
-
-        # 3. Clamp to Screen Bounds (Safe for any resolution)
-        # usually 64 or 84 depending on your feature_screen_size
-        max_coord = 83 # Or self.screen_size - 1
-        target_y = np.clip(target_y, 0, max_coord)
-        target_x = np.clip(target_x, 0, max_coord)
-
         if actions.FUNCTIONS.Move_screen.id in obs.observation.available_actions:
-            # 4. Final Flip for PySC2 Action
-            # PySC2 expects (x, y) for the action command
-            return actions.FUNCTIONS.Move_screen("now", [target_x, target_y])
+            screen_size = 84 # Hardcoded to match feature dimensions
+            x = int(xy_norm[0] * screen_size)
+            y = int(xy_norm[1] * screen_size)
+            # Clamp
+            x = np.clip(x, 0, screen_size - 1)
+            y = np.clip(y, 0, screen_size - 1)
+            return actions.FUNCTIONS.Move_screen("now", [x, y])
 
         return actions.FUNCTIONS.no_op()
 
-    def attack(self, obs, target_position):
+    def attack(self, obs, xy_norm):
         """
-        Execute an attack on the given target position.
+        Attack a specific screen location.
         Args:
             obs: Current observation.
-            target_position: (x, y) coordinates on the screen.
-        Returns:
-            A valid SC2 action or no-op if the command is not available.
+            xy_norm: (x, y) normalized coordinates in [0, 1].
         """
         if actions.FUNCTIONS.Attack_screen.id in obs.observation.available_actions:
-            if target_position and len(target_position) == 2:
-                return actions.FUNCTIONS.Attack_screen("now", [target_position[1], target_position[0]])
+            screen_size = 84
+            x = int(xy_norm[0] * screen_size)
+            y = int(xy_norm[1] * screen_size)
+            # Clamp
+            x = np.clip(x, 0, screen_size - 1)
+            y = np.clip(y, 0, screen_size - 1)
+            return actions.FUNCTIONS.Attack_screen("now", [x, y])
         return actions.FUNCTIONS.no_op()
 
 

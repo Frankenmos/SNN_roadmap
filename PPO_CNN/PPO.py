@@ -30,34 +30,43 @@ class PPO:
     # ------------------------------------------------------------------
     # ACTING
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # ACTING
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # ACTING
+    # ------------------------------------------------------------------
     def select_action(self, observations, state=None):
         """
         Args:
             observations: (spatial_obs, vector_obs) as np arrays or tensors.
             state: SNN hidden state.
         Returns:
-            action, angle, log_prob, value, next_state
+            action (Tensor), xy (Tensor), log_prob (Tensor), value (Tensor), next_state
         """
         spatial_obs, vector_obs = observations
 
-        # Spatial obs -> [1, C, H, W] on device
-        if isinstance(spatial_obs, torch.Tensor):
-            spatial_tensor = spatial_obs.to(self.device).unsqueeze(0)
-        else:
+        # Ensure inputs are tensors on device
+        if not isinstance(spatial_obs, torch.Tensor):
             spatial_tensor = torch.tensor(
                 spatial_obs, dtype=torch.float32, device=self.device
             ).unsqueeze(0)
-
-        # Vector obs -> [1, D] on device
-        if isinstance(vector_obs, torch.Tensor):
-            vector_tensor = vector_obs.to(self.device).unsqueeze(0)
         else:
+            spatial_tensor = spatial_obs
+            if spatial_tensor.dim() == 3:
+                spatial_tensor = spatial_tensor.unsqueeze(0)
+
+        if not isinstance(vector_obs, torch.Tensor):
             vector_tensor = torch.tensor(
                 vector_obs, dtype=torch.float32, device=self.device
             ).unsqueeze(0)
+        else:
+            vector_tensor = vector_obs
+            if vector_tensor.dim() == 1:
+                vector_tensor = vector_tensor.unsqueeze(0)
 
         with torch.no_grad():
-            action_logits, angle, state_value, next_state = self.policy_net(
+            action_logits, xy, state_value, next_state = self.policy_net(
                 spatial_tensor, vector_tensor, state=state
             )
 
@@ -66,11 +75,12 @@ class PPO:
             action = dist.sample()          # [1]
             log_prob = dist.log_prob(action)  # [1]
 
+        # Return TENSORS (detached) to avoid CPU sync
         return (
-            int(action.item()),
-            float(angle.item()),
-            float(log_prob.item()),
-            float(state_value.squeeze(-1).item()),
+            action.detach(),       # [1]
+            xy.detach(),           # [1, 2]
+            log_prob.detach(),     # [1]
+            state_value.detach(),  # [1] (squeezed inside forward?) No, forward returns value.squeeze(-1)
             next_state,
         )
 
@@ -85,18 +95,31 @@ class PPO:
         done: torch.Tensor,
     ):
         """
-        spatial_obs/vector_obs are kept as raw numpy/CPU; they’re moved
-        to GPU in bulk inside update_policy. Scalars are tensors already.
+        Store transition data. 
+        Optimized: Expects inputs to be Tensors on Device (GPU) where possible.
         """
+        # Ensure spatial/vector are tensors on device to save transfer time later
+        if not isinstance(spatial_obs, torch.Tensor):
+             spatial_obs = torch.tensor(spatial_obs, dtype=torch.float32, device=self.device)
+        if not isinstance(vector_obs, torch.Tensor):
+             vector_obs = torch.tensor(vector_obs, dtype=torch.float32, device=self.device)
+             
+        # Ensure scalar tensors have correct shape/device
+        if action.device != self.device: action = action.to(self.device)
+        if log_prob.device != self.device: log_prob = log_prob.to(self.device)
+        if reward.device != self.device: reward = reward.to(self.device)
+        if value.device != self.device: value = value.to(self.device)
+        if done.device != self.device: done = done.to(self.device)
+
         self.memory.append(
             {
                 "spatial_obs": spatial_obs,
                 "vector_obs": vector_obs,
-                "action": action.detach(),
-                "log_prob": log_prob.detach(),
-                "reward": reward.detach(),
-                "value": value.detach(),
-                "done": done.detach(),
+                "action": action,
+                "log_prob": log_prob,
+                "reward": reward,
+                "value": value,
+                "done": done,
             }
         )
 
@@ -108,35 +131,15 @@ class PPO:
         if not self.memory:
             return []
 
-        # ---- 1) Convert memory to tensors on device ----
-        spatial_list = []
-        vector_list = []
-        for t in self.memory:
-            s = t["spatial_obs"]
-            v = t["vector_obs"]
-            if isinstance(s, torch.Tensor):
-                spatial_list.append(s.to(self.device))
-            else:
-                spatial_list.append(
-                    torch.tensor(s, dtype=torch.float32, device=self.device)
-                )
-            if isinstance(v, torch.Tensor):
-                vector_list.append(v.to(self.device))
-            else:
-                vector_list.append(
-                    torch.tensor(v, dtype=torch.float32, device=self.device)
-                )
-
-        spatial_obs = torch.stack(spatial_list, dim=0)   # [T, C, H, W]
-        vector_obs = torch.stack(vector_list, dim=0)     # [T, D]
-
-        actions = torch.stack([t["action"].to(self.device) for t in self.memory])
-        log_probs_old = torch.stack(
-            [t["log_prob"].to(self.device) for t in self.memory]
-        )
-        rewards = torch.stack([t["reward"].to(self.device) for t in self.memory])
-        values = torch.stack([t["value"].to(self.device) for t in self.memory])
-        dones = torch.stack([t["done"].to(self.device) for t in self.memory])
+        # ---- 1) Stack tensors (Already on GPU) ----
+        # This is much faster than converting from list of numpy arrays
+        spatial_obs = torch.stack([t["spatial_obs"] for t in self.memory])
+        vector_obs = torch.stack([t["vector_obs"] for t in self.memory])
+        actions = torch.stack([t["action"] for t in self.memory]).squeeze() # [T]
+        log_probs_old = torch.stack([t["log_prob"] for t in self.memory]).squeeze() # [T]
+        rewards = torch.stack([t["reward"] for t in self.memory]).squeeze() # [T]
+        values = torch.stack([t["value"] for t in self.memory]).squeeze() # [T]
+        dones = torch.stack([t["done"] for t in self.memory]).squeeze() # [T]
 
         # ---- 2) Bootstrap from last state ----
         with torch.no_grad():
@@ -159,7 +162,7 @@ class PPO:
         # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        # ---- 4) PPO minibatch training ----
+        # ---- 4) PPO minibatch training (RECURRENT UNROLL) ----
         T = spatial_obs.size(0)
         losses = []
 
@@ -175,7 +178,8 @@ class PPO:
                 batch_adv = advantages[idx]
                 batch_returns = returns[idx]
 
-                # Stateless SNN during training
+                # Vectorized forward pass (Stateless between steps, Stateful within SNN internal steps)
+                # This restores full GPU parallelism (Batch=256)
                 action_logits, _, state_values, _ = self.policy_net(
                     batch_spatial, batch_vector, state=None
                 )

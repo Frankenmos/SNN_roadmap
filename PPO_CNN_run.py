@@ -18,12 +18,6 @@ from PPO_CNN.PPO import PPO
 from PPO_CNN.policy_network import PolicyNetwork
 
 # Configure logging
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -114,19 +108,25 @@ def train_agent(env, agent, observation_extractor, log_queue):
         while True:
             # Agent Step
             # Use the data-rich step helper which returns the full tuple used for training
-            action_func, action_id, log_prob, value, spatial, vector, reward = agent.step_with_data(obs)
+            # Returns: action_func, action_id_tensor, log_prob_tensor, value_tensor, spatial, vector, reward_scalar
+            action_func, action_id_tensor, log_prob_tensor, value_tensor, spatial, vector, reward = agent.step_with_data(obs)
 
             next_obs = env.step([action_func])[0]
             done = next_obs.last()
+            
+            # Convert reward/done to tensors on device for storage
+            reward_tensor = torch.tensor(reward, device=agent.policy.device, dtype=torch.float32)
+            done_tensor = torch.tensor(1.0 if done else 0.0, device=agent.policy.device, dtype=torch.float32)
 
-            # Store Data (RAM only, fast)
+            # Store Data (Tensors on GPU)
+            # spatial/vector are still numpy, store_transition will handle them (or we can convert here)
             agent.ppo.store_transition(
                 spatial, vector,
-                torch.tensor(action_id, device=agent.policy.device),
-                torch.tensor(log_prob, device=agent.policy.device),
-                torch.tensor(reward, device=agent.policy.device),
-                torch.tensor(value, device=agent.policy.device),
-                torch.tensor(done, device=agent.policy.device),
+                action_id_tensor,
+                log_prob_tensor,
+                reward_tensor,
+                value_tensor,
+                done_tensor,
             )
 
             episode_reward += reward
@@ -138,10 +138,12 @@ def train_agent(env, agent, observation_extractor, log_queue):
                 done = True
 
             # Async logging...
-            # 2. Async Log: Step Data
+            # 2. Async Log: Step Data (Needs CPU floats)
             log_queue.put({
                 'type': 'STEP', 'internal_ep': episode, 'step': step_count,
-                'act': int(action_id), 'rew': float(reward), 'cum_rew': float(cumulative_reward)
+                'act': int(action_id_tensor.item()), 
+                'rew': float(reward), 
+                'cum_rew': float(cumulative_reward)
             })
             
             # 3. Async Log: Components (Optional: Only log every 10 steps to save overhead?)

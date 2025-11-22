@@ -95,39 +95,37 @@ class DefeatRoaches(base_agent.BaseAgent):
 
         spatial_observation, vector_observation = self.extractor.extract_observation(obs)
 
-        action_id, angle, log_prob, value, self.snn_state = self.ppo.select_action(
+        # Policy now returns xy instead of angle
+        # select_action returns TENSORS now: action_id (Tensor), xy (Tensor), log_prob (Tensor), value (Tensor)
+        action_id_tensor, xy_tensor, log_prob_tensor, value_tensor, self.snn_state = self.ppo.select_action(
             (spatial_observation, vector_observation), state=self.snn_state
         )
-
-        player_relative = obs.observation.feature_screen.player_relative
-        self.selected_armies = self.action_space.find_units(player_relative, _PLAYER_FRIENDLY)
-
+        
+        # For Action Space (needs CPU/Numpy)
+        xy_cpu = xy_tensor.squeeze(0).cpu().numpy()
+        action_id_int = int(action_id_tensor.item())
+        
+        # CRITICAL FIX: Always keep army selected
         action_func = actions.FUNCTIONS.no_op()
-
-        can_attack = (actions.FUNCTIONS.Attack_screen.id in obs.observation.available_actions)
-        can_move = actions.FUNCTIONS.Move_screen.id in obs.observation.available_actions
-        can_select_army = (actions.FUNCTIONS.select_army.id in obs.observation.available_actions)
-
-        if action_id == 0:  # Attack
-            if can_attack:
-                enemy_units = self.action_space.find_units(player_relative, _PLAYER_ENEMY)
-                if enemy_units:
-                    action_func = self.action_space.attack(obs, target_position=enemy_units[0])
-            elif can_select_army:
-                action_func = actions.FUNCTIONS.select_army("select")
-
-        elif action_id == 1:  # Move
-            if can_move and self.selected_armies:
-                agent_position = self.selected_armies[0]
-                action_func = self.action_space.move(obs, agent_position, angle)
-            elif can_select_army:
-                action_func = actions.FUNCTIONS.select_army("select")
-
+        can_select_army = actions.FUNCTIONS.select_army.id in obs.observation.available_actions
+        
+        if self.steps < 2 and can_select_army:
+            action_func = actions.FUNCTIONS.select_army("select")
+        else:
+            if action_id_int == 0: # Attack
+                action_func = self.action_space.attack(obs, xy_cpu)
+            elif action_id_int == 1: # Move
+                action_func = self.action_space.move(obs, xy_cpu)
+            else:
+                action_func = actions.FUNCTIONS.no_op()
+                
         # Reward
         reward = self.reward_function.calculate_reward(obs, vector_observation)
-        reward_scalar = float(reward.item() if isinstance(reward, torch.Tensor) else reward)
-
-        return action_func, int(action_id), float(log_prob), float(value), spatial_observation, vector_observation, float(reward_scalar)
+        # Reward is scalar float from reward_function
+        
+        # Return TENSORS for training data, Scalars for pysc2/logging where needed
+        # (action_func, action_id_tensor, log_prob_tensor, value_tensor, spatial, vector, reward_scalar)
+        return action_func, action_id_tensor, log_prob_tensor, value_tensor, spatial_observation, vector_observation, reward
 
     def reset(self):
         super(DefeatRoaches, self).reset()
