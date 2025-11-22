@@ -1,121 +1,147 @@
 import numpy as np
 
-class RewardFunctionV2:
+class RewardFunctionV2Half:
     """
-    An improved, event-driven reward function tailored for the 'Defeat Roaches'
-    scenario.
-
-    This version simplifies the reward calculation by focusing on the core
-    objective of the scenario: destroying all enemy roaches. It provides clear,
-    impactful signals to encourage effective combat behavior.
-
-    Core Principles:
-    - Primary Objective Focus: The largest rewards are tied to damaging and
-      destroying enemy roaches.
-    - Health Preservation: The agent is penalized for taking damage to encourage
-      survival and effective micro-management.
-    - Sparse Terminal Rewards: A large, decisive reward is given for winning
-      the scenario, and a corresponding penalty is given for losing.
+    A simplified, lighter reward function for DefeatRoaches.
+    Focuses only on:
+    - Damage dealt to roaches
+    - Health lost
+    - Kill events
+    - Win/loss outcome
     """
+
     def __init__(self):
-        """Initializes the reward function's state."""
-        self.previous_agent_health = None
-        self.previous_enemy_health = None
-        self.enemy_unit_count = 0
+        self.prev_agent_hp = None
+        self.prev_enemy_hp = None
+        self.prev_enemy_count = None
         self.last_reward_components = None
 
     def reset(self):
-        """Resets the health and unit tracking for a new episode."""
-        self.previous_agent_health = None
-        self.previous_enemy_health = None
-        self.enemy_unit_count = 0
+        self.prev_agent_hp = None
+        self.prev_enemy_hp = None
+        self.prev_enemy_count = None
         self.last_reward_components = None
 
     def calculate_reward(self, obs, vector_observation):
-        """
-        Calculates the total reward for the current step based on game events
-        in the 'Defeat Roaches' scenario.
+        # --- Extract raw data ---
+        agent_hp = obs.observation.player[0]
 
-        Args:
-            obs: The raw observation object from the environment.
-            vector_observation (np.ndarray): The processed vector observation.
+        enemies = [u for u in obs.observation.feature_units if u.alliance == 4]
+        enemy_hp = sum(u.health for u in enemies)
+        enemy_count = len(enemies)
 
-        Returns:
-            float: The total calculated reward for the current step.
-        """
-        # --- Extract Key Metrics from Observations ---
-        current_agent_health = obs.observation.player[0]
-        enemy_units = [u for u in obs.observation.feature_units if u.alliance == 4] # 4 for enemy
-        current_enemy_health = sum(u.health for u in enemy_units)
-        current_enemy_count = len(enemy_units)
+        # Initialize
+        if self.prev_agent_hp is None:
+            self.prev_agent_hp = agent_hp
+        if self.prev_enemy_hp is None:
+            self.prev_enemy_hp = enemy_hp
+        if self.prev_enemy_count is None:
+            self.prev_enemy_count = enemy_count
 
-        # Initialize health and unit count on the first step.
-        if self.previous_agent_health is None:
-            self.previous_agent_health = current_agent_health
-        if self.previous_enemy_health is None:
-            self.previous_enemy_health = current_enemy_health
-            self.enemy_unit_count = current_enemy_count
-
-        total_reward = 0
-        
-        # Initialize components for logging
-        health_reward = 0.0
-        damage_reward = 0.0
+        total_reward = 0.0
+        dmg_reward = 0.0
+        hp_penalty = 0.0
         kill_reward = 0.0
-        win_loss_reward = 0.0
+        terminal_reward = 0.0
 
-        # --- Combat Rewards (Continuous) ---
-        # Reward for damaging roaches.
-        damage_dealt = self.previous_enemy_health - current_enemy_health
-        if damage_dealt > 0:
-            r = 0.5 * damage_dealt
+        # --- Damage dealt reward ---
+        dmg = self.prev_enemy_hp - enemy_hp
+        if dmg > 0:
+            r = 0.5 * dmg
             total_reward += r
-            damage_reward += r
+            dmg_reward += r
 
-        # Penalty for taking damage.
-        damage_taken = self.previous_agent_health - current_agent_health
-        if damage_taken > 0:
-            r = 0.5 * damage_taken
+        # --- Damage taken penalty ---
+        taken = self.prev_agent_hp - agent_hp
+        if taken > 0:
+            r = 0.5 * taken
             total_reward -= r
-            health_reward -= r # Negative reward for health loss
+            hp_penalty -= r
 
-        # --- Major Event Rewards (Sparse) ---
-        # Large reward for killing a roach.
-        if current_enemy_count < self.enemy_unit_count:
-            r = 10.0 * (self.enemy_unit_count - current_enemy_count)
+        # --- Kill reward ---
+        if enemy_count < self.prev_enemy_count:
+            k = self.prev_enemy_count - enemy_count
+            r = 10.0 * k
             total_reward += r
             kill_reward += r
 
-        # Large terminal rewards for winning or losing.
+        # --- Terminal win/loss ---
         if obs.last():
-            if obs.reward > 0:  # Win condition (all roaches defeated)
+            if obs.reward > 0:
                 total_reward += 20.0
-                win_loss_reward += 20.0
-            else:  # Lose condition (all friendly units defeated)
+                terminal_reward += 20.0
+            else:
                 total_reward -= 20.0
-                win_loss_reward -= 20.0
+                terminal_reward -= 20.0
 
-        # --- Update State for Next Step ---
-        self.previous_agent_health = current_agent_health
-        self.previous_enemy_health = current_enemy_health
-        self.enemy_unit_count = current_enemy_count
+        # Update state
+        self.prev_agent_hp = agent_hp
+        self.prev_enemy_hp = enemy_hp
+        self.prev_enemy_count = enemy_count
 
-        # Store components for logging
-        # Mapping to the keys expected by PPO_CNN_run.py (reward_components table)
-        # The table has: health_reward, engagement_reward, positioning_reward, score_reward, bonus_reward, end_of_episode_reward
-        # We map our V2 components to these best-fit categories or 0.0 if not applicable.
+        # Logging (mapped to existing DB schema)
         self.last_reward_components = {
-            'health_reward': health_reward, # Maps to health loss penalty
-            'engagement_reward': damage_reward, # Maps to damage dealt
-            'positioning_reward': 0.0, # Not explicitly tracked in V2
-            'score_reward': kill_reward, # Maps to kill reward
-            'bonus_reward': 0.0,
-            'end_of_episode_reward': win_loss_reward,
-            'total_reward': total_reward
+            "health_reward": hp_penalty,
+            "engagement_reward": dmg_reward,
+            "positioning_reward": 0.0,
+            "score_reward": kill_reward,
+            "bonus_reward": 0.0,
+            "end_of_episode_reward": terminal_reward,
+            "total_reward": total_reward,
         }
 
         return total_reward
 
     def get_last_reward_components(self):
-        """Return the components of the last calculated reward."""
-        return getattr(self, 'last_reward_components', None)
+        return self.last_reward_components
+class RewardFunctionV2(RewardFunctionV2Half):
+    """
+    An enhanced reward function for DefeatRoaches.
+    Considers:
+    - Damage dealt to roaches
+    - Health lost
+    - Kill events
+    - Positional advantages
+    - Score changes
+    - Bonus rewards
+    - Win/loss outcome
+    Inherits from RewardFunctionV2Half and extends it.
+    """
+
+    def calculate_reward(self, obs, vector_observation):
+        # Call base reward calculation
+        total_reward = super().calculate_reward(obs, vector_observation)
+
+        # --- Positional advantage reward ---
+        # Example: Reward being closer to the center of the map
+        screen_size = obs.observation.feature_screen.shape[1:3]
+        center_x, center_y = screen_size[0] // 2, screen_size[1] // 2
+
+        agent_units = [u for u in obs.observation.feature_units if u.alliance == 1]
+        if agent_units:
+            avg_x = np.mean([u.x for u in agent_units])
+            avg_y = np.mean([u.y for u in agent_units])
+            dist_to_center = np.sqrt((avg_x - center_x) ** 2 + (avg_y - center_y) ** 2)
+            max_dist = np.sqrt((center_x) ** 2 + (center_y) ** 2)
+            pos_reward = (max_dist - dist_to_center) / max_dist * 5.0  # Scale factor
+            total_reward += pos_reward
+
+            # Update positional reward component
+            self.last_reward_components["positioning_reward"] = pos_reward
+
+        # --- Score change reward ---
+        score = obs.observation.score_cumulative[0]
+        if not hasattr(self, 'prev_score'):
+            self.prev_score = score
+
+        score_diff = score - self.prev_score
+        if score_diff > 0:
+            score_reward = 0.1 * score_diff
+            total_reward += score_reward
+
+            # Update score reward component
+            self.last_reward_components["score_reward"] += score_reward
+
+        self.prev_score = score
+
+        return total_reward         

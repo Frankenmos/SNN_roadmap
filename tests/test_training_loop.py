@@ -107,7 +107,7 @@ class TestTrainingLoop(unittest.TestCase):
                 if i == 50:
                     mock_obs.last = lambda: True
 
-                _, action, log_prob, value, spatial_obs, vector_obs, reward = self.agent.step(mock_obs)
+                _, action, log_prob, value, spatial_obs, vector_obs, reward = self.agent.step_with_data(mock_obs)
 
                 # Convert scalars to tensors for storage.
                 action_tensor = torch.tensor(action, device=self.agent.policy.device)

@@ -106,8 +106,8 @@ class TestAgent(unittest.TestCase):
         try:
             # The agent's step method returns a tuple of values that are used
             # for training. We verify the types and shapes of these values.
-            result = self.agent.step(mock_obs)
-            action_func, action, log_prob, value, spatial_obs, vector_obs, reward = result
+            # Use the agent helper that returns the full training tuple
+            action_func, action, log_prob, value, spatial_obs, vector_obs, reward = self.agent.step_with_data(mock_obs)
 
             # action_func: The action to be executed in the game (a mock FunctionCall).
             self.assertIsInstance(action_func, pysc2_mock.lib.actions.FunctionCall)

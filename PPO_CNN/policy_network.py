@@ -1,5 +1,3 @@
-
-import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,25 +15,7 @@ class PolicyNetwork(nn.Module):
     """
     def __init__(self, spatial_input_shape, vector_input_dim, action_dim, num_steps=8, beta=0.9):
         super().__init__()
-      # Choose device safely: try CUDA only if actually usable for this PyTorch build/GPU.
-      # Some newer GPUs (e.g. sm_120) may be unsupported by the installed PyTorch wheel
-      # and raise a runtime CUDA error when allocating tensors. We detect that and
-      # fall back to CPU to keep tests and CPU-only runs stable.
-      try:
-        if torch.cuda.is_available():
-          try:
-            # try a tiny allocation on the default CUDA device
-            _ = torch.tensor([0.0], device=torch.device("cuda"))
-            device = torch.device("cuda")
-          except Exception:
-            warnings.warn("CUDA appears available but failed a test allocation. Falling back to CPU.")
-            device = torch.device("cpu")
-        else:
-          device = torch.device("cpu")
-      except Exception:
-        device = torch.device("cpu")
-
-      self.device = device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # --- SNN Specifics ---
         self.num_steps = num_steps  # Simulation steps per game step
@@ -74,7 +54,6 @@ class PolicyNetwork(nn.Module):
         self.amp_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         self.scaler = torch.amp.GradScaler('cuda', enabled=(self.amp_dtype == torch.float16))
 
-        # Move model parameters to selected device
         self.to(self.device)
 
     def forward(self, spatial_input, vector_input, state=None):

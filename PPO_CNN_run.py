@@ -113,7 +113,8 @@ def train_agent(env, agent, observation_extractor, log_queue):
         # Because logging is async, this loop runs at full 5090 speed
         while True:
             # Agent Step
-            action_func, action_id, log_prob, value, spatial, vector, reward = agent.step(obs)
+            # Use the data-rich step helper which returns the full tuple used for training
+            action_func, action_id, log_prob, value, spatial, vector, reward = agent.step_with_data(obs)
 
             next_obs = env.step([action_func])[0]
             done = next_obs.last()

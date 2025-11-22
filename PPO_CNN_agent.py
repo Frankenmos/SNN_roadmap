@@ -73,45 +73,50 @@ class DefeatRoaches(base_agent.BaseAgent):
         self.selected_armies = []
 
     def step(self, obs):
+        """Compatibility wrapper for the environment.
+
+        The BaseAgent.step signature expects a FunctionCall to be returned.
+        We keep that contract here and expose the richer training tuple via
+        `step_with_data` for training loops and tests that need extra values.
+        """
         super(DefeatRoaches, self).step(obs)
+        # Use the data-collecting helper, but return only the FunctionCall
+        action_func, *_rest = self.step_with_data(obs)
+        return action_func
+
+    def step_with_data(self, obs):
+        """Perform a step and return data useful for training/recording.
+
+        Returns a tuple:
+            (action_func, action_id, log_prob, value, spatial_obs, vector_obs, reward)
+        """
+        # Maintain step counter and call extractor
         self.steps += 1
 
-        spatial_observation, vector_observation = self.extractor.extract_observation(
-            obs
-        )
+        spatial_observation, vector_observation = self.extractor.extract_observation(obs)
 
-        action, angle, log_prob, value, self.snn_state = self.ppo.select_action(
+        action_id, angle, log_prob, value, self.snn_state = self.ppo.select_action(
             (spatial_observation, vector_observation), state=self.snn_state
         )
 
         player_relative = obs.observation.feature_screen.player_relative
-        self.selected_armies = self.action_space.find_units(
-            player_relative, _PLAYER_FRIENDLY
-        )
+        self.selected_armies = self.action_space.find_units(player_relative, _PLAYER_FRIENDLY)
 
         action_func = actions.FUNCTIONS.no_op()
 
-        can_attack = (
-            actions.FUNCTIONS.Attack_screen.id in obs.observation.available_actions
-        )
+        can_attack = (actions.FUNCTIONS.Attack_screen.id in obs.observation.available_actions)
         can_move = actions.FUNCTIONS.Move_screen.id in obs.observation.available_actions
-        can_select_army = (
-            actions.FUNCTIONS.select_army.id in obs.observation.available_actions
-        )
+        can_select_army = (actions.FUNCTIONS.select_army.id in obs.observation.available_actions)
 
-        if action == 0:  # Attack
+        if action_id == 0:  # Attack
             if can_attack:
-                enemy_units = self.action_space.find_units(
-                    player_relative, _PLAYER_ENEMY
-                )
+                enemy_units = self.action_space.find_units(player_relative, _PLAYER_ENEMY)
                 if enemy_units:
-                    action_func = self.action_space.attack(
-                        obs, target_position=enemy_units[0]
-                    )
+                    action_func = self.action_space.attack(obs, target_position=enemy_units[0])
             elif can_select_army:
                 action_func = actions.FUNCTIONS.select_army("select")
 
-        elif action == 1:  # Move
+        elif action_id == 1:  # Move
             if can_move and self.selected_armies:
                 agent_position = self.selected_armies[0]
                 action_func = self.action_space.move(obs, agent_position, angle)
@@ -122,15 +127,7 @@ class DefeatRoaches(base_agent.BaseAgent):
         reward = self.reward_function.calculate_reward(obs, vector_observation)
         reward_scalar = float(reward.item() if isinstance(reward, torch.Tensor) else reward)
 
-        return (
-            action_func,
-            action,
-            float(log_prob),
-            float(value),
-            spatial_observation,
-            vector_observation,
-            reward_scalar,
-        )
+        return action_func, int(action_id), float(log_prob), float(value), spatial_observation, vector_observation, float(reward_scalar)
 
     def reset(self):
         super(DefeatRoaches, self).reset()
