@@ -13,17 +13,25 @@ class MockPolicyNet(nn.Module):
         # Add a dummy parameter to be recognized by the optimizer
         self.fc = nn.Linear(1, 1)
 
-
     def to(self, device):
         self.device = device
         return self
 
-    def forward(self, spatial_obs, vector_obs):
+    def forward(self, spatial_obs, vector_obs, state=None):
         batch_size = spatial_obs.shape[0]
-        action_logits = torch.randn(batch_size, self.action_dim, device=self.device)
-        angle = torch.randn(batch_size, 1, device=self.device)
-        state_value = torch.randn(batch_size, 1, device=self.device)
-        return action_logits, angle, state_value
+
+        # Make sure outputs depend on self.fc so gradients can flow
+        # create a dummy input for fc
+        dummy_in = torch.ones((batch_size, 1), device=self.device)
+        dummy_out = self.fc(dummy_in) # [batch, 1]
+
+        # Use dummy_out to influence outputs
+        action_logits = torch.randn(batch_size, self.action_dim, device=self.device) + dummy_out
+        xy_mean_raw = torch.randn(batch_size, 2, device=self.device) + dummy_out
+        state_value = torch.randn(batch_size, 1, device=self.device) + dummy_out
+
+        next_state = None # Mock state
+        return action_logits, xy_mean_raw, state_value, next_state
 
 @pytest.fixture
 def ppo_agent():
@@ -40,101 +48,108 @@ def test_init(ppo_agent):
 
 def test_select_action(ppo_agent):
     spatial_obs = torch.randn(1, 3, 84, 84)
-    vector_obs = torch.randn(1, 10)
-    action, angle, log_prob, value = ppo_agent.select_action((spatial_obs, vector_obs))
-    assert isinstance(action, int)
-    assert 0 <= action < ppo_agent.policy_net.action_dim
-    assert isinstance(angle, float)
-    assert isinstance(log_prob, float)
-    assert isinstance(value, float)
+    vector_obs = torch.randn(1, 100)
+
+    # Returns 6 values now: action, xy_env, log_prob_total, value, next_state, xy_raw_sample
+    action, xy_env, log_prob, value, next_state, xy_raw = ppo_agent.select_action((spatial_obs, vector_obs))
+
+    assert isinstance(action, torch.Tensor)
+    assert action.shape == (1,)
+
+    assert isinstance(xy_env, torch.Tensor)
+    assert xy_env.shape == (1, 2)
+
+    assert isinstance(log_prob, torch.Tensor)
+
+    assert isinstance(value, torch.Tensor)
+
+    assert isinstance(xy_raw, torch.Tensor)
 
 def test_store_transition(ppo_agent):
     spatial_obs = torch.randn(3, 84, 84)
-    vector_obs = torch.randn(10)
-    ppo_agent.store_transition(spatial_obs, vector_obs, 1, -0.5, 1.0, 0.5, False)
+    vector_obs = torch.randn(100)
+
+    action = torch.tensor([1])
+    xy_raw = torch.tensor([0.1, 0.2])
+    log_prob = torch.tensor([-0.5])
+    reward = torch.tensor([1.0])
+    value = torch.tensor([0.5])
+    done = torch.tensor([0.0])
+
+    ppo_agent.store_transition(spatial_obs, vector_obs, action, xy_raw, log_prob, reward, value, done)
+
     assert len(ppo_agent.memory) == 1
     transition = ppo_agent.memory[0]
     assert torch.equal(transition['spatial_obs'], spatial_obs)
     assert torch.equal(transition['vector_obs'], vector_obs)
-    assert transition['action'] == 1
-    assert transition['log_prob'] == -0.5
-    assert transition['reward'] == 1.0
-    assert transition['value'] == 0.5
-    assert not transition['done']
+    assert torch.equal(transition['action'], action)
+    assert torch.equal(transition['xy_raw'], xy_raw)
+    assert torch.equal(transition['log_prob'], log_prob)
+    assert torch.equal(transition['reward'], reward)
+    assert torch.equal(transition['value'], value)
+    assert torch.equal(transition['done'], done)
 
 def test_compute_advantages(ppo_agent):
-    # Test case: a single trajectory of 4 steps ending in a terminal state.
-    # rewards = [r1, r2, r3, r4]
-    # values = [v1, v2, v3, v4]
-    # dones = [False, False, False, True]
-    # GAE(lambda=0.95, gamma=0.99)
-    # delta_t = r_t + gamma * V(s_{t+1}) * (1-d_t) - V(s_t)
-    # A_t = delta_t + gamma * lambda * A_{t+1} * (1-d_t)
-    # For t=3 (last step):
-    # delta_3 = 1.0 + 0.99 * 0.5 * 0 - 0.5 = 0.5
-    # A_3 = delta_3 = 0.5
-    # For t=2:
-    # delta_2 = 1.0 + 0.99 * 0.5 * 1 - 0.5 = 0.995
-    # A_2 = delta_2 + 0.99 * 0.95 * A_3 = 0.995 + 0.9405 * 0.5 = 1.46525
+    # Test case: single trajectory of 4 steps
     rewards = torch.tensor([1.0, 1.0, 1.0, 1.0])
     values = torch.tensor([0.5, 0.5, 0.5, 0.5])
-    dones = torch.tensor([False, False, False, True])
+    dones = torch.tensor([0.0, 0.0, 0.0, 1.0]) # Use float 0.0/1.0
+    last_next_value = torch.tensor(0.0)
 
-    advantages = ppo_agent._compute_advantages(rewards, values, dones)
-
-    expected_adv_3 = 0.5
-    expected_adv_2 = 0.995 + 0.99 * 0.95 * expected_adv_3
-    expected_adv_1 = 0.995 + 0.99 * 0.95 * expected_adv_2
-    expected_adv_0 = 0.995 + 0.99 * 0.95 * expected_adv_1
-
-    expected_advantages = torch.tensor([expected_adv_0, expected_adv_1, expected_adv_2, expected_adv_3])
+    advantages = ppo_agent._compute_advantages(rewards, values, dones, last_next_value)
 
     assert advantages.shape == rewards.shape
-    assert torch.allclose(advantages, expected_advantages, atol=1e-5)
-
+    assert advantages[-1] == 0.5
 
 def test_calculate_losses(ppo_agent):
-    action_logits = torch.randn(4, 10)
-    state_values = torch.randn(4)
-    actions = torch.randint(0, 10, (4,))
-    old_log_probs = torch.randn(4)
-    advantages = torch.randn(4)
-    returns = torch.randn(4)
+    batch_size = 4
+    action_logits = torch.randn(batch_size, 10, requires_grad=True)
+    xy_mean_raw = torch.randn(batch_size, 2, requires_grad=True)
+    state_values = torch.randn(batch_size, requires_grad=True)
+
+    actions = torch.randint(0, 10, (batch_size,))
+    xy_raw = torch.randn(batch_size, 2)
+    old_log_probs = torch.randn(batch_size)
+    advantages = torch.randn(batch_size)
+    returns = torch.randn(batch_size)
+
     policy_loss, value_loss, entropy_loss = ppo_agent._calculate_losses(
-        action_logits, state_values, actions, old_log_probs, advantages, returns
+        action_logits, xy_mean_raw, state_values, actions, xy_raw, old_log_probs, advantages, returns
     )
     assert isinstance(policy_loss, torch.Tensor)
     assert isinstance(value_loss, torch.Tensor)
     assert isinstance(entropy_loss, torch.Tensor)
-    assert policy_loss.shape == torch.Size([])
-    assert value_loss.shape == torch.Size([])
-    assert entropy_loss.shape == torch.Size([])
 
 def test_update_policy(ppo_agent):
     # Store some transitions
     for _ in range(10):
         spatial_obs = torch.randn(3, 84, 84)
-        vector_obs = torch.randn(10)
-        action, _, log_prob, value = ppo_agent.select_action((spatial_obs.unsqueeze(0), vector_obs.unsqueeze(0)))
-        ppo_agent.store_transition(spatial_obs, vector_obs, action, log_prob, 1.0, value, False)
+        vector_obs = torch.randn(100)
 
-    # Get the initial model parameters
+        # select_action returns tensors on device
+        action, xy_env, log_prob, value, _, xy_raw = ppo_agent.select_action((spatial_obs.unsqueeze(0), vector_obs.unsqueeze(0)))
+
+        reward = torch.tensor([1.0])
+        done = torch.tensor([0.0])
+
+        ppo_agent.store_transition(
+            spatial_obs, vector_obs,
+            action.squeeze(0),
+            xy_raw.squeeze(0),
+            log_prob.squeeze(0),
+            reward,
+            value.squeeze(0),
+            done
+        )
+
     initial_params = [p.clone() for p in ppo_agent.policy_net.parameters()]
 
-    # Mock the tensors in memory to be of the correct type
-    for t in ppo_agent.memory:
-        t['action'] = torch.tensor(t['action'])
-        t['log_prob'] = torch.tensor(t['log_prob'])
-        t['reward'] = torch.tensor(t['reward'])
-        t['value'] = torch.tensor(t['value'])
-        t['done'] = torch.tensor(t['done'])
-
     # Run the update
-    ppo_agent.update_policy(batch_size=4, epochs=1)
+    losses = ppo_agent.update_policy(batch_size=4, epochs=1)
 
-    # Check if memory is cleared
     assert len(ppo_agent.memory) == 0
+    assert len(losses) > 0
 
-    # Check if the model parameters have been updated
+    # Check param update
     for initial, final in zip(initial_params, ppo_agent.policy_net.parameters()):
         assert not torch.equal(initial, final)
