@@ -96,6 +96,7 @@ def train_agent(env, agent, observation_extractor, log_queue):
 
     for episode in range(start_episode, episode_count):
         obs = env.reset()[0]
+        agent.reset()  # CRITICAL: Reset SNN state and reward function between episodes
         episode_reward = 0
         cumulative_reward = 0
         step_count = 0
