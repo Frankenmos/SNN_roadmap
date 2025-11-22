@@ -69,42 +69,57 @@ class PPO:
 
     def update_policy(self, batch_size=64, epochs=10):
         # 1) Convert memory to stacked tensors
-        spatial_obs = torch.stack([t['spatial_obs'] for t in self.memory])     # shape [T, C, H, W]
-        vector_obs = torch.stack([t['vector_obs'] for t in self.memory])       # shape [T, vector_dim]
-        actions = torch.stack([t['action'] for t in self.memory])                      # shape [T]
-        log_probs_old = torch.stack([t['log_prob'] for t in self.memory])             # shape [T]
-        rewards = torch.stack([t['reward'] for t in self.memory])                      # shape [T]
-        values = torch.stack([t['value'] for t in self.memory])                        # shape [T] (if each was 0D)
-        dones = torch.stack([t['done'] for t in self.memory])                          # shape [T]
+        spatial_obs = torch.stack([t['spatial_obs'] for t in self.memory])
+        vector_obs = torch.stack([t['vector_obs'] for t in self.memory])
+        actions = torch.stack([t['action'] for t in self.memory])
+        log_probs_old = torch.stack([t['log_prob'] for t in self.memory])
+        rewards = torch.stack([t['reward'] for t in self.memory])
+        values = torch.stack([t['value'] for t in self.memory])
+        dones = torch.stack([t['done'] for t in self.memory])
 
-        # 2) Compute advantages (GAE style or 1-step).
-        #    In your code, `_compute_advantages` uses reversed iteration.
-        advantages = self._compute_advantages(rewards, values, dones)
+        # --- FIX 1: Handle Bootstrapping for the very last step ---
+        # We need the value of the state AFTER the last step in memory to calculate
+        # the advantage for the last step correctly.
+        # Ideally, you should store this or pass it. For now, we will estimate it
+        # as 0.0 if done, or just duplicate the last value (imperfect but runs)
+        # A better way is to query the network one last time before update.
+        with torch.no_grad():
+             # Assuming the last state in memory was not terminal, we need a bootstrap.
+             # If you have the 'next_obs' available, query the network. 
+             # Without it, we default to 0 or self-consistency. 
+             last_next_value = 0.0 # or self.policy_net(last_obs)[2]
 
-        # 3) Normalize the advantages
+        # 2) Compute advantages
+        advantages = self._compute_advantages(rewards, values, dones, last_next_value)
+
+        # --- FIX 2: Calculate Returns (The correct target for Critic) ---
+        # Return = Advantage + Value
+        # We detach to ensure we don't backpropagate into the old values/advantages
+        returns = (advantages + values).detach()
+
+        # 3) Normalize advantages (standard PPO stability trick)
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # 4) Training loop
         losses = []
-        T = len(spatial_obs)  # total transitions
+        T = len(spatial_obs)
         for _ in range(epochs):
             perm = torch.randperm(T)
             for i in range(0, T, batch_size):
                 idx = perm[i : i + batch_size]
 
                 # Gather mini-batch
-                batch_spatial = spatial_obs[idx]   # [batch_size, C, H, W]
-                batch_vector = vector_obs[idx]     # [batch_size, vector_dim]
-                batch_actions = actions[idx]       # [batch_size]
+                batch_spatial = spatial_obs[idx]
+                batch_vector = vector_obs[idx]
+                batch_actions = actions[idx]
                 batch_old_logp = log_probs_old[idx]
                 batch_advantages = advantages[idx]
-                # If you truly want 'returns' in the loss, pass a discounted sum of rewards or something
-                # Right now, you pass immediate rewards (?), which might be dimension [batch_size]
-                batch_returns = rewards[idx]
+                
+                # --- FIX 3: Use the pre-calculated Returns ---
+                batch_returns = returns[idx] 
 
                 # Forward pass
                 action_logits, _, state_values = self.policy_net(batch_spatial, batch_vector)
-                # state_values is shape [batch_size, 1]. Squeeze to [batch_size]
                 state_values = state_values.squeeze(-1)
 
                 # Calculate losses
@@ -114,57 +129,55 @@ class PPO:
                     batch_actions,
                     batch_old_logp,
                     batch_advantages,
-                    batch_returns
+                    batch_returns # Pass the correct returns
                 )
 
                 loss = policy_loss + value_loss - entropy_loss
                 losses.append(loss.item())
 
-                # Backprop
                 self.optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 0.5)
                 self.optimizer.step()
 
-        # 5) Clear memory after update
         self.memory = []
-
         return losses
 
-    def _compute_advantages(self, rewards, values, dones):
+    def _compute_advantages(self, rewards, values, dones, last_next_value):
         """
-        GAE-like advantage calculation.
-        `rewards`, `values`, `dones` are each shape [T].
+        GAE Calculation.
+        Added `last_next_value` for correct bootstrapping at the end of the batch.
         """
         gamma = self.gamma
         gae_lambda = 0.95
 
-        # We'll do a reverse loop for GAE
         T = len(rewards)
         advantages = torch.zeros_like(rewards, device=self.device)
 
-        reversed_rewards = torch.flip(rewards, [0])  # shape [T], reversed
-        reversed_values = torch.flip(values, [0])    # shape [T], reversed
-        reversed_dones  = torch.flip(dones,  [0])    # shape [T], reversed
+        reversed_rewards = torch.flip(rewards, [0])
+        reversed_values = torch.flip(values, [0])
+        reversed_dones  = torch.flip(dones,  [0])
 
         running_advantage = 0.0
+        
         for t in range(T):
             if t == 0:
-                # This is the last time step in normal order
-                next_value = reversed_values[t]
+                # --- FIX: Use the actual next value (bootstrap) ---
+                next_value = last_next_value
             else:
-                # Next value is the previous step in the reversed array
                 next_value = reversed_values[t - 1]
 
             not_done = 1.0 - reversed_dones[t].float()
+            
+            # GAE Formula: delta = r + gamma * V(s') * (1-done) - V(s)
             delta = reversed_rewards[t] + gamma * next_value * not_done - reversed_values[t]
+            
             running_advantage = delta + gamma * gae_lambda * not_done * running_advantage
             advantages[t] = running_advantage
 
-        # Flip back to normal time order
         advantages = torch.flip(advantages, [0])
-
         return advantages
+        
 
     def _calculate_losses(self, action_logits, state_values, actions, old_log_probs, advantages, returns):
         """

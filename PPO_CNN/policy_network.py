@@ -1,56 +1,56 @@
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import snntorch as snn
+from snntorch import surrogate
 
 class PolicyNetwork(nn.Module):
     """
-    A policy network for the PPO agent that processes both spatial (CNN) and
-    vector inputs. The network has a shared backbone and separate output heads
-    for the actor (action selection), critic (state value estimation), and a
-    specialized head for predicting a continuous angle for movement.
-
-    Architecture:
-    - CNN Layers: Three convolutional layers with max pooling to extract features
-      from the spatial input (e.g., game screen).
-    - Shared FC Layers: The flattened output from the CNN is concatenated with
-      the vector input and passed through two fully connected layers.
-    - Output Heads:
-        - Actor Head: A linear layer that outputs logits for the discrete action space.
-        - Critic Head: A linear layer that outputs a single value representing the state value.
-        - Angle Head: A linear layer that outputs four values, which are used to
-          compute a continuous angle using a circular mapping (atan2).
+    Spiking Neural Network adapted from the original CNN PolicyNetwork.
+    
+    Changes:
+    - Replaces ReLU activations with Leaky Integrate-and-Fire (LIF) neurons.
+    - Introduces a time-loop in the forward pass to simulate spiking dynamics.
+    - Maintains exact input/output structure and layer dimensions of the original.
     """
-    def __init__(self, spatial_input_shape, vector_input_dim, action_dim):
+    def __init__(self, spatial_input_shape, vector_input_dim, action_dim, num_steps=8, beta=0.9):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # --- CNN Layers for Spatial Feature Extraction ---
-        # These layers process the game's screen data to identify spatial patterns.
+        # --- SNN Specifics ---
+        self.num_steps = num_steps  # Simulation steps per game step
+        self.beta = beta            # Decay rate for LIF neurons
+        spike_grad = surrogate.fast_sigmoid() # Gradient approximation for spikes
+
+        # --- CNN Layers (Spiking) ---
+        # Original: Conv2d -> Relu
         self.conv1 = nn.Conv2d(spatial_input_shape[0], 16, kernel_size=3, stride=1, padding=1)
+        self.lif1 = snn.Leaky(beta=self.beta, spike_grad=spike_grad)
+
+        # Original: Conv2d -> Relu -> Pool
         self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1)
+        self.lif2 = snn.Leaky(beta=self.beta, spike_grad=spike_grad)
+        
+        # Original: Conv2d -> Relu -> Pool
         self.conv3 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.lif3 = snn.Leaky(beta=self.beta, spike_grad=spike_grad)
+        
         self.pool = nn.MaxPool2d(2, 2)
 
-        # Calculate the flattened size of the CNN output after pooling.
+        # Calculate flattened size (Same logic as original)
         conv_out_size = (spatial_input_shape[1] // 2 // 2) * (spatial_input_shape[2] // 2 // 2) * 64
 
-        # --- Shared Fully Connected Layers ---
-        # These layers form a shared backbone for both the actor and the critic.
-        # They process the combined information from both spatial and vector inputs.
+        # --- Shared FC Layers (Non-Spiking / Readout) ---
+        # These remain standard ANN layers to ensure stable Actor/Critic values
         self.shared_fc1 = nn.Linear(conv_out_size + vector_input_dim, 128)
         self.shared_fc2 = nn.Linear(128, 64)
 
-        # --- Output Heads ---
-        # Actor Head: Outputs logits for the discrete action distribution.
+        # --- Output Heads (Identical to Original) ---
         self.actor_fc = nn.Linear(64, action_dim)
-        # Critic Head: Outputs a single value representing the estimated state value.
         self.critic_fc = nn.Linear(64, 1)
-        # Angle Head: Outputs values for calculating a continuous angle for movement.
         self.angle_fc = nn.Linear(64, 4)
 
-        # AMP (Automatic Mixed Precision) configuration for performance.
+        # AMP configuration
         self.amp_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         self.scaler = torch.amp.GradScaler('cuda', enabled=(self.amp_dtype == torch.float16))
 
@@ -58,42 +58,58 @@ class PolicyNetwork(nn.Module):
 
     def forward(self, spatial_input, vector_input):
         """
-        Performs the forward pass through the network.
-
-        Args:
-            spatial_input (torch.Tensor): The spatial observation from the environment.
-            vector_input (torch.Tensor): The vector observation from the environment.
-
-        Returns:
-            tuple: A tuple containing:
-                - action_logits (torch.Tensor): Logits for the action distribution.
-                - angle (torch.Tensor): The calculated continuous angle.
-                - state_value (torch.Tensor): The estimated value of the state.
+        Forward pass simulating the SNN over 'num_steps'.
+        Returns match the original PolicyNetwork exactly.
         """
-        # --- CNN Processing ---
-        # Pass the spatial input through the convolutional layers.
-        x = F.relu(self.conv1(spatial_input))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.pool(F.relu(self.conv3(x)))
-        # Flatten the output for the fully connected layers.
-        x = torch.flatten(x, start_dim=1)
+        batch_size = spatial_input.size(0)
 
-        # --- Feature Combination ---
-        # Combine the processed spatial features with the vector input.
+        # Initialize membrane potentials (state) for LIF neurons
+        mem1 = self.lif1.init_leaky()
+        mem2 = self.lif2.init_leaky()
+        mem3 = self.lif3.init_leaky()
+
+        # We will record the output spikes of the final convolutional layer
+        spk3_rec = [] 
+
+        # --- SNN Time Loop ---
+        for step in range(self.num_steps):
+            # Layer 1: Conv -> LIF
+            cur1 = self.conv1(spatial_input) 
+            spk1, mem1 = self.lif1(cur1, mem1)
+            
+            # Layer 2: Conv -> LIF -> Pool
+            cur2 = self.conv2(spk1) # Input is spikes from layer 1
+            spk2, mem2 = self.lif2(cur2, mem2)
+            x2 = self.pool(spk2)    # Pool the binary spikes
+            
+            # Layer 3: Conv -> LIF -> Pool
+            cur3 = self.conv3(x2)
+            spk3, mem3 = self.lif3(cur3, mem3)
+            x3 = self.pool(spk3)
+            
+            spk3_rec.append(x3)
+
+        # --- Aggregation ---
+        # Stack outputs: [Steps, Batch, Channels, H, W]
+        spk3_stacked = torch.stack(spk3_rec, dim=0)
+        
+        # Sum spikes over time (Rate Coding) to get a dense feature map
+        cnn_features = spk3_stacked.sum(dim=0) 
+        
+        # Flatten (Matches original: torch.flatten(x, start_dim=1))
+        x = torch.flatten(cnn_features, start_dim=1)
+
+        # --- Feature Combination & Output Heads (Identical to Original) ---
         combined = torch.cat([x, vector_input], dim=1)
+        
         x = F.relu(self.shared_fc1(combined))
         x = F.relu(self.shared_fc2(x))
 
-        # --- Output Head Forward Passes ---
         action_logits = self.actor_fc(x)
-        angle_logits = self.angle_fc(x)  # Shape: [B, 4]
-        state_value = self.critic_fc(x).squeeze(-1)  # Shape: [B]
+        angle_logits = self.angle_fc(x)
+        state_value = self.critic_fc(x).squeeze(-1)
 
-        # --- Angle Calculation ---
-        # Compute a continuous angle using a circular mapping (atan2).
-        # This is a common technique to represent angles in a way that is
-        # friendly to neural networks, as it handles the wrap-around nature
-        # of angles (e.g., 360 degrees is the same as 0 degrees).
+        # Identical angle calculation
         angle = torch.atan2(angle_logits[:, 1], angle_logits[:, 0])
 
         return action_logits, angle, state_value
