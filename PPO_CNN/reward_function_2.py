@@ -7,6 +7,8 @@ class RewardFunctionV2Half:
     - Damage dealt to roaches
     - Health lost
     - Kill events
+    - Optimal range positioning (max weapon range ~5 units)
+    - Anti-corner camping (penalty when too far)
     - Win/loss outcome
     """
 
@@ -41,6 +43,7 @@ class RewardFunctionV2Half:
         hp_penalty = 0.0
         kill_reward = 0.0
         terminal_reward = 0.0
+        positioning_reward = 0.0
 
         # --- Damage dealt reward ---
         dmg = self.prev_enemy_hp - enemy_hp
@@ -63,6 +66,44 @@ class RewardFunctionV2Half:
             total_reward += r
             kill_reward += r
 
+        # --- Three-Zone Positioning Reward ---
+        # Zone 1: Too far (>8 units) - Penalty to prevent corner camping
+        # Zone 2: Optimal (4.5-5.5 units) - Reward for max weapon range
+        # Zone 3: Too close (<4.5 units) - Penalty for danger
+        agent_units = [u for u in obs.observation.feature_units if u.alliance == 1]
+        
+        if agent_units and enemies:
+            # Calculate minimum distance to nearest enemy
+            min_dist = float('inf')
+            for marine in agent_units:
+                m_pos = np.array([marine.x, marine.y])
+                for enemy in enemies:
+                    e_pos = np.array([enemy.x, enemy.y])
+                    dist = np.linalg.norm(m_pos - e_pos)
+                    min_dist = min(min_dist, dist)
+            
+            # Marine weapon range is 5 units
+            OPTIMAL_MIN = 4.5
+            OPTIMAL_MAX = 5.5
+            TOO_FAR_THRESHOLD = 8.0
+            
+            if min_dist > TOO_FAR_THRESHOLD:
+                # Too far - penalty to encourage engagement
+                penalty = 0.02 * (min_dist - TOO_FAR_THRESHOLD)
+                total_reward -= penalty
+                positioning_reward -= penalty
+            elif OPTIMAL_MIN <= min_dist <= OPTIMAL_MAX:
+                # Perfect positioning: at max weapon range
+                r = 0.1
+                total_reward += r
+                positioning_reward += r
+            elif min_dist < OPTIMAL_MIN:
+                # Too close - penalty proportional to how close
+                penalty = 0.05 * (OPTIMAL_MIN - min_dist)
+                total_reward -= penalty
+                positioning_reward -= penalty
+            # Between OPTIMAL_MAX and TOO_FAR_THRESHOLD: no reward/penalty (transition zone)
+
         # --- Terminal win/loss ---
         if obs.last():
             if obs.reward > 0:
@@ -81,7 +122,7 @@ class RewardFunctionV2Half:
         self.last_reward_components = {
             "health_reward": hp_penalty,
             "engagement_reward": dmg_reward,
-            "positioning_reward": 0.0,
+            "positioning_reward": positioning_reward,
             "score_reward": kill_reward,
             "bonus_reward": 0.0,
             "end_of_episode_reward": terminal_reward,
