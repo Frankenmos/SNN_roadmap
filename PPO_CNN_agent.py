@@ -125,6 +125,7 @@ class DefeatRoaches(base_agent.BaseAgent):
         
         # Return TENSORS for training data, Scalars for pysc2/logging where needed
         # (action_func, action_id_tensor, log_prob_tensor, value_tensor, spatial, vector, reward_scalar, xy_raw_tensor)
+        # Updated to include xy_raw_tensor for PPO training
         return action_func, action_id_tensor, log_prob_tensor, value_tensor, spatial_observation, vector_observation, reward, xy_raw_tensor
 
     def reset(self):

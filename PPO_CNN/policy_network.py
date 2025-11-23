@@ -56,64 +56,6 @@ class PolicyNetwork(nn.Module):
         conv_out_size = 64 * h_out * w_out
 
         self.ln = nn.LayerNorm(conv_out_size)
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import snntorch as snn
-from snntorch import surrogate
-
-
-class SpatialAttention(nn.Module):
-    """
-    Focuses on 'where' the informative features are.
-    Useful for PySC2 to highlight units vs empty terrain.
-    """
-    def __init__(self, kernel_size=7):
-        super(SpatialAttention, self).__init__()
-        # Compresses channels to 1, creating a 2D attention map
-        self.conv = nn.Conv2d(2, 1, kernel_size, padding=kernel_size//2, bias=False)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        # x shape: [Batch, Channels, H, W]
-        # MaxPool across channels (most prominent feature)
-        max_pool, _ = torch.max(x, dim=1, keepdim=True)
-        # AvgPool across channels (average feature intensity)
-        avg_pool = torch.mean(x, dim=1, keepdim=True)
-        # Concat to get spatial statistics
-        y = torch.cat([max_pool, avg_pool], dim=1)
-        # Generate attention map
-        attn_map = self.sigmoid(self.conv(y))
-        # Scale original features
-        return x * attn_map
-
-class PolicyNetwork(nn.Module):
-    def __init__(self, spatial_input_shape, vector_input_dim, action_dim, num_steps=16):
-        super().__init__()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.num_steps = num_steps
-
-        spike_grad = surrogate.fast_sigmoid(slope=25)
-
-        # Different time constants → deeper layers remember longer
-        self.conv1 = nn.Conv2d(spatial_input_shape[0], 16, 3, padding=1)
-        self.lif1 = snn.Leaky(beta=0.95, spike_grad=spike_grad)
-
-        self.conv2 = nn.Conv2d(16, 32, 3, padding=1)
-        self.lif2 = snn.Leaky(beta=0.90, spike_grad=spike_grad)
-
-        self.conv3 = nn.Conv2d(32, 64, 3, padding=1)
-        self.lif3 = snn.Leaky(beta=0.85, spike_grad=spike_grad)
-
-        self.pool = nn.MaxPool2d(2, 2)
-        self.attention = SpatialAttention()
-
-        # Feature size after two pools
-        h_out = spatial_input_shape[1] // 4
-        w_out = spatial_input_shape[2] // 4
-        conv_out_size = 64 * h_out * w_out
-
-        self.ln = nn.LayerNorm(conv_out_size)
 
         # Shared trunk
         self.fc1 = nn.Linear(conv_out_size + vector_input_dim, 256)

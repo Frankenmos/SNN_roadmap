@@ -154,7 +154,7 @@ class PPO:
     # ------------------------------------------------------------------
     # TRAINING
     # ------------------------------------------------------------------
-    def update_policy(self, batch_size: int = 64, epochs: int = 10, seq_len: int = 32):
+    def update_policy(self, batch_size: int = 64, epochs: int = 10, seq_len: int = 32, log_memory: bool = False):
         """Run a PPO update on all rollouts in memory (on self.device)."""
         if not self.memory:
             return []
@@ -262,6 +262,7 @@ class PPO:
                 xy_mean_raw_list = []
                 values_list = []
 
+                # CRITICAL: Initialize fresh state for each sequence to prevent gradient accumulation
                 state = None # Initial state for sequence is zero/learned init
                 for t in range(seq_len):
                     x_t = batch_spatial[t]
@@ -293,12 +294,23 @@ class PPO:
                 loss = policy_loss + value_loss - entropy_loss
                 losses.append(float(loss.item()))
 
-                self.optimizer.zero_grad()
+                # Use set_to_none=True to free gradient tensors immediately instead of zeroing
+                self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 0.5)
                 self.optimizer.step()
 
+                # Free large intermediate tensors to prevent VRAM accumulation
+                del batch_spatial, batch_vector
+
+        # Clear CUDA cache to prevent memory fragmentation after all epochs
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         self.memory = []
+        if log_memory and torch.cuda.is_available():
+             print(f"Post-update VRAM: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+
         return losses
 
     # ------------------------------------------------------------------
@@ -340,7 +352,7 @@ class PPO:
         advantages: torch.Tensor,
         returns: torch.Tensor,
     ):
-        """PPO loss for one minibatch (on GPU)."""
+        """PPO loss for one minibatch (on GPU). Updated for flattened recurrent tensors."""
         # Discrete
         probs = torch.softmax(action_logits, dim=-1)
         dist_a = torch.distributions.Categorical(probs)
