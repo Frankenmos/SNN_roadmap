@@ -70,7 +70,7 @@ class PPO:
 
         with torch.no_grad():
             action_logits, xy_mean_raw, state_value, next_state = self.policy_net(
-                spatial_tensor, vector_tensor, state=state
+                spatial_tensor, vector_tensor, state=state, detach_state=True
             )
 
             # 1) Discrete action
@@ -115,6 +115,8 @@ class PPO:
         reward: torch.Tensor,
         value: torch.Tensor,
         done: torch.Tensor,
+        episode_id: int,
+        timestep: int,
     ):
         """
         Store transition data. 
@@ -144,13 +146,15 @@ class PPO:
                 "reward": reward,
                 "value": value,
                 "done": done,
+                "episode_id": episode_id,
+                "t": timestep,
             }
         )
 
     # ------------------------------------------------------------------
     # TRAINING
     # ------------------------------------------------------------------
-    def update_policy(self, batch_size: int = 64, epochs: int = 10):
+    def update_policy(self, batch_size: int = 64, epochs: int = 10, seq_len: int = 32):
         """Run a PPO update on all rollouts in memory (on self.device)."""
         if not self.memory:
             return []
@@ -165,6 +169,8 @@ class PPO:
         rewards = torch.stack([t["reward"] for t in self.memory]).squeeze() # [T]
         values = torch.stack([t["value"] for t in self.memory]).squeeze() # [T]
         dones = torch.stack([t["done"] for t in self.memory]).squeeze() # [T]
+        episode_ids = torch.tensor([t["episode_id"] for t in self.memory], device=self.device, dtype=torch.long)
+        timesteps = torch.tensor([t["t"] for t in self.memory], device=self.device, dtype=torch.long)
 
         # ---- 2) Bootstrap from last state ----
         with torch.no_grad():
@@ -174,7 +180,7 @@ class PPO:
                 last_spatial = spatial_obs[-1].unsqueeze(0)
                 last_vector = vector_obs[-1].unsqueeze(0)
                 _, _, last_next_value, _ = self.policy_net(
-                    last_spatial, last_vector, state=None
+                    last_spatial, last_vector, state=None, detach_state=True
                 )
                 last_next_value = last_next_value.squeeze(-1)
 
@@ -187,39 +193,101 @@ class PPO:
         # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        # ---- 4) PPO minibatch training (RECURRENT UNROLL) ----
+        # ---- 4) PPO TBPTT-lite Training ----
         T = spatial_obs.size(0)
         losses = []
 
+        # 4.1 Identify valid sequence starts
+        valid_starts = []
+        for t in range(T - seq_len + 1):
+            # All steps in the sequence must be from the same episode
+            if episode_ids[t] != episode_ids[t + seq_len - 1]:
+                continue
+            # No done signal in the middle (allowed at the very end of sequence)
+            if torch.any(dones[t : t + seq_len - 1] == 1.0):
+                continue
+            valid_starts.append(t)
+
+        if not valid_starts:
+             print("Warning: No valid sequences found for TBPTT. Skipping update.")
+             self.memory = []
+             return []
+
+        valid_starts = torch.tensor(valid_starts, device=self.device, dtype=torch.long)
+        N_starts = len(valid_starts)
+
+        # We will treat batch_size as "number of sequences per batch"
+        # So effective batch size in timesteps is batch_size * seq_len
+        # Adjust batch_size if it's too large for the number of starts
+        b_seq = min(batch_size, N_starts)
+        if b_seq < 1: b_seq = 1
+
         for _ in range(epochs):
-            perm = torch.randperm(T, device=self.device)
-            for start in range(0, T, batch_size):
-                idx = perm[start : start + batch_size]
+            perm_seq = torch.randperm(N_starts, device=self.device)
 
-                batch_spatial = spatial_obs[idx]
-                batch_vector = vector_obs[idx]
-                batch_actions = actions[idx]
-                batch_xy_raw = xy_raws[idx]
-                batch_old_logp = log_probs_old[idx]
-                batch_adv = advantages[idx]
-                batch_returns = returns[idx]
+            for start_idx in range(0, N_starts, b_seq):
+                # Select batch of start indices
+                batch_indices = perm_seq[start_idx : start_idx + b_seq]
+                current_b_seq = len(batch_indices)
 
-                # Vectorized forward pass (Stateless between steps, Stateful within SNN internal steps)
-                # This restores full GPU parallelism (Batch=256)
-                action_logits, xy_mean_raw, state_values, _ = self.policy_net(
-                    batch_spatial, batch_vector, state=None
-                )
-                state_values = state_values.squeeze(-1)
+                start_times = valid_starts[batch_indices] # [B_seq]
+
+                # Construct sequence batches: [SEQ_LEN, B_seq, ...]
+                # We can gather using advanced indexing
+                # sequences_idx shape: [SEQ_LEN, B_seq]
+                seq_offset = torch.arange(seq_len, device=self.device).unsqueeze(1) # [SEQ_LEN, 1]
+                sequences_idx = start_times.unsqueeze(0) + seq_offset # [SEQ_LEN, B_seq]
+
+                # Flatten for gathering
+                flat_idx = sequences_idx.view(-1)
+
+                batch_spatial = spatial_obs[flat_idx].view(seq_len, current_b_seq, *spatial_obs.shape[1:])
+                batch_vector = vector_obs[flat_idx].view(seq_len, current_b_seq, *vector_obs.shape[1:])
+                batch_actions = actions[flat_idx].view(seq_len, current_b_seq)
+                batch_xy_raw = xy_raws[flat_idx].view(seq_len, current_b_seq, 2)
+                batch_old_logp = log_probs_old[flat_idx].view(seq_len, current_b_seq)
+                batch_adv = advantages[flat_idx].view(seq_len, current_b_seq)
+                batch_returns = returns[flat_idx].view(seq_len, current_b_seq)
+
+                # Flatten targets for loss calculation
+                batch_actions_flat = batch_actions.view(-1)
+                batch_xy_raw_flat = batch_xy_raw.view(-1, 2)
+                batch_old_logp_flat = batch_old_logp.view(-1)
+                batch_adv_flat = batch_adv.view(-1)
+                batch_returns_flat = batch_returns.view(-1)
+
+                # Recurrent Unroll
+                # We need: action_logits, xy_mean_raw, state_values
+                action_logits_list = []
+                xy_mean_raw_list = []
+                values_list = []
+
+                state = None # Initial state for sequence is zero/learned init
+                for t in range(seq_len):
+                    x_t = batch_spatial[t]
+                    v_t = batch_vector[t]
+
+                    action_logits_t, xy_mean_raw_t, values_t, state = self.policy_net(
+                        x_t, v_t, state=state, detach_state=False
+                    )
+                    action_logits_list.append(action_logits_t)
+                    xy_mean_raw_list.append(xy_mean_raw_t)
+                    values_list.append(values_t.squeeze(-1))
+
+                # Stack and flatten
+                action_logits_flat = torch.stack(action_logits_list, dim=0).view(-1, *action_logits_list[0].shape[1:])
+                xy_mean_raw_flat = torch.stack(xy_mean_raw_list, dim=0).view(-1, 2)
+                values_flat = torch.stack(values_list, dim=0).view(-1)
 
                 policy_loss, value_loss, entropy_loss = self._calculate_losses(
-                    action_logits,
-                    xy_mean_raw,
-                    state_values,
-                    batch_actions,
-                    batch_xy_raw,
-                    batch_old_logp,
-                    batch_adv,
-                    batch_returns,
+                    action_logits_flat,
+                    xy_mean_raw_flat,
+                    values_flat,
+                    batch_actions_flat,
+                    batch_xy_raw_flat,
+                    batch_old_logp_flat,
+                    batch_adv_flat,
+                    batch_returns_flat,
                 )
 
                 loss = policy_loss + value_loss - entropy_loss

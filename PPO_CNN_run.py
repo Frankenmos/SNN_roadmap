@@ -129,6 +129,8 @@ def train_agent(env, agent, observation_extractor, log_queue):
                 reward_tensor,
                 value_tensor,
                 done_tensor,
+                episode_id=episode,
+                timestep=step_count,
             )
 
             episode_reward += reward
