@@ -22,3 +22,16 @@ model:
   spatial_input_shape: [27, 84, 84]
   vector_input_dim: 100
   action_dim: 3   # 0=attack, 1=move, 2=no-op
+  num_steps: 8
+
+  # Multi-temporal time constants (learnable — these are starting points)
+  snn_layer1_alpha: 0.5   # fast interneurons: rapid synaptic decay
+  snn_layer1_beta: 0.8
+  snn_layer2_alpha: 0.8   # medium pyramidal: slower synaptic filtering
+  snn_layer2_beta: 0.9
+  snn_layer3_beta: 0.95   # slow integrator: persistent working memory
+
+  # Spiking self-attention
+  attention_embed_dim: 64
+  attention_pool_size: 7
+  attention_beta: 0.5     # Q/K/V spike encoder decay

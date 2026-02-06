@@ -144,7 +144,7 @@ class TestAgent(unittest.TestCase):
             vector_tensor = vector_obs.unsqueeze(0)
 
             # Perform a forward pass through the policy network.
-            action_logits, _, state_value = self.agent.policy(spatial_tensor, vector_tensor)
+            action_logits, _, state_value, _ = self.agent.policy(spatial_tensor, vector_tensor)
 
             # --- Actor Loss Component ---
             # Calculate a sample log probability using a fixed action to ensure the
@@ -172,6 +172,108 @@ class TestAgent(unittest.TestCase):
 
         except Exception as e:
             self.fail(f"Agent backward pass raised an exception unexpectedly: {e}")
+
+class TestSpikingTransformer(unittest.TestCase):
+    """Tests for the spiking transformer architecture components."""
+
+    def setUp(self):
+        from PPO_CNN.policy_network import PolicyNetwork, SpikingSelfAttention
+        self.PolicyNetwork = PolicyNetwork
+        self.SpikingSelfAttention = SpikingSelfAttention
+        self.spatial_shape = (27, 84, 84)
+        self.vector_dim = 100
+        self.action_dim = 3
+
+    def test_forward_output_shapes(self):
+        """Verify output shapes match the interface contract."""
+        net = self.PolicyNetwork(self.spatial_shape, self.vector_dim, self.action_dim)
+        spatial = torch.randn(2, *self.spatial_shape, device=net.device)
+        vector = torch.randn(2, self.vector_dim, device=net.device)
+
+        action_logits, angle, state_value, next_state = net(spatial, vector)
+
+        self.assertEqual(action_logits.shape, (2, self.action_dim))
+        self.assertEqual(angle.shape, (2,))
+        self.assertEqual(state_value.shape, (2,))
+        self.assertIsNotNone(next_state)
+
+    def test_stateless_forward(self):
+        """Forward with state=None should not error."""
+        net = self.PolicyNetwork(self.spatial_shape, self.vector_dim, self.action_dim)
+        spatial = torch.randn(1, *self.spatial_shape, device=net.device)
+        vector = torch.randn(1, self.vector_dim, device=net.device)
+
+        action_logits, angle, state_value, next_state = net(spatial, vector, state=None)
+        self.assertEqual(action_logits.shape, (1, self.action_dim))
+
+    def test_state_continuity(self):
+        """Passing state from one forward to the next should work without errors."""
+        net = self.PolicyNetwork(self.spatial_shape, self.vector_dim, self.action_dim)
+        spatial = torch.randn(1, *self.spatial_shape, device=net.device)
+        vector = torch.randn(1, self.vector_dim, device=net.device)
+
+        # First forward — fresh state
+        _, _, _, state1 = net(spatial, vector, state=None)
+        # Second forward — carry state
+        action_logits, angle, state_value, state2 = net(spatial, vector, state=state1)
+
+        self.assertEqual(action_logits.shape, (1, self.action_dim))
+        self.assertIsNotNone(state2)
+
+    def test_state_detachment(self):
+        """All tensors in next_state must be detached (requires_grad=False)."""
+        net = self.PolicyNetwork(self.spatial_shape, self.vector_dim, self.action_dim)
+        spatial = torch.randn(1, *self.spatial_shape, device=net.device)
+        vector = torch.randn(1, self.vector_dim, device=net.device)
+
+        _, _, _, next_state = net(spatial, vector)
+        (syn1, mem1), (syn2, mem2), mem3, (mem_q, mem_k, mem_v) = next_state
+
+        for tensor in [syn1, mem1, syn2, mem2, mem3, mem_q, mem_k, mem_v]:
+            self.assertFalse(tensor.requires_grad, "State tensor should be detached")
+
+    def test_learnable_time_constants_get_gradients(self):
+        """Verify learnable alpha/beta params receive gradients during backward."""
+        net = self.PolicyNetwork(self.spatial_shape, self.vector_dim, self.action_dim)
+        spatial = torch.randn(1, *self.spatial_shape, device=net.device)
+        vector = torch.randn(1, self.vector_dim, device=net.device)
+
+        action_logits, _, state_value, _ = net(spatial, vector)
+        loss = state_value.mean() - torch.softmax(action_logits, dim=-1).mean()
+        loss.backward()
+
+        # Check that learnable time constants get gradients
+        learnable_params = [
+            ('snn1.alpha', net.snn1.alpha),
+            ('snn1.beta', net.snn1.beta),
+            ('snn2.alpha', net.snn2.alpha),
+            ('snn2.beta', net.snn2.beta),
+            ('snn3.beta', net.snn3.beta),
+            ('attention.lif_q.beta', net.attention.lif_q.beta),
+            ('attention.lif_k.beta', net.attention.lif_k.beta),
+            ('attention.lif_v.beta', net.attention.lif_v.beta),
+        ]
+        for name, param in learnable_params:
+            self.assertIsNotNone(param.grad, f"Gradient for {name} is None")
+
+    def test_attention_module_isolation(self):
+        """SpikingSelfAttention works as standalone module."""
+        from snntorch import surrogate
+        attn = self.SpikingSelfAttention(embed_dim=64, beta_qkv=0.5, spike_grad=surrogate.fast_sigmoid())
+        tokens = torch.randn(2, 49, 64)
+        mem_q, mem_k, mem_v = attn.init_state()
+
+        out, mem_q2, mem_k2, mem_v2 = attn(tokens, mem_q, mem_k, mem_v)
+
+        self.assertEqual(out.shape, (2, 49, 64))
+
+    def test_parameter_count_reduction(self):
+        """New architecture should have significantly fewer params than the old 3.6M."""
+        net = self.PolicyNetwork(self.spatial_shape, self.vector_dim, self.action_dim)
+        param_count = sum(p.numel() for p in net.parameters())
+        # Should be ~462K, definitely under 1M (old was 3.6M)
+        self.assertLess(param_count, 1_000_000, f"Param count {param_count} is too high")
+
 
 if __name__ == '__main__':
     unittest.main()
