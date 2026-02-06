@@ -18,12 +18,14 @@ class MockPolicyNet(nn.Module):
         self.device = device
         return self
 
-    def forward(self, spatial_obs, vector_obs):
+    def forward(self, spatial_obs, vector_obs, state=None):
         batch_size = spatial_obs.shape[0]
-        action_logits = torch.randn(batch_size, self.action_dim, device=self.device)
-        angle = torch.randn(batch_size, 1, device=self.device)
-        state_value = torch.randn(batch_size, 1, device=self.device)
-        return action_logits, angle, state_value
+        # Route through self.fc so outputs have grad_fn for backprop
+        dummy = self.fc(spatial_obs.flatten(1)[:, :1]).squeeze(-1)  # [B]
+        action_logits = torch.randn(batch_size, self.action_dim, device=self.device) + dummy.unsqueeze(-1) * 0
+        angle = torch.randn(batch_size, device=self.device) + dummy * 0
+        state_value = dummy * 0.1
+        return action_logits, angle, state_value, None
 
 @pytest.fixture
 def ppo_agent():
@@ -41,7 +43,7 @@ def test_init(ppo_agent):
 def test_select_action(ppo_agent):
     spatial_obs = torch.randn(1, 3, 84, 84)
     vector_obs = torch.randn(1, 10)
-    action, angle, log_prob, value = ppo_agent.select_action((spatial_obs, vector_obs))
+    action, angle, log_prob, value, next_state = ppo_agent.select_action((spatial_obs, vector_obs))
     assert isinstance(action, int)
     assert 0 <= action < ppo_agent.policy_net.action_dim
     assert isinstance(angle, float)
@@ -51,7 +53,10 @@ def test_select_action(ppo_agent):
 def test_store_transition(ppo_agent):
     spatial_obs = torch.randn(3, 84, 84)
     vector_obs = torch.randn(10)
-    ppo_agent.store_transition(spatial_obs, vector_obs, 1, -0.5, 1.0, 0.5, False)
+    ppo_agent.store_transition(
+        spatial_obs, vector_obs,
+        torch.tensor(1), torch.tensor(-0.5), torch.tensor(1.0), torch.tensor(0.5), torch.tensor(False),
+    )
     assert len(ppo_agent.memory) == 1
     transition = ppo_agent.memory[0]
     assert torch.equal(transition['spatial_obs'], spatial_obs)
@@ -80,7 +85,7 @@ def test_compute_advantages(ppo_agent):
     values = torch.tensor([0.5, 0.5, 0.5, 0.5])
     dones = torch.tensor([False, False, False, True])
 
-    advantages = ppo_agent._compute_advantages(rewards, values, dones)
+    advantages = ppo_agent._compute_advantages(rewards, values, dones, last_next_value=torch.tensor(0.0))
 
     expected_adv_3 = 0.5
     expected_adv_2 = 0.995 + 0.99 * 0.95 * expected_adv_3
@@ -115,19 +120,14 @@ def test_update_policy(ppo_agent):
     for _ in range(10):
         spatial_obs = torch.randn(3, 84, 84)
         vector_obs = torch.randn(10)
-        action, _, log_prob, value = ppo_agent.select_action((spatial_obs.unsqueeze(0), vector_obs.unsqueeze(0)))
-        ppo_agent.store_transition(spatial_obs, vector_obs, action, log_prob, 1.0, value, False)
+        action, _, log_prob, value, _ = ppo_agent.select_action((spatial_obs.unsqueeze(0), vector_obs.unsqueeze(0)))
+        ppo_agent.store_transition(
+            spatial_obs, vector_obs,
+            torch.tensor(action), torch.tensor(log_prob), torch.tensor(1.0), torch.tensor(value), torch.tensor(False),
+        )
 
     # Get the initial model parameters
     initial_params = [p.clone() for p in ppo_agent.policy_net.parameters()]
-
-    # Mock the tensors in memory to be of the correct type
-    for t in ppo_agent.memory:
-        t['action'] = torch.tensor(t['action'])
-        t['log_prob'] = torch.tensor(t['log_prob'])
-        t['reward'] = torch.tensor(t['reward'])
-        t['value'] = torch.tensor(t['value'])
-        t['done'] = torch.tensor(t['done'])
 
     # Run the update
     ppo_agent.update_policy(batch_size=4, epochs=1)
