@@ -13,7 +13,18 @@ class PPO:
         self.clip_epsilon = clip_epsilon
         self.critic_loss_coef = critic_loss_coef
         self.entropy_coef = entropy_coef
-        self.memory = []  # Store transitions here
+        self._reset_memory()
+
+    def _reset_memory(self):
+        self.memory = {
+            'spatial_obs': [],
+            'vector_obs': [],
+            'action': [],
+            'log_prob': [],
+            'reward': [],
+            'value': [],
+            'done': []
+        }
 
     def select_action(self, observations):
         """
@@ -57,25 +68,25 @@ class PPO:
         )
 
     def store_transition(self, spatial_obs, vector_obs, action, log_prob, reward, value, done):
-        self.memory.append({
-            'spatial_obs': spatial_obs,
-            'vector_obs': vector_obs,
-            'action': action,
-            'log_prob': log_prob,
-            'reward': reward,
-            'value': value,
-            'done': done
-        })
+        self.memory['spatial_obs'].append(spatial_obs)
+        self.memory['vector_obs'].append(vector_obs)
+        self.memory['action'].append(action)
+        self.memory['log_prob'].append(log_prob)
+        self.memory['reward'].append(reward)
+        self.memory['value'].append(value)
+        self.memory['done'].append(done)
 
     def update_policy(self, batch_size=64, epochs=10):
         # 1) Convert memory to stacked tensors
-        spatial_obs = torch.stack([t['spatial_obs'] for t in self.memory])     # shape [T, C, H, W]
-        vector_obs = torch.stack([t['vector_obs'] for t in self.memory])       # shape [T, vector_dim]
-        actions = torch.stack([t['action'] for t in self.memory])                      # shape [T]
-        log_probs_old = torch.stack([t['log_prob'] for t in self.memory])             # shape [T]
-        rewards = torch.stack([t['reward'] for t in self.memory])                      # shape [T]
-        values = torch.stack([t['value'] for t in self.memory])                        # shape [T] (if each was 0D)
-        dones = torch.stack([t['done'] for t in self.memory])                          # shape [T]
+        spatial_obs = torch.stack(self.memory['spatial_obs'])     # shape [T, C, H, W]
+        vector_obs = torch.stack(self.memory['vector_obs'])       # shape [T, vector_dim]
+
+        # Convert list of scalars directly to tensors on the correct device
+        actions = torch.tensor(self.memory['action'], dtype=torch.long, device=self.device)
+        log_probs_old = torch.tensor(self.memory['log_prob'], dtype=torch.float32, device=self.device)
+        rewards = torch.tensor(self.memory['reward'], dtype=torch.float32, device=self.device)
+        values = torch.tensor(self.memory['value'], dtype=torch.float32, device=self.device)
+        dones = torch.tensor(self.memory['done'], dtype=torch.float32, device=self.device)
 
         # 2) Compute advantages (GAE style or 1-step).
         #    In your code, `_compute_advantages` uses reversed iteration.
@@ -127,7 +138,7 @@ class PPO:
                 self.optimizer.step()
 
         # 5) Clear memory after update
-        self.memory = []
+        self._reset_memory()
 
         return losses
 

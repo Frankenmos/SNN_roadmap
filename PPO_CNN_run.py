@@ -198,22 +198,15 @@ def train_agent(
                     next_obs = env.step([action_func_call])[0]
                     done = next_obs.last()
 
-                    # Convert values to tensors before storing in PPO memory
-                    action_tensor = torch.tensor(action_id, device=agent.policy.device)
-                    log_prob_tensor = torch.tensor(log_prob, device=agent.policy.device)
-                    reward_tensor = torch.tensor(reward, device=agent.policy.device)
-                    value_tensor = torch.tensor(value, device=agent.policy.device)
-                    done_tensor = torch.tensor(done, device=agent.policy.device)
-
-                    # Store transition
+                    # Store transition - pass native Python values directly
                     agent.ppo.store_transition(
                         spatial_obs=spatial_obs,
                         vector_obs=vector_obs,
-                        action=action_tensor,
-                        log_prob=log_prob_tensor,
-                        reward=reward_tensor,
-                        value=value_tensor,
-                        done=done_tensor
+                        action=action_id,
+                        log_prob=log_prob,
+                        reward=reward,
+                        value=value,
+                        done=done
                     )
 
                     # For database logging, use the original values

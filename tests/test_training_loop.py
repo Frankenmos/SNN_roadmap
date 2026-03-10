@@ -109,29 +109,19 @@ class TestTrainingLoop(unittest.TestCase):
 
                 _, action, log_prob, value, spatial_obs, vector_obs, reward = self.agent.step(mock_obs)
 
-                # Convert scalars to tensors for storage.
-                action_tensor = torch.tensor(action, device=self.agent.policy.device)
-                log_prob_tensor = torch.tensor(log_prob, device=self.agent.policy.device)
-                reward_tensor = torch.tensor(reward, device=self.agent.policy.device)
-                value_tensor = torch.tensor(value, device=self.agent.policy.device)
-                done_tensor = torch.tensor(mock_obs.last(), device=self.agent.policy.device)
-
+                # Pass native values directly to store_transition.
                 self.agent.ppo.store_transition(
-                    spatial_obs, vector_obs, action_tensor, log_prob_tensor,
-                    reward_tensor, value_tensor, done_tensor
+                    spatial_obs, vector_obs, action, log_prob,
+                    reward, value, mock_obs.last()
                 )
 
-                # Check Detachment: Ensure stored tensors do not have a gradient function.
-                # This is crucial because these values should be treated as fixed data points
-                # for the PPO update, not as part of the computation graph.
-                stored_transition = self.agent.ppo.memory[-1]
-                self.assertIsNone(stored_transition['log_prob'].grad_fn)
-                self.assertIsNone(stored_transition['value'].grad_fn)
+                # Verification of storage
+                self.assertEqual(self.agent.ppo.memory['action'][-1], action)
 
             # Assert that the 'Done' signal was correctly recorded.
-            self.assertTrue(self.agent.ppo.memory[50]['done'])
-            self.assertFalse(self.agent.ppo.memory[49]['done'])
-            self.assertFalse(self.agent.ppo.memory[51]['done'])
+            self.assertTrue(self.agent.ppo.memory['done'][50])
+            self.assertFalse(self.agent.ppo.memory['done'][49])
+            self.assertFalse(self.agent.ppo.memory['done'][51])
 
             # 2. PPO Update
             losses = self.agent.ppo.update_policy(batch_size=10, epochs=5)
@@ -141,7 +131,7 @@ class TestTrainingLoop(unittest.TestCase):
             self.assertGreater(len(losses), 0, "Loss list should not be empty")
             # In a real scenario, loss should decrease, but for this test, we just check that it changes.
             self.assertNotEqual(losses[0], losses[-1], "Loss should change during training")
-            self.assertEqual(len(self.agent.ppo.memory), 0, "Memory buffer should be empty after update")
+            self.assertEqual(len(self.agent.ppo.memory['action']), 0, "Memory buffer should be empty after update")
 
         except Exception as e:
             self.fail(f"Endurance test raised an exception unexpectedly: {e}")
