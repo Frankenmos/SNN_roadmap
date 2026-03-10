@@ -17,6 +17,7 @@ environment:
   checkpoint_path: "checkpoint.pth"
   log_frequency: 10
   db_path: "training_logs.db"
+  db_batch_size: 100
 
 model:
   spatial_input_shape: [27, 84, 84]

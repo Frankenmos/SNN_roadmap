@@ -149,7 +149,8 @@ def train_agent(
     target_reward=None,
     reward_window=None,
     checkpoint_path=None,
-    db_path=None
+    db_path=None,
+    db_batch_size=None
 ):
     """Train the agent using PPO with enhanced logging."""
     if episode_count is None:
@@ -166,6 +167,9 @@ def train_agent(
         checkpoint_path = cfg.environment.checkpoint_path
     if db_path is None:
         db_path = cfg.environment.db_path
+    if db_batch_size is None:
+        # Fallback to 100 if db_batch_size is not configured in config.yaml
+        db_batch_size = getattr(cfg.environment, 'db_batch_size', 100)
 
     episode_rewards = deque(maxlen=reward_window)
     best_avg_reward = float('-inf')
@@ -182,6 +186,10 @@ def train_agent(
                 episode_reward = 0
                 cumulative_reward = 0
                 step_count = 0
+
+                # Buffer for batched DB inserts
+                db_step_buffer = []
+                db_reward_comp_buffer = []
 
                 # Log episode start
                 with conn:
@@ -221,35 +229,65 @@ def train_agent(
                     cumulative_reward += reward
                     step_count += 1
 
-                    # Log step details - use original values for DB
-                    with conn:
-                        conn.execute(
-                            "INSERT INTO steps (episode_id, step_number, action, reward, cumulative_reward) VALUES (?, ?, ?, ?, ?)",
-                            (int(episode_id), int(step_count), int(action_id), float(reward), float(cumulative_reward))
+                    # Add step details to buffer
+                    db_step_buffer.append(
+                        (int(episode_id), int(step_count), int(action_id), float(reward), float(cumulative_reward))
+                    )
+
+                    # Add reward components to buffer
+                    reward_info = agent.reward_function.get_last_reward_components()
+                    if reward_info:
+                        db_reward_comp_buffer.append(
+                            (int(episode), int(step_count),
+                             float(reward_info['health_reward']),
+                             float(reward_info['engagement_reward']),
+                             float(reward_info['positioning_reward']),
+                             float(reward_info['score_reward']),
+                             float(reward_info['bonus_reward']),
+                             float(reward_info['end_of_episode_reward']),
+                             float(reward_info['total_reward']))
                         )
 
-                        # Log reward components
-                        reward_info = agent.reward_function.get_last_reward_components()
-                        if reward_info:
-                            conn.execute(
-                                """INSERT INTO reward_components 
-                                   (episode, step, health_reward, engagement_reward, positioning_reward, 
-                                    score_reward, bonus_reward, end_of_episode_reward, total_reward)
-                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                                (int(episode), int(step_count),
-                                 float(reward_info['health_reward']),
-                                 float(reward_info['engagement_reward']),
-                                 float(reward_info['positioning_reward']),
-                                 float(reward_info['score_reward']),
-                                 float(reward_info['bonus_reward']),
-                                 float(reward_info['end_of_episode_reward']),
-                                 float(reward_info['total_reward']))
+                    # Flush buffers to DB if batch size reached
+                    if len(db_step_buffer) >= db_batch_size:
+                        with conn:
+                            conn.executemany(
+                                "INSERT INTO steps (episode_id, step_number, action, reward, cumulative_reward) VALUES (?, ?, ?, ?, ?)",
+                                db_step_buffer
                             )
+                            if db_reward_comp_buffer:
+                                conn.executemany(
+                                    """INSERT INTO reward_components
+                                       (episode, step, health_reward, engagement_reward, positioning_reward,
+                                        score_reward, bonus_reward, end_of_episode_reward, total_reward)
+                                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                    db_reward_comp_buffer
+                                )
+                        db_step_buffer.clear()
+                        db_reward_comp_buffer.clear()
 
                     if done:
                         break
 
                     obs = next_obs
+
+                # Flush any remaining items in buffer after episode ends
+                if db_step_buffer:
+                    with conn:
+                        conn.executemany(
+                            "INSERT INTO steps (episode_id, step_number, action, reward, cumulative_reward) VALUES (?, ?, ?, ?, ?)",
+                            db_step_buffer
+                        )
+                        if db_reward_comp_buffer:
+                            conn.executemany(
+                                """INSERT INTO reward_components
+                                   (episode, step, health_reward, engagement_reward, positioning_reward,
+                                    score_reward, bonus_reward, end_of_episode_reward, total_reward)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                db_reward_comp_buffer
+                            )
+                    db_step_buffer.clear()
+                    db_reward_comp_buffer.clear()
 
                 # Update episode statistics
                 episode_rewards.append(episode_reward)
