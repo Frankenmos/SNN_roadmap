@@ -1,0 +1,36 @@
+======================================================================
+SNN-PPO Training Instability Report
+======================================================================
+
+Summary:
+  episodes:              3884
+  avg episode length:    96.6
+  avg total reward:      231.56
+  max total reward:      2408.50
+  reward std (full run): 183.66
+  final 100-ep avg:      42.76
+
+Plateau detection: none detected
+Late-stage CoV (last 200 eps): 0.721
+
+----------------------------------------------------------------------
+Data-driven flags:
+----------------------------------------------------------------------
+  [MED] No-op dominates: 55.2% of late-training steps are no-op.
+        suggested knob: add step-level penalty; verify reward function
+
+  [MED] Sharp action-mix shift (L1 > 0.3) at bin(s) [385, 1001, 1232] — possible catastrophic forgetting.
+        suggested knob: clip_eps: 0.18 -> 0.10; lower lr
+
+----------------------------------------------------------------------
+Architecture-specific suspects (cannot verify from logs):
+----------------------------------------------------------------------
+  1. Stateful/stateless SNN mismatch. Rollout carries self.snn_state across env steps (PPO_CNN_agent.py:83-85), but training evaluates with state=None (PPO.py:179-181). The PPO importance ratio is built on inconsistent policies; bias grows with episode length.
+  2. Move-head entropy asymmetry. Joint log-prob masking means a move-action sample gets H ~ log(3) + 2*log(84) ~ 9.9, while an attack sample gets H ~ log(3) ~ 1.1. With entropy_coef=0.01 this is a ~10x bias favoring movement, which can suppress commitment to attacks.
+
+----------------------------------------------------------------------
+Instrumentation status:
+----------------------------------------------------------------------
+  ppo_updates table empty - using empirical proxies.
+  - True policy entropy / KL / clip-fraction / value-loss not logged in this run.
+  - Action entropy below is an EMPIRICAL proxy from the 3-way action id.

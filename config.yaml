@@ -1,9 +1,10 @@
 hyperparameters:
-  lr: 1.0e-4
+  lr: 1.0e-4            # initial LR
+  lr_min: 1.0e-5        # cosine-anneal floor
   gamma: 0.99
-  clip_eps: 0.18
+  clip_eps: 0.10        # was 0.18 — tighter to prevent drift
   batch_size: 128
-  epochs: 20
+  epochs: 8             # was 20 — less overfit per rollout
 
 environment:
   map_name: "DefeatRoaches"
@@ -14,15 +15,28 @@ environment:
   update_frequency: 10
   target_reward: 25.0
   reward_window: 200
+  # Per-run folder layout: all run artifacts (checkpoints + db) live in
+  # {models_dir}/{run_name}/ and all analyses in {analysis_dir}/{run_name}/.
+  # Leave run_name empty ("") to auto-generate a timestamped name.
+  run_name: ""
+  models_dir: "models"
+  analysis_dir: "analysis_results"
+  # Filenames below are joined under {models_dir}/{run_name}/.
   checkpoint_path: "checkpoint.pth"
+  best_checkpoint_path: "best_checkpoint.pth"
+  best_min_episodes: 50
   log_frequency: 10
   db_path: "training_logs.db"
+  use_observation_inspector: false
+  observation_inspector_output_path: "analysis_results/observation_space.jsonl"
+  observation_inspector_every_n_steps: 10
+  observation_inspector_max_unit_samples: 5
 
 model:
   spatial_input_shape: [27, 84, 84]
   vector_input_dim: 100
   action_dim: 3   # 0=attack, 1=move, 2=no-op
-  num_steps: 8
+  num_steps: 2
 
   # Multi-temporal time constants (learnable — these are starting points)
   snn_layer1_alpha: 0.5   # fast interneurons: rapid synaptic decay

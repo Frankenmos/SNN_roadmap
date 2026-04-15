@@ -127,16 +127,6 @@ class ObservationExtractor:
         distance = self.compute_distance(agent_pos, (enemy_x, enemy_y))
         return max(0.0, distance - attack_range)
 
-    def compute_distance(self, pos1, pos2):
-        return np.sqrt((pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2)
-
-    def compute_velocity(self, current_pos):
-        if not self.previous_position:
-            return None
-        delta = np.array([current_pos[0] - self.previous_position[0],
-                          current_pos[1] - self.previous_position[1]])
-        return delta if np.linalg.norm(delta) > 1e-8 else None
-
     def compute_scalar_direction(self, velocity, relative_pos):
         vel = np.array(velocity, dtype=np.float32)
         rel = np.array(relative_pos, dtype=np.float32)

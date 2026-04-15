@@ -17,33 +17,17 @@ class ActionSpace:
         units = np.argwhere(feature_layer == condition)  # Use the correct condition
         return [tuple(unit) for unit in units]  # Convert to a list of tuples (y, x)
 
-    def move(self, obs, agent_position, angle, magnitude=10):
+    def move(self, obs, target_x, target_y, screen_size=84):
         """
-        Move the agent based on a vector (angle, fixed magnitude).
-        Corrects for Numpy (y, x) vs Cartesian (x, y) mismatch.
+        Move the selected units to an absolute screen coordinate.
+        target_x, target_y are ints in [0, screen_size - 1].
         """
-        # 1. Calculate the Shift
-        # dx is change in Column (Index 1)
-        # dy is change in Row    (Index 0)
-        dx = magnitude * np.cos(angle)
-        dy = magnitude * np.sin(angle)
-        
-        # 2. Apply to Numpy Coordinates (y, x)
-        # agent_position is (y, x) from np.argwhere
-        current_y, current_x = agent_position
-        
-        target_y = int(current_y + dy) # Apply Sine to Row
-        target_x = int(current_x + dx) # Apply Cosine to Column
-
-        # 3. Clamp to Screen Bounds (Safe for any resolution)
-        # usually 64 or 84 depending on your feature_screen_size
-        max_coord = 83 # Or self.screen_size - 1
-        target_y = np.clip(target_y, 0, max_coord)
-        target_x = np.clip(target_x, 0, max_coord)
+        max_coord = screen_size - 1
+        target_x = int(np.clip(target_x, 0, max_coord))
+        target_y = int(np.clip(target_y, 0, max_coord))
 
         if actions.FUNCTIONS.Move_screen.id in obs.observation.available_actions:
-            # 4. Final Flip for PySC2 Action
-            # PySC2 expects (x, y) for the action command
+            # PySC2 expects (x, y).
             return actions.FUNCTIONS.Move_screen("now", [target_x, target_y])
 
         return actions.FUNCTIONS.no_op()

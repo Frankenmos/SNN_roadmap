@@ -63,11 +63,20 @@ class DefeatRoaches(base_agent.BaseAgent):
         self.policy = PolicyNetwork(spatial_input_shape, vector_input_dim, action_dim)
         self.policy.to(self.policy.device)  # make sure it's really on GPU
 
+        # Size the cosine schedule to cover the full training run:
+        # total_updates = total_episodes / update_frequency.
+        total_eps = int(getattr(cfg.environment, "total_episodes", 0))
+        update_freq = int(getattr(cfg.environment, "update_frequency", 1) or 1)
+        total_updates = max(0, total_eps // update_freq)
+        lr_min = float(getattr(cfg.hyperparameters, "lr_min", 0.0))
+
         self.ppo = PPO(
             policy_net=self.policy,
             lr=lr if lr is not None else cfg.hyperparameters.lr,
             gamma=gamma if gamma is not None else cfg.hyperparameters.gamma,
             clip_epsilon=clip_eps if clip_eps is not None else cfg.hyperparameters.clip_eps,
+            total_updates=total_updates,
+            lr_min=lr_min,
         )
 
         self.selected_armies = []
@@ -80,9 +89,10 @@ class DefeatRoaches(base_agent.BaseAgent):
             obs
         )
 
-        action, angle, log_prob, value, self.snn_state = self.ppo.select_action(
-            (spatial_observation, vector_observation), state=self.snn_state
-        )
+        action, move_x, move_y, log_prob, value, self.snn_state = \
+            self.ppo.select_action(
+                (spatial_observation, vector_observation), state=self.snn_state
+            )
 
         player_relative = obs.observation.feature_screen.player_relative
         self.selected_armies = self.action_space.find_units(
@@ -113,8 +123,7 @@ class DefeatRoaches(base_agent.BaseAgent):
 
         elif action == 1:  # Move
             if can_move and self.selected_armies:
-                agent_position = self.selected_armies[0]
-                action_func = self.action_space.move(obs, agent_position, angle)
+                action_func = self.action_space.move(obs, move_x, move_y)
             elif can_select_army:
                 action_func = actions.FUNCTIONS.select_army("select")
 
@@ -125,6 +134,8 @@ class DefeatRoaches(base_agent.BaseAgent):
         return (
             action_func,
             action,
+            move_x,
+            move_y,
             float(log_prob),
             float(value),
             spatial_observation,
@@ -140,7 +151,9 @@ class DefeatRoaches(base_agent.BaseAgent):
         self.selected_armies = []
 
     def update_policy(self):
-        self.ppo.update_policy(
+        """Run a PPO update and return the diagnostics dict (see PPO.update_policy)."""
+        _, stats = self.ppo.update_policy(
             batch_size=cfg.hyperparameters.batch_size,
             epochs=cfg.hyperparameters.epochs,
         )
+        return stats

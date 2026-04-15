@@ -24,6 +24,11 @@ class SpikingSelfAttention(nn.Module):
         self.embed_dim = embed_dim
         self.scale = embed_dim ** -0.5
 
+        # Pre-LN: stabilize token magnitudes before QKV projection.
+        # Without this, drifting spike-density from snn3 makes attention
+        # scores (and the residual) magnitude-unstable across training.
+        self.pre_norm = nn.LayerNorm(embed_dim)
+
         # Linear projections (no bias — Spikformer convention)
         self.W_q = nn.Linear(embed_dim, embed_dim, bias=False)
         self.W_k = nn.Linear(embed_dim, embed_dim, bias=False)
@@ -53,10 +58,13 @@ class SpikingSelfAttention(nn.Module):
             out: [B, N, D] attended + residual features
             mem_q, mem_k, mem_v: updated membrane potentials
         """
+        # Pre-LN on tokens before projecting to Q/K/V.
+        tokens_normed = self.pre_norm(tokens)
+
         # Project to Q, K, V
-        q_raw = self.W_q(tokens)  # [B, N, D]
-        k_raw = self.W_k(tokens)  # [B, N, D]
-        v_raw = self.W_v(tokens)  # [B, N, D]
+        q_raw = self.W_q(tokens_normed)  # [B, N, D]
+        k_raw = self.W_k(tokens_normed)  # [B, N, D]
+        v_raw = self.W_v(tokens_normed)  # [B, N, D]
 
         # Spike-encode via LIF neurons
         spike_q, mem_q = self.lif_q(q_raw, mem_q)  # binary [B, N, D]
@@ -88,46 +96,10 @@ class PolicyNetwork(nn.Module):
     - Standard ANN readout heads for stable RL training
     """
 
-    def __init__(self, spatial_input_shape, vector_input_dim, action_dim, num_steps=8):
+    def __init__(self, spatial_input_shape, vector_input_dim, action_dim, num_steps=2, screen_size=84):
         super().__init__()
-<<<<<<< HEAD
-      # Choose device safely: try CUDA only if actually usable for this PyTorch build/GPU.
-      # Some newer GPUs (e.g. sm_120) may be unsupported by the installed PyTorch wheel
-      # and raise a runtime CUDA error when allocating tensors. We detect that and
-      # fall back to CPU to keep tests and CPU-only runs stable.
-      try:
-        if torch.cuda.is_available():
-          try:
-            # try a tiny allocation on the default CUDA device
-            _ = torch.tensor([0.0], device=torch.device("cuda"))
-            device = torch.device("cuda")
-          except Exception:
-            warnings.warn("CUDA appears available but failed a test allocation. Falling back to CPU.")
-            device = torch.device("cpu")
-        else:
-          device = torch.device("cpu")
-      except Exception:
-        device = torch.device("cpu")
 
-      self.device = device
-=======
->>>>>>> da68e04efe4897a7d863bb10585e81a640c4dd12
-
-        # Choose device safely
-        try:
-            if torch.cuda.is_available():
-                try:
-                    _ = torch.tensor([0.0], device=torch.device("cuda"))
-                    device = torch.device("cuda")
-                except Exception:
-                    warnings.warn("CUDA appears available but failed a test allocation. Falling back to CPU.")
-                    device = torch.device("cpu")
-            else:
-                device = torch.device("cpu")
-        except Exception:
-            device = torch.device("cpu")
-
-        self.device = device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.num_steps = num_steps
         spike_grad = surrogate.fast_sigmoid()
 
@@ -170,17 +142,26 @@ class PolicyNetwork(nn.Module):
 
         # === Shared FC Layers (Non-Spiking / Readout) ===
         fc_input_dim = num_tokens * embed_dim + vector_input_dim  # 3136 + 100 = 3236
+        # LayerNorm across the concatenated feature vector: puts the
+        # time-summed spike tokens (magnitude grows with num_steps) on the
+        # same scale as the raw-valued vector obs (HP, screen coords).
+        self.combined_norm = nn.LayerNorm(fc_input_dim)
         self.shared_fc1 = nn.Linear(fc_input_dim, 128)
         self.shared_fc2 = nn.Linear(128, 64)
 
         # === Output Heads ===
+        self.screen_size = screen_size
         self.actor_fc = nn.Linear(64, action_dim)
         self.critic_fc = nn.Linear(64, 1)
-        self.angle_fc = nn.Linear(64, 4)
+        # Two categorical heads over screen coordinates (84 bins each).
+        self.move_x_fc = nn.Linear(64, screen_size)
+        self.move_y_fc = nn.Linear(64, screen_size)
 
-        # AMP configuration
-        self.amp_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        self.scaler = torch.amp.GradScaler('cuda', enabled=(self.amp_dtype == torch.float16))
+        # AMP configuration — fp16 on CUDA gives ~2x throughput on tensor cores.
+        # Scaler is only "enabled" when we're actually in fp16; on CPU it's a no-op.
+        self.use_amp = torch.cuda.is_available()
+        self.amp_dtype = torch.float16 if self.use_amp else torch.float32
+        self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
 
         # Move model parameters to selected device
         self.to(self.device)
@@ -194,7 +175,8 @@ class PolicyNetwork(nn.Module):
 
         Returns:
             action_logits: [B, action_dim]
-            angle: [B]
+            move_x_logits: [B, screen_size]
+            move_y_logits: [B, screen_size]
             state_value: [B]
             next_state: detached neuron states for next timestep
         """
@@ -243,15 +225,15 @@ class PolicyNetwork(nn.Module):
 
         # === 4. Feature Combination & Output Heads ===
         combined = torch.cat([x, vector_input], dim=1)  # [B, 3236]
+        combined = self.combined_norm(combined)
 
         x = F.relu(self.shared_fc1(combined))
         x = F.relu(self.shared_fc2(x))
 
         action_logits = self.actor_fc(x)
-        angle_logits = self.angle_fc(x)
+        move_x_logits = self.move_x_fc(x)   # [B, screen_size]
+        move_y_logits = self.move_y_fc(x)   # [B, screen_size]
         state_value = self.critic_fc(x).squeeze(-1)
-
-        angle = torch.atan2(angle_logits[:, 1], angle_logits[:, 0])
 
         # === 5. State Packaging (all detached) ===
         next_state = (
@@ -261,4 +243,4 @@ class PolicyNetwork(nn.Module):
             (mem_q.detach(), mem_k.detach(), mem_v.detach()),
         )
 
-        return action_logits, angle, state_value, next_state
+        return action_logits, move_x_logits, move_y_logits, state_value, next_state
