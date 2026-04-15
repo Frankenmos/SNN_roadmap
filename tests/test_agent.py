@@ -107,13 +107,15 @@ class TestAgent(unittest.TestCase):
             # The agent's step method returns a tuple of values that are used
             # for training. We verify the types and shapes of these values.
             result = self.agent.step(mock_obs)
-            action_func, action, log_prob, value, spatial_obs, vector_obs, reward = result
+            action_func, action, move_x, move_y, log_prob, value, spatial_obs, vector_obs, reward = result
 
             # action_func: The action to be executed in the game (a mock FunctionCall).
             self.assertIsInstance(action_func, pysc2_mock.lib.actions.FunctionCall)
             # action: The integer representation of the action (e.g., 0 for attack).
             self.assertIsInstance(action, int)
             self.assertIn(action, list(range(self.action_dim)))
+            self.assertIsInstance(move_x, int)
+            self.assertIsInstance(move_y, int)
             # log_prob: The log probability of the selected action.
             self.assertIsInstance(log_prob, float)
             # value: The value of the state, as estimated by the critic.
@@ -144,7 +146,7 @@ class TestAgent(unittest.TestCase):
             vector_tensor = vector_obs.unsqueeze(0)
 
             # Perform a forward pass through the policy network.
-            action_logits, _, state_value, _ = self.agent.policy(spatial_tensor, vector_tensor)
+            action_logits, _, _, state_value, _ = self.agent.policy(spatial_tensor, vector_tensor)
 
             # --- Actor Loss Component ---
             # Calculate a sample log probability using a fixed action to ensure the
@@ -166,8 +168,8 @@ class TestAgent(unittest.TestCase):
 
             # Verify that gradients have been computed for all relevant parameters.
             for name, param in self.agent.policy.named_parameters():
-                # The 'angle_fc' head is not used in our dummy loss, so it won't have a gradient.
-                if 'angle_fc' not in name:
+                # The 'angle_fc', 'move_x_fc', and 'move_y_fc' heads are not used in our dummy loss, so they won't have a gradient.
+                if 'angle_fc' not in name and 'move_x_fc' not in name and 'move_y_fc' not in name:
                     self.assertIsNotNone(param.grad, f"Gradient for {name} is None")
 
         except Exception as e:
@@ -190,10 +192,11 @@ class TestSpikingTransformer(unittest.TestCase):
         spatial = torch.randn(2, *self.spatial_shape, device=net.device)
         vector = torch.randn(2, self.vector_dim, device=net.device)
 
-        action_logits, angle, state_value, next_state = net(spatial, vector)
+        action_logits, move_x_logits, move_y_logits, state_value, next_state = net(spatial, vector)
 
         self.assertEqual(action_logits.shape, (2, self.action_dim))
-        self.assertEqual(angle.shape, (2,))
+        self.assertEqual(move_x_logits.shape, (2, 84))
+        self.assertEqual(move_y_logits.shape, (2, 84))
         self.assertEqual(state_value.shape, (2,))
         self.assertIsNotNone(next_state)
 
@@ -203,7 +206,7 @@ class TestSpikingTransformer(unittest.TestCase):
         spatial = torch.randn(1, *self.spatial_shape, device=net.device)
         vector = torch.randn(1, self.vector_dim, device=net.device)
 
-        action_logits, angle, state_value, next_state = net(spatial, vector, state=None)
+        action_logits, move_x_logits, move_y_logits, state_value, next_state = net(spatial, vector, state=None)
         self.assertEqual(action_logits.shape, (1, self.action_dim))
 
     def test_state_continuity(self):
@@ -213,9 +216,9 @@ class TestSpikingTransformer(unittest.TestCase):
         vector = torch.randn(1, self.vector_dim, device=net.device)
 
         # First forward — fresh state
-        _, _, _, state1 = net(spatial, vector, state=None)
+        _, _, _, _, state1 = net(spatial, vector, state=None)
         # Second forward — carry state
-        action_logits, angle, state_value, state2 = net(spatial, vector, state=state1)
+        action_logits, move_x_logits, move_y_logits, state_value, state2 = net(spatial, vector, state=state1)
 
         self.assertEqual(action_logits.shape, (1, self.action_dim))
         self.assertIsNotNone(state2)
@@ -226,7 +229,7 @@ class TestSpikingTransformer(unittest.TestCase):
         spatial = torch.randn(1, *self.spatial_shape, device=net.device)
         vector = torch.randn(1, self.vector_dim, device=net.device)
 
-        _, _, _, next_state = net(spatial, vector)
+        _, _, _, _, next_state = net(spatial, vector)
         (syn1, mem1), (syn2, mem2), mem3, (mem_q, mem_k, mem_v) = next_state
 
         for tensor in [syn1, mem1, syn2, mem2, mem3, mem_q, mem_k, mem_v]:
@@ -238,7 +241,7 @@ class TestSpikingTransformer(unittest.TestCase):
         spatial = torch.randn(1, *self.spatial_shape, device=net.device)
         vector = torch.randn(1, self.vector_dim, device=net.device)
 
-        action_logits, _, state_value, _ = net(spatial, vector)
+        action_logits, _, _, state_value, _ = net(spatial, vector)
         loss = state_value.mean() - torch.softmax(action_logits, dim=-1).mean()
         loss.backward()
 

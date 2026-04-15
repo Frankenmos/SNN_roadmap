@@ -107,17 +107,19 @@ class TestTrainingLoop(unittest.TestCase):
                 if i == 50:
                     mock_obs.last = lambda: True
 
-                _, action, log_prob, value, spatial_obs, vector_obs, reward = self.agent.step(mock_obs)
+                _, action, move_x, move_y, log_prob, value, spatial_obs, vector_obs, reward = self.agent.step(mock_obs)
 
                 # Convert scalars to tensors for storage.
                 action_tensor = torch.tensor(action, device=self.agent.policy.device)
+                move_x_tensor = torch.tensor(move_x, device=self.agent.policy.device)
+                move_y_tensor = torch.tensor(move_y, device=self.agent.policy.device)
                 log_prob_tensor = torch.tensor(log_prob, device=self.agent.policy.device)
                 reward_tensor = torch.tensor(reward, device=self.agent.policy.device)
                 value_tensor = torch.tensor(value, device=self.agent.policy.device)
                 done_tensor = torch.tensor(mock_obs.last(), device=self.agent.policy.device)
 
                 self.agent.ppo.store_transition(
-                    spatial_obs, vector_obs, action_tensor, log_prob_tensor,
+                    spatial_obs, vector_obs, action_tensor, move_x_tensor, move_y_tensor, log_prob_tensor,
                     reward_tensor, value_tensor, done_tensor
                 )
 
@@ -134,13 +136,14 @@ class TestTrainingLoop(unittest.TestCase):
             self.assertFalse(self.agent.ppo.memory[51]['done'])
 
             # 2. PPO Update
-            losses = self.agent.ppo.update_policy(batch_size=10, epochs=5)
+            losses, stats = self.agent.ppo.update_policy(batch_size=10, epochs=5)
 
             # 3. Verification
             self.assertIsInstance(losses, list)
             self.assertGreater(len(losses), 0, "Loss list should not be empty")
             # In a real scenario, loss should decrease, but for this test, we just check that it changes.
             self.assertNotEqual(losses[0], losses[-1], "Loss should change during training")
+            self.assertIsInstance(stats, dict)
             self.assertEqual(len(self.agent.ppo.memory), 0, "Memory buffer should be empty after update")
 
         except Exception as e:

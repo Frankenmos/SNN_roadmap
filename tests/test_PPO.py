@@ -12,7 +12,9 @@ class MockPolicyNet(nn.Module):
         self.device = torch.device('cpu')
         # Add a dummy parameter to be recognized by the optimizer
         self.fc = nn.Linear(1, 1)
-
+        self.use_amp = False
+        self.amp_dtype = torch.bfloat16
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
 
     def to(self, device):
         self.device = device
@@ -23,9 +25,10 @@ class MockPolicyNet(nn.Module):
         # Route through self.fc so outputs have grad_fn for backprop
         dummy = self.fc(spatial_obs.flatten(1)[:, :1]).squeeze(-1)  # [B]
         action_logits = torch.randn(batch_size, self.action_dim, device=self.device) + dummy.unsqueeze(-1) * 0
-        angle = torch.randn(batch_size, device=self.device) + dummy * 0
+        move_x_logits = torch.randn(batch_size, 84, device=self.device) + dummy.unsqueeze(-1) * 0
+        move_y_logits = torch.randn(batch_size, 84, device=self.device) + dummy.unsqueeze(-1) * 0
         state_value = dummy * 0.1
-        return action_logits, angle, state_value, None
+        return action_logits, move_x_logits, move_y_logits, state_value, None
 
 @pytest.fixture
 def ppo_agent():
@@ -43,10 +46,11 @@ def test_init(ppo_agent):
 def test_select_action(ppo_agent):
     spatial_obs = torch.randn(1, 3, 84, 84)
     vector_obs = torch.randn(1, 10)
-    action, angle, log_prob, value, next_state = ppo_agent.select_action((spatial_obs, vector_obs))
+    action, move_x, move_y, log_prob, value, next_state = ppo_agent.select_action((spatial_obs, vector_obs))
     assert isinstance(action, int)
     assert 0 <= action < ppo_agent.policy_net.action_dim
-    assert isinstance(angle, float)
+    assert isinstance(move_x, int)
+    assert isinstance(move_y, int)
     assert isinstance(log_prob, float)
     assert isinstance(value, float)
 
@@ -55,13 +59,15 @@ def test_store_transition(ppo_agent):
     vector_obs = torch.randn(10)
     ppo_agent.store_transition(
         spatial_obs, vector_obs,
-        torch.tensor(1), torch.tensor(-0.5), torch.tensor(1.0), torch.tensor(0.5), torch.tensor(False),
+        torch.tensor(1), torch.tensor(42), torch.tensor(42), torch.tensor(-0.5), torch.tensor(1.0), torch.tensor(0.5), torch.tensor(False),
     )
     assert len(ppo_agent.memory) == 1
     transition = ppo_agent.memory[0]
     assert torch.equal(transition['spatial_obs'], spatial_obs)
     assert torch.equal(transition['vector_obs'], vector_obs)
     assert transition['action'] == 1
+    assert transition['move_x'] == 42
+    assert transition['move_y'] == 42
     assert transition['log_prob'] == -0.5
     assert transition['reward'] == 1.0
     assert transition['value'] == 0.5
@@ -100,13 +106,17 @@ def test_compute_advantages(ppo_agent):
 
 def test_calculate_losses(ppo_agent):
     action_logits = torch.randn(4, 10)
+    move_x_logits = torch.randn(4, 84)
+    move_y_logits = torch.randn(4, 84)
     state_values = torch.randn(4)
     actions = torch.randint(0, 10, (4,))
+    move_x = torch.randint(0, 84, (4,))
+    move_y = torch.randint(0, 84, (4,))
     old_log_probs = torch.randn(4)
     advantages = torch.randn(4)
     returns = torch.randn(4)
-    policy_loss, value_loss, entropy_loss = ppo_agent._calculate_losses(
-        action_logits, state_values, actions, old_log_probs, advantages, returns
+    policy_loss, value_loss, entropy_loss, _ = ppo_agent._calculate_losses(
+        action_logits, move_x_logits, move_y_logits, state_values, actions, move_x, move_y, old_log_probs, advantages, returns
     )
     assert isinstance(policy_loss, torch.Tensor)
     assert isinstance(value_loss, torch.Tensor)
@@ -120,10 +130,10 @@ def test_update_policy(ppo_agent):
     for _ in range(10):
         spatial_obs = torch.randn(3, 84, 84)
         vector_obs = torch.randn(10)
-        action, _, log_prob, value, _ = ppo_agent.select_action((spatial_obs.unsqueeze(0), vector_obs.unsqueeze(0)))
+        action, move_x, move_y, log_prob, value, _ = ppo_agent.select_action((spatial_obs.unsqueeze(0), vector_obs.unsqueeze(0)))
         ppo_agent.store_transition(
             spatial_obs, vector_obs,
-            torch.tensor(action), torch.tensor(log_prob), torch.tensor(1.0), torch.tensor(value), torch.tensor(False),
+            torch.tensor(action), torch.tensor(move_x), torch.tensor(move_y), torch.tensor(log_prob), torch.tensor(1.0), torch.tensor(value), torch.tensor(False),
         )
 
     # Get the initial model parameters
