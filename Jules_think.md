@@ -3,7 +3,7 @@
 Hi there! I've spent some time looking around the codebase, running (and fixing up the mock dependencies for) the tests, and reading through your detailed logs and plans. Here is my honest feedback on the repository, what I liked, what I think could be improved, and how I believe we should prioritize the next steps.
 
 ## The Good
-- **Comprehensive Logging & Planning:** The fact that you have `PROJECT_LOGS.md`, `SESSION_LOG_2026-04-15.md`, and `NEXT_FIXES_PLAN.md` is incredible. It makes it very easy to understand the historical context, the "why" behind the code, and what specific technical hurdles you've faced (like the SNN stateful/stateless mismatch).
+- **Comprehensive Logging & Planning:** The fact that you have `logs/PROJECT_LOGS.md`, `logs/SESSION_LOG_2026-04-15.md`, and `NEXT_FIXES_PLAN.md` is incredible. It makes it very easy to understand the historical context, the "why" behind the code, and what specific technical hurdles you've faced (like the SNN stateful/stateless mismatch).
 - **The Socratic Method:** The way `NEXT_FIXES_PLAN.md` uses the Socratic method to debug the architecture is brilliant. It walks through the problem logically before throwing solutions at it.
 - **Architectural Clarity:** The separation of concerns is quite solid for an RL stack. Splitting the agent logic, the SNN policy network, the PySC2 observation space, and the reward function into distinct modules makes the code readable and easier to test in isolation.
 - **Dashboard & Tooling:** Building out a dashboard with Streamlit and Plotly to monitor training metrics is a huge step up from generic console logging. It shows a commitment to rigorous analysis.

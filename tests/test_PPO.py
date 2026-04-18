@@ -1,140 +1,206 @@
+import pytest
 import torch
 import torch.nn as nn
-import pytest
+
 from PPO_CNN.PPO import PPO
-import numpy as np
-
-# Add a mock policy network for testing
-class MockPolicyNet(nn.Module):
-    def __init__(self, action_dim=10):
-        super(MockPolicyNet, self).__init__()
-        self.action_dim = action_dim
-        self.device = torch.device('cpu')
-        # Add a dummy parameter to be recognized by the optimizer
-        self.fc = nn.Linear(1, 1)
+from PPO_CNN.policy_network import PolicyNetwork
 
 
-    def to(self, device):
-        self.device = device
-        return self
+class FakeNet(nn.Module):
+    def __init__(self, action_logits=None, move_x_logits=None, move_y_logits=None):
+        super().__init__()
+        self.fc = nn.Linear(4, 2)
+        self.device = torch.device("cpu")
+        self.use_amp = False
+        self.amp_dtype = torch.float32
+        self.scaler = torch.amp.GradScaler("cuda", enabled=False)
+        self._action_logits = action_logits
+        self._move_x_logits = move_x_logits
+        self._move_y_logits = move_y_logits
+
+    @staticmethod
+    def _repeat_logits(logits, batch_size):
+        if logits is None:
+            return None
+        return logits.expand(batch_size, -1).clone()
 
     def forward(self, spatial_obs, vector_obs, state=None):
         batch_size = spatial_obs.shape[0]
-        # Route through self.fc so outputs have grad_fn for backprop
-        dummy = self.fc(spatial_obs.flatten(1)[:, :1]).squeeze(-1)  # [B]
-        action_logits = torch.randn(batch_size, self.action_dim, device=self.device) + dummy.unsqueeze(-1) * 0
-        angle = torch.randn(batch_size, device=self.device) + dummy * 0
-        state_value = dummy * 0.1
-        return action_logits, angle, state_value, None
+        base = self.fc(vector_obs[:, :4].float()).sum(dim=-1)
 
-@pytest.fixture
-def ppo_agent():
-    policy_net = MockPolicyNet()
-    agent = PPO(policy_net)
-    return agent
+        action_logits = self._repeat_logits(self._action_logits, batch_size)
+        if action_logits is None:
+            action_logits = torch.randn(batch_size, 3, device=self.device)
+        action_logits = action_logits.to(self.device) + base.unsqueeze(-1) * 0
 
-def test_init(ppo_agent):
-    assert ppo_agent.gamma == 0.99
-    assert ppo_agent.clip_epsilon == 0.2
-    assert ppo_agent.critic_loss_coef == 0.5
-    assert ppo_agent.entropy_coef == 0.01
-    assert isinstance(ppo_agent.optimizer, torch.optim.Adam)
+        move_x_logits = self._repeat_logits(self._move_x_logits, batch_size)
+        if move_x_logits is None:
+            move_x_logits = torch.randn(batch_size, 8, device=self.device)
+        move_x_logits = move_x_logits.to(self.device) + base.unsqueeze(-1) * 0
 
-def test_select_action(ppo_agent):
-    spatial_obs = torch.randn(1, 3, 84, 84)
-    vector_obs = torch.randn(1, 10)
-    action, angle, log_prob, value, next_state = ppo_agent.select_action((spatial_obs, vector_obs))
-    assert isinstance(action, int)
-    assert 0 <= action < ppo_agent.policy_net.action_dim
-    assert isinstance(angle, float)
-    assert isinstance(log_prob, float)
-    assert isinstance(value, float)
+        move_y_logits = self._repeat_logits(self._move_y_logits, batch_size)
+        if move_y_logits is None:
+            move_y_logits = torch.randn(batch_size, 8, device=self.device)
+        move_y_logits = move_y_logits.to(self.device) + base.unsqueeze(-1) * 0
 
-def test_store_transition(ppo_agent):
-    spatial_obs = torch.randn(3, 84, 84)
-    vector_obs = torch.randn(10)
-    ppo_agent.store_transition(
-        spatial_obs, vector_obs,
-        torch.tensor(1), torch.tensor(-0.5), torch.tensor(1.0), torch.tensor(0.5), torch.tensor(False),
+        state_value = base * 0.1
+        return action_logits, move_x_logits, move_y_logits, state_value, state
+
+
+def test_scheduler_decays_lr():
+    net = FakeNet()
+    ppo = PPO(net, lr=1e-4, total_updates=1000, lr_min=1e-5)
+
+    lrs = {}
+    for step in range(1000):
+        loss = net.fc(torch.randn(1, 4)).sum()
+        ppo.optimizer.zero_grad()
+        loss.backward()
+        ppo.optimizer.step()
+        if step in {0, 100, 500, 900, 999}:
+            lrs[step] = ppo.optimizer.param_groups[0]["lr"]
+        ppo.scheduler.step()
+
+    assert lrs[0] == 1e-4
+    assert lrs[999] > 1e-5
+    assert lrs[999] < lrs[0]
+    assert lrs[100] > lrs[500] > lrs[900] > lrs[999]
+
+
+def test_select_action_deterministic_uses_argmax_for_move_heads():
+    action_logits = torch.tensor([[-2.0, 3.0, 0.5]])
+    move_x_logits = torch.tensor([[0.1, -0.1, 0.0, 0.2, 0.3, 1.4, 0.5, -0.7]])
+    move_y_logits = torch.tensor([[-0.8, 0.0, 0.2, -0.4, 0.1, 0.3, 0.9, 1.7]])
+    ppo = PPO(FakeNet(action_logits, move_x_logits, move_y_logits), lr=1e-4)
+
+    spatial_obs = torch.randn(3, 8, 8)
+    vector_obs = torch.randn(8)
+    action, move_x, move_y, log_prob, value, next_state = ppo.select_action(
+        (spatial_obs, vector_obs), deterministic=True,
     )
-    assert len(ppo_agent.memory) == 1
-    transition = ppo_agent.memory[0]
-    assert torch.equal(transition['spatial_obs'], spatial_obs)
-    assert torch.equal(transition['vector_obs'], vector_obs)
-    assert transition['action'] == 1
-    assert transition['log_prob'] == -0.5
-    assert transition['reward'] == 1.0
-    assert transition['value'] == 0.5
-    assert not transition['done']
 
-def test_compute_advantages(ppo_agent):
-    # Test case: a single trajectory of 4 steps ending in a terminal state.
-    # rewards = [r1, r2, r3, r4]
-    # values = [v1, v2, v3, v4]
-    # dones = [False, False, False, True]
-    # GAE(lambda=0.95, gamma=0.99)
-    # delta_t = r_t + gamma * V(s_{t+1}) * (1-d_t) - V(s_t)
-    # A_t = delta_t + gamma * lambda * A_{t+1} * (1-d_t)
-    # For t=3 (last step):
-    # delta_3 = 1.0 + 0.99 * 0.5 * 0 - 0.5 = 0.5
-    # A_3 = delta_3 = 0.5
-    # For t=2:
-    # delta_2 = 1.0 + 0.99 * 0.5 * 1 - 0.5 = 0.995
-    # A_2 = delta_2 + 0.99 * 0.95 * A_3 = 0.995 + 0.9405 * 0.5 = 1.46525
-    rewards = torch.tensor([1.0, 1.0, 1.0, 1.0])
-    values = torch.tensor([0.5, 0.5, 0.5, 0.5])
-    dones = torch.tensor([False, False, False, True])
+    expected_log_prob = (
+        torch.log_softmax(action_logits, dim=-1)[0, 1]
+        + torch.log_softmax(move_x_logits, dim=-1)[0, 5]
+        + torch.log_softmax(move_y_logits, dim=-1)[0, 7]
+    )
 
-    advantages = ppo_agent._compute_advantages(rewards, values, dones, last_next_value=torch.tensor(0.0))
+    assert action == 1
+    assert move_x == 5
+    assert move_y == 7
+    assert log_prob == pytest.approx(float(expected_log_prob.item()))
+    assert isinstance(value, float)
+    assert next_state is None
+
+
+def test_compute_advantages_matches_hand_calculation():
+    ppo = PPO(FakeNet(), lr=1e-4)
+    rewards = torch.tensor([1.0, 1.0, 1.0, 1.0], device=ppo.device)
+    values = torch.tensor([0.5, 0.5, 0.5, 0.5], device=ppo.device)
+    dones = torch.tensor([0.0, 0.0, 0.0, 1.0], device=ppo.device)
+
+    advantages = ppo._compute_advantages(
+        rewards,
+        values,
+        dones,
+        last_next_value=torch.tensor(0.0, device=ppo.device),
+    ).cpu()
 
     expected_adv_3 = 0.5
     expected_adv_2 = 0.995 + 0.99 * 0.95 * expected_adv_3
     expected_adv_1 = 0.995 + 0.99 * 0.95 * expected_adv_2
     expected_adv_0 = 0.995 + 0.99 * 0.95 * expected_adv_1
+    expected = torch.tensor([
+        expected_adv_0,
+        expected_adv_1,
+        expected_adv_2,
+        expected_adv_3,
+    ])
 
-    expected_advantages = torch.tensor([expected_adv_0, expected_adv_1, expected_adv_2, expected_adv_3])
-
-    assert advantages.shape == rewards.shape
-    assert torch.allclose(advantages, expected_advantages, atol=1e-5)
+    assert advantages.shape == rewards.cpu().shape
+    assert torch.allclose(advantages, expected, atol=1e-5)
 
 
-def test_calculate_losses(ppo_agent):
-    action_logits = torch.randn(4, 10)
-    state_values = torch.randn(4)
-    actions = torch.randint(0, 10, (4,))
-    old_log_probs = torch.randn(4)
-    advantages = torch.randn(4)
-    returns = torch.randn(4)
-    policy_loss, value_loss, entropy_loss = ppo_agent._calculate_losses(
-        action_logits, state_values, actions, old_log_probs, advantages, returns
+def test_calculate_losses_reports_normalized_entropy():
+    ppo = PPO(FakeNet(), lr=1e-4)
+    batch_size = 128
+
+    policy_loss, value_loss, entropy_loss, diag = ppo._calculate_losses(
+        torch.randn(batch_size, 3),
+        torch.randn(batch_size, 84),
+        torch.randn(batch_size, 84),
+        torch.randn(batch_size),
+        torch.ones(batch_size, dtype=torch.long),
+        torch.randint(0, 84, (batch_size,)),
+        torch.randint(0, 84, (batch_size,)),
+        torch.randn(batch_size),
+        torch.randn(batch_size),
+        torch.randn(batch_size),
     )
-    assert isinstance(policy_loss, torch.Tensor)
-    assert isinstance(value_loss, torch.Tensor)
-    assert isinstance(entropy_loss, torch.Tensor)
-    assert policy_loss.shape == torch.Size([])
-    assert value_loss.shape == torch.Size([])
-    assert entropy_loss.shape == torch.Size([])
 
-def test_update_policy(ppo_agent):
-    # Store some transitions
-    for _ in range(10):
-        spatial_obs = torch.randn(3, 84, 84)
-        vector_obs = torch.randn(10)
-        action, _, log_prob, value, _ = ppo_agent.select_action((spatial_obs.unsqueeze(0), vector_obs.unsqueeze(0)))
-        ppo_agent.store_transition(
-            spatial_obs, vector_obs,
-            torch.tensor(action), torch.tensor(log_prob), torch.tensor(1.0), torch.tensor(value), torch.tensor(False),
+    assert policy_loss.ndim == 0
+    assert value_loss.ndim == 0
+    assert entropy_loss.ndim == 0
+    assert 1.0 <= float(diag["entropy_mean"].item()) <= 3.0
+    assert torch.isfinite(diag["approx_kl"])
+    assert 0.0 <= float(diag["clip_frac"].item()) <= 1.0
+
+
+def test_update_policy_replays_state_and_clears_memory():
+    torch.manual_seed(0)
+    net = PolicyNetwork(
+        (3, 16, 16),
+        vector_input_dim=8,
+        action_dim=3,
+        num_steps=2,
+        screen_size=16,
+        attention_embed_dim=32,
+        attention_pool_size=4,
+    )
+    net.device = torch.device("cpu")
+    net.to("cpu")
+    net.use_amp = False
+    net.amp_dtype = torch.float32
+    net.scaler = torch.amp.GradScaler("cuda", enabled=False)
+
+    ppo = PPO(net, lr=1e-4, total_updates=0, lr_min=0.0)
+    rollout_steps = 6
+
+    for step in range(rollout_steps):
+        state = net.init_concrete_state(batch_size=1, device=torch.device("cpu"))
+        spatial = torch.randn(3, 16, 16)
+        vector = torch.randn(8)
+        with torch.no_grad():
+            _, _, _, state_value, _ = net(
+                spatial.unsqueeze(0), vector.unsqueeze(0), state=state,
+            )
+        ppo.store_transition(
+            spatial,
+            vector,
+            torch.tensor(1),
+            torch.tensor(5),
+            torch.tensor(10),
+            state,
+            torch.tensor(-1.0),
+            torch.tensor(1.0),
+            torch.tensor(state_value.item()),
+            torch.tensor(float(step == rollout_steps - 1)),
         )
 
-    # Get the initial model parameters
-    initial_params = [p.clone() for p in ppo_agent.policy_net.parameters()]
+    initial_params = [param.detach().clone() for param in net.parameters()]
+    losses, stats = ppo.update_policy(batch_size=3, epochs=1)
 
-    # Run the update
-    ppo_agent.update_policy(batch_size=4, epochs=1)
+    changed_params = sum(
+        not torch.equal(before, after)
+        for before, after in zip(initial_params, net.parameters())
+    )
 
-    # Check if memory is cleared
-    assert len(ppo_agent.memory) == 0
-
-    # Check if the model parameters have been updated
-    for initial, final in zip(initial_params, ppo_agent.policy_net.parameters()):
-        assert not torch.equal(initial, final)
+    assert len(losses) == 2
+    assert stats is not None
+    assert stats["transitions_in_update"] == rollout_steps
+    assert stats["epochs_ran"] == 1
+    assert stats["nonfinite_grad_steps"] == 0
+    assert stats["skipped_optimizer_steps"] == 0
+    assert changed_params > 0
+    assert ppo.memory == []
+    assert ppo.final_next is None

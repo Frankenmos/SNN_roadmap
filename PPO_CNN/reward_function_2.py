@@ -1,5 +1,8 @@
 import numpy as np
 
+from obs_space.obs_space_2 import get_friendly_health
+
+
 class RewardFunctionV2:
     """
     An improved, event-driven reward function tailored for the 'Defeat Roaches'
@@ -44,7 +47,11 @@ class RewardFunctionV2:
             float: The total calculated reward for the current step.
         """
         # --- Extract Key Metrics from Observations ---
-        current_agent_health = obs.observation.player[0]
+        # Previously read obs.observation.player[0] as "agent health" —
+        # that's actually player_id (constant within an episode), so the
+        # health_reward term was numerically inert on every past run.
+        # Now sourced from feature_units via the shared helper.
+        current_agent_health = get_friendly_health(obs)
         enemy_units = [u for u in obs.observation.feature_units if u.alliance == 4] # 4 for enemy
         current_enemy_health = sum(u.health for u in enemy_units)
         current_enemy_count = len(enemy_units)
@@ -65,17 +72,22 @@ class RewardFunctionV2:
         win_loss_reward = 0.0
 
         # --- Combat Rewards (Continuous) ---
-        # Reward for damaging roaches.
+        # Slight engagement-leaning asymmetry (0.6 dealt vs 0.4 taken).
+        # In DefeatRoaches the objective is kills, not survival, so
+        # dying-while-fighting is OK. Previous 0.5/0.5 symmetric split
+        # made the health penalty dominate for a policy that
+        # over-explored movement — see run_20260416_233240
+        # components plot.
         damage_dealt = self.previous_enemy_health - current_enemy_health
         if damage_dealt > 0:
-            r = 0.5 * damage_dealt
+            r = 0.6 * damage_dealt
             total_reward += r
             damage_reward += r
 
         # Penalty for taking damage.
         damage_taken = self.previous_agent_health - current_agent_health
         if damage_taken > 0:
-            r = 0.5 * damage_taken
+            r = 0.4 * damage_taken
             total_reward -= r
             health_reward -= r # Negative reward for health loss
 

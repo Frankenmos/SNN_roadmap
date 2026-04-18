@@ -10,10 +10,17 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # PyCharm / VS Code settings (The personal clutter)
 .idea/
 .vscode/
+.claude/settings.local.json
+.claude/
 
 # The Heavy Brains (Don't let him read these!)
 *.pth
@@ -21,8 +28,20 @@ __pycache__/
 *.ckpt
 *.pkl
 *.db
+*.db-shm
+*.db-wal
 model_checkpoints/
+models/
+analysis_results/run_*/
+analysis_results/_*/
+analysis_results/*.jsonl
+analysis_results/*.png
+analysis_results/*.csv
+analysis_results/*.txt
 
 # Environment stuff
 env/
 venv/
+.venv/
+.env
+.env.*

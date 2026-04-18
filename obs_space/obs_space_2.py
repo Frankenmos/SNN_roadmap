@@ -1,9 +1,50 @@
+import random
 import numpy as np
-from pysc2.lib import features
-import torch
+
+# ---- PySC2 colors.py fix for Python 3.11+ (random.shuffle signature) ----
+# The same monkey-patch lives at PPO_CNN_agent.py:8-15. We replicate it
+# here so that any path that imports obs_space_2 WITHOUT going through
+# the training entrypoint (e.g. unit tests, smoke scripts) is still safe
+# — otherwise the `from pysc2.lib import features` below triggers
+# SCREEN_FEATURES construction → colors.shuffled_hue → the broken
+# random.shuffle(palette, lambda: 0.5) call.
+from pysc2.lib import colors as _colors
+
+
+def _shuffled_hue_fixed(scale):
+    palette = list(_colors.smooth_hue_palette(scale))
+    random_keys = [random.random() for _ in palette]
+    palette = [x for _, x in sorted(zip(random_keys, palette))]
+    return np.array(palette)
+
+
+_colors.shuffled_hue = _shuffled_hue_fixed
+# -------------------------------------------------------------------------
+
+from pysc2.lib import features  # noqa: E402,F401  (kept for downstream consumers)
+import torch  # noqa: E402
 
 _PLAYER_FRIENDLY = 1
 _PLAYER_ENEMY = 4
+
+
+def get_friendly_health(obs):
+    """Sum of health across all friendly units.
+
+    The PySC2 `player` observation array does NOT contain health:
+    index 0 is `player_id` (a constant within an episode) and index 3
+    is `food_used`. Reading either as "agent health" gives either a
+    constant or a proxy for unit count. Aggregate from feature_units
+    instead so reward shaping and vector features agree on the same
+    definition of health.
+    """
+    feature_units = getattr(obs.observation, "feature_units", None)
+    if feature_units is None or len(feature_units) == 0:
+        return 0.0
+    return float(sum(
+        u.health for u in feature_units
+        if u.alliance == _PLAYER_FRIENDLY
+    ))
 
 
 class ObservationExtractor:
@@ -26,13 +67,25 @@ class ObservationExtractor:
         vector_obs = self._extract_vector_features(obs).flatten()  # Ensure 1D
         return spatial_obs, vector_obs
 
+    def peek_observation(self, obs):
+        """Extract the next observation without mutating history state."""
+        saved_prev_position = self.previous_position
+        saved_history = [list(item) for item in self.history]
+        spatial_obs, vector_obs = self.extract_observation(obs)
+        self.previous_position = saved_prev_position
+        self.history = saved_history
+        return spatial_obs, vector_obs
+
     def _extract_vector_features(self, obs):
         """Modified to handle tensor comparisons safely"""
         observation_vector = []
 
-        # Agent data
-        player_data = getattr(obs.observation, "player", [])
-        agent_health = player_data[3] if len(player_data) > 3 else 0
+        # Agent data. NOTE: obs.observation.player[3] was previously
+        # misread as "agent health" — it's actually `food_used` per
+        # PySC2's Player enum. Health is aggregated from feature_units
+        # via the shared helper so the vector feature and the reward's
+        # health penalty stay on the same definition.
+        agent_health = get_friendly_health(obs)
         agent_position = self.get_agent_position(obs)
 
         # Handle None comparison safely

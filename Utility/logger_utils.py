@@ -1,14 +1,25 @@
-import sqlite3
 import multiprocessing
+import sqlite3
 import time
 from queue import Empty
+
+
+def _safe_add_column(conn, table_name, column_sql):
+    column_name = column_sql.split()[0]
+    try:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+    except sqlite3.OperationalError as exc:
+        if column_name not in str(exc):
+            pass
+
 
 def initialize_db(db_path):
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode = WAL;")
     conn.execute("PRAGMA synchronous = NORMAL;")
     with conn:
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS episodes (
                 episode_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 total_reward REAL,
@@ -16,8 +27,10 @@ def initialize_db(db_path):
                 steps INTEGER,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        """)
-        conn.execute("""
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS steps (
                 step_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 episode_id INTEGER,
@@ -28,8 +41,10 @@ def initialize_db(db_path):
                 reward REAL,
                 cumulative_reward REAL
             )
-        """)
-        conn.execute("""
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS reward_components (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 episode_id INTEGER,
@@ -42,11 +57,14 @@ def initialize_db(db_path):
                 end_of_episode_reward REAL,
                 total_reward REAL
             )
-        """)
-        conn.execute("""
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS ppo_updates (
                 update_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 episode_id INTEGER,
+                episode_index INTEGER,
                 mean_policy_loss REAL,
                 mean_value_loss REAL,
                 mean_entropy REAL,
@@ -55,18 +73,46 @@ def initialize_db(db_path):
                 explained_variance REAL,
                 grad_norm REAL,
                 lr REAL,
+                nonfinite_grad_steps INTEGER,
+                skipped_optimizer_steps INTEGER,
+                transitions_in_update INTEGER,
+                return_mean REAL,
+                return_std REAL,
+                return_p10 REAL,
+                return_p50 REAL,
+                return_p90 REAL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        """)
-        # Migration for DBs created before move_x/move_y existed.
-        try:
-            conn.execute("ALTER TABLE steps ADD COLUMN move_x INTEGER")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            conn.execute("ALTER TABLE steps ADD COLUMN move_y INTEGER")
-        except sqlite3.OperationalError:
-            pass
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS eval_runs (
+                eval_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                episode_index INTEGER,
+                num_episodes INTEGER,
+                mean_reward REAL,
+                std_reward REAL,
+                min_reward REAL,
+                max_reward REAL,
+                deterministic INTEGER,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        _safe_add_column(conn, "steps", "move_x INTEGER")
+        _safe_add_column(conn, "steps", "move_y INTEGER")
+        _safe_add_column(conn, "ppo_updates", "episode_index INTEGER")
+        _safe_add_column(conn, "ppo_updates", "nonfinite_grad_steps INTEGER")
+        _safe_add_column(conn, "ppo_updates", "skipped_optimizer_steps INTEGER")
+        _safe_add_column(conn, "ppo_updates", "transitions_in_update INTEGER")
+        _safe_add_column(conn, "ppo_updates", "return_mean REAL")
+        _safe_add_column(conn, "ppo_updates", "return_std REAL")
+        _safe_add_column(conn, "ppo_updates", "return_p10 REAL")
+        _safe_add_column(conn, "ppo_updates", "return_p50 REAL")
+        _safe_add_column(conn, "ppo_updates", "return_p90 REAL")
+
     return conn
 
 
@@ -85,10 +131,11 @@ class LogListener(multiprocessing.Process):
         buffer_steps = []
         buffer_rewards = []
         buffer_updates = []
+        buffer_evals = []
         last_commit = time.time()
 
         def flush_buffers():
-            nonlocal buffer_steps, buffer_rewards, buffer_updates, last_commit
+            nonlocal buffer_steps, buffer_rewards, buffer_updates, buffer_evals, last_commit
             if buffer_steps:
                 cursor.executemany(
                     "INSERT INTO steps (episode_id, step_number, action, "
@@ -109,13 +156,24 @@ class LogListener(multiprocessing.Process):
                 buffer_rewards = []
             if buffer_updates:
                 cursor.executemany(
-                    "INSERT INTO ppo_updates (episode_id, mean_policy_loss, "
-                    "mean_value_loss, mean_entropy, mean_kl, clip_fraction, "
-                    "explained_variance, grad_norm, lr) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO ppo_updates (episode_id, episode_index, "
+                    "mean_policy_loss, mean_value_loss, mean_entropy, mean_kl, "
+                    "clip_fraction, explained_variance, grad_norm, lr, "
+                    "nonfinite_grad_steps, skipped_optimizer_steps, "
+                    "transitions_in_update, return_mean, return_std, "
+                    "return_p10, return_p50, return_p90) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     buffer_updates,
                 )
                 buffer_updates = []
+            if buffer_evals:
+                cursor.executemany(
+                    "INSERT INTO eval_runs (episode_index, num_episodes, "
+                    "mean_reward, std_reward, min_reward, max_reward, deterministic) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    buffer_evals,
+                )
+                buffer_evals = []
             conn.commit()
             last_commit = time.time()
 
@@ -125,83 +183,111 @@ class LogListener(multiprocessing.Process):
             try:
                 record = self.queue.get(timeout=1)
 
-                if record['type'] == 'EPISODE_START':
+                if record["type"] == "EPISODE_START":
                     cursor.execute(
                         "INSERT INTO episodes (total_reward, average_reward, steps) VALUES (0, 0, 0)"
                     )
-                    episode_map[record['internal_ep']] = cursor.lastrowid
+                    episode_map[record["internal_ep"]] = cursor.lastrowid
 
-                elif record['type'] == 'EPISODE_END':
-                    db_id = episode_map.get(record['internal_ep'])
+                elif record["type"] == "EPISODE_END":
+                    db_id = episode_map.get(record["internal_ep"])
                     if db_id:
                         cursor.execute(
                             "UPDATE episodes SET total_reward=?, average_reward=?, steps=? WHERE episode_id=?",
-                            (record['total'], record['avg'], record['steps'], db_id),
+                            (
+                                record["total"],
+                                record["avg"],
+                                record["steps"],
+                                db_id,
+                            ),
                         )
-                        del episode_map[record['internal_ep']]
+                        del episode_map[record["internal_ep"]]
 
-                elif record['type'] == 'STEP':
-                    db_id = episode_map.get(record['internal_ep'])
+                elif record["type"] == "STEP":
+                    db_id = episode_map.get(record["internal_ep"])
                     if db_id:
                         buffer_steps.append(
                             (
                                 db_id,
-                                record['step'],
-                                record['act'],
-                                record.get('move_x'),
-                                record.get('move_y'),
-                                record['rew'],
-                                record['cum_rew'],
+                                record["step"],
+                                record["act"],
+                                record.get("move_x"),
+                                record.get("move_y"),
+                                record["rew"],
+                                record["cum_rew"],
                             )
                         )
 
-                elif record['type'] == 'UPDATE':
-                    db_id = episode_map.get(record['internal_ep'])
-                    # Updates may arrive after the corresponding episode was
-                    # removed from episode_map — still log with NULL episode_id.
+                elif record["type"] == "UPDATE":
+                    db_id = episode_map.get(record["internal_ep"])
                     buffer_updates.append(
                         (
                             db_id,
-                            record.get('mean_policy_loss'),
-                            record.get('mean_value_loss'),
-                            record.get('mean_entropy'),
-                            record.get('mean_kl'),
-                            record.get('clip_fraction'),
-                            record.get('explained_variance'),
-                            record.get('grad_norm'),
-                            record.get('lr'),
+                            record.get("episode_index"),
+                            record.get("mean_policy_loss"),
+                            record.get("mean_value_loss"),
+                            record.get("mean_entropy"),
+                            record.get("mean_kl"),
+                            record.get("clip_fraction"),
+                            record.get("explained_variance"),
+                            record.get("grad_norm"),
+                            record.get("lr"),
+                            record.get("nonfinite_grad_steps"),
+                            record.get("skipped_optimizer_steps"),
+                            record.get("transitions_in_update"),
+                            record.get("return_mean"),
+                            record.get("return_std"),
+                            record.get("return_p10"),
+                            record.get("return_p50"),
+                            record.get("return_p90"),
                         )
                     )
 
-                elif record['type'] == 'REWARD_COMP':
-                    db_id = episode_map.get(record['internal_ep'])
+                elif record["type"] == "REWARD_COMP":
+                    db_id = episode_map.get(record["internal_ep"])
                     if db_id:
                         buffer_rewards.append(
                             (
                                 db_id,
-                                record['step'],
-                                record['h_rew'],
-                                record['e_rew'],
-                                record['p_rew'],
-                                record['s_rew'],
-                                record['b_rew'],
-                                record['end_rew'],
-                                record['tot_rew'],
+                                record["step"],
+                                record["h_rew"],
+                                record["e_rew"],
+                                record["p_rew"],
+                                record["s_rew"],
+                                record["b_rew"],
+                                record["end_rew"],
+                                record["tot_rew"],
                             )
                         )
 
-                elif record['type'] == 'KILL':
+                elif record["type"] == "EVAL":
+                    buffer_evals.append(
+                        (
+                            record.get("episode_index"),
+                            record.get("num_episodes"),
+                            record.get("mean_reward"),
+                            record.get("std_reward"),
+                            record.get("min_reward"),
+                            record.get("max_reward"),
+                            int(bool(record.get("deterministic", False))),
+                        )
+                    )
+
+                elif record["type"] == "KILL":
                     flush_buffers()
                     running = False
 
                 current_time = time.time()
-                if len(buffer_steps) >= self.batch_size or (current_time - last_commit > self.timeout):
+                if (
+                    len(buffer_steps) >= self.batch_size
+                    or current_time - last_commit > self.timeout
+                ):
                     flush_buffers()
 
             except Empty:
                 continue
-            except Exception as e:
-                print(f"LOGGER ERROR: {e}")
+            except Exception as exc:
+                print(f"LOGGER ERROR: {exc}")
 
         flush_buffers()
         conn.close()

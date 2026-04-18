@@ -30,8 +30,10 @@ The repository is structured into several logical components:
 - **`PolicyNetwork`:** A custom neural network combining CNNs (for spatial features), Linear layers (for vector features), and `snntorch` Leaky Integrate-and-Fire (LIF) neurons for temporal processing. It utilizes a Spiking Self-Attention mechanism to process the multi-modal inputs.
 - **`PPO`:** The core implementation of Proximal Policy Optimization, adapted to handle the unique constraints of SNNs (like maintaining membrane potential state across rollouts) and multi-head discrete/continuous action spaces.
 
-### 4. Utilities & Analysis (`Utility/`, Root)
-- `results.py` / `dashboard.py`: Tools to parse the `training_logs.db`, detect plateaus, and visualize training metrics like KL divergence, clip fraction, and action entropy.
+### 4. Utilities & Analysis (`Utility/`, `tools/analysis/`, Root)
+- `tools/analysis/`: Home for the actual analysis implementations.
+- Root launchers like `results.py`, `dashboard.py`, `analyze_run.py`, and `analyze_pth.py` remain as thin wrappers so the old commands still work.
+- `results.py` / `dashboard.py`: Tools to parse `training_logs.db`, inspect `ppo_updates` / `eval_runs`, detect plateaus, and visualize training metrics like KL divergence, clip fraction, and action entropy.
 - `config.yaml`: Centralized configuration for hyperparameters, network dimensions, and training settings.
 
 ---
@@ -86,6 +88,15 @@ To launch the interactive Streamlit dashboard:
 streamlit run dashboard.py
 ```
 
+The root launchers stay in place for convenience, but the real implementations now live in `tools/analysis/`. The dashboard can inspect either an uploaded SQLite log or a local run directly from `models/<run_name>/`.
+
+For quick summaries and checkpoint inspection:
+
+```bash
+python analyze_run.py --mode db --db models/<run_name>/training_logs.db
+python analyze_pth.py models/<run_name>/checkpoint.pth --no-map
+```
+
 ---
 
 ## 🧪 Testing
@@ -103,4 +114,4 @@ pytest -v tests/
 We actively maintain our development roadmap and architectural debugging logs in the repository:
 - `NEXT_FIXES_PLAN.md`: Detailed Socratic reasoning for upcoming architectural fixes (e.g., SNN state mismatch, Entropy asymmetry).
 - `plan.md`: High-level roadmap for reward redesign, observation space cleanup, and loop reliability.
-- `PROJECT_LOGS.md` / `SESSION_LOG_*.md`: Historical context on the project's evolution.
+- `logs/PROJECT_LOGS.md` / `logs/SESSION_LOG_*.md`: Historical context on the project's evolution.

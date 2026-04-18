@@ -1,150 +1,233 @@
-import sys
-from unittest.mock import MagicMock
-import unittest
-import numpy as np
-import torch
-import types
-import os
+from collections import deque
+from types import SimpleNamespace
+from unittest.mock import patch
 
-# --- MOCK pysc2 library ---
-# To create a fast and isolated unit test, we mock the entire pysc2 library.
-# This allows us to test the agent's logic without needing to install or run
-# the full StarCraft II game environment, which is slow and resource-intensive.
-pysc2_mock = MagicMock()
+import PPO_CNN_run as run_mod
 
-# 1. Mock the BaseAgent class. Our agent inherits from this, so we provide a
-#    simple object with a mock `step` method to satisfy the super() call.
-pysc2_mock.agents.base_agent.BaseAgent = type('BaseAgent', (object,), {'step': lambda self, obs: None})
+from PPO_CNN.reward_function_2 import RewardFunctionV2
+from obs_space.obs_space_2 import get_friendly_health
 
-# 2. Mock the FunctionCall class and the specific FUNCTIONS used by the agent.
-#    The agent's `step` method returns an instance of `FunctionCall`. We also
-#    mock the `.id` attribute for the actions that are checked in the agent's
-#    `action_space`.
-pysc2_mock.lib.actions.FunctionCall = type('FunctionCall', (), {})
-pysc2_mock.lib.actions.FUNCTIONS.no_op.return_value = pysc2_mock.lib.actions.FunctionCall()
-pysc2_mock.lib.actions.FUNCTIONS.Attack_screen.id = 1
-pysc2_mock.lib.actions.FUNCTIONS.Attack_screen.return_value = pysc2_mock.lib.actions.FunctionCall()
 
-# 3. Inject the mock into sys.modules. Any subsequent import of pysc2 or its
-#    submodules will now use our mock instead of the real library.
-sys.modules['pysc2'] = pysc2_mock
-sys.modules['pysc2.agents'] = pysc2_mock.agents
-sys.modules['pysc2.agents.base_agent'] = pysc2_mock.agents.base_agent
-sys.modules['pysc2.lib'] = pysc2_mock.lib
-sys.modules['pysc2.lib.actions'] = pysc2_mock.lib.actions
-sys.modules['pysc2.lib.features'] = pysc2_mock.lib.features
+class DummyReward:
+    def calculate_reward(self, obs, _):
+        return 1.0
 
-# --- Imports ---
-# Tell Python to look in the parent directory (upstairs) for code
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    def get_last_reward_components(self):
+        return None
 
-# ... NOW you can import your agent
-from PPO_CNN_agent import DefeatRoaches
+    def reset(self):
+        return None
 
-# A mock class to simulate the pysc2 feature screen object (a NamedNumpyArray).
-# This allows the object to be treated as a numpy array while also having custom attributes.
-class MockFeatureScreen(np.ndarray):
-    def __new__(cls, input_array, player_relative=None):
-        obj = np.asarray(input_array).view(cls)
-        obj.player_relative = player_relative
-        return obj
 
-    def __array_finalize__(self, obj):
-        if obj is None: return
-        self.player_relative = getattr(obj, 'player_relative', None)
+class DummyPPO:
+    def __init__(self):
+        self.memory = []
+        self.final_next = None
 
-class TestTrainingLoop(unittest.TestCase):
+    def store_transition(self, *args, **kwargs):
+        self.memory.append(1)
 
-    def setUp(self):
-        """Set up the test environment before each test."""
-        self.spatial_dims = (27, 84, 84)
-        self.vector_dim = 100
-        self.action_dim = 3
+    def set_final_next(self, *args, **kwargs):
+        self.final_next = True
 
-        self.agent = DefeatRoaches(
-            spatial_input_shape=self.spatial_dims,
-            vector_input_dim=self.vector_dim,
-            action_dim=self.action_dim
+
+class DummyPolicy:
+    device = "cpu"
+
+
+class DummyAgent:
+    def __init__(self):
+        self.policy = DummyPolicy()
+        self.ppo = DummyPPO()
+        self.reward_function = DummyReward()
+        self._step = 0
+        self.update_calls = 0
+        self.snn_state = ("syn_next", "mem_next")
+
+    def reset(self):
+        self._step = 0
+        self.reward_function.reset()
+        self.snn_state = ("syn_next", "mem_next")
+
+    def peek_observation(self, obs):
+        return ("next_spatial", "next_vector")
+
+    def step(self, obs):
+        self._step += 1
+        self.snn_state = ("syn_next", "mem_next")
+        return (
+            "noop",
+            0,
+            0,
+            0,
+            ("syn", "mem"),
+            0.0,
+            0.0,
+            "spatial",
+            "vector",
+            True,
         )
 
-    def _create_mock_obs(self):
-        """
-        Creates a mock observation object that mimics the structure of the real
-        PySC2 observation, providing just enough data for the agent to run.
-        """
-        obs = types.SimpleNamespace()
-        obs.observation = types.SimpleNamespace()
+    def update_policy(self):
+        self.update_calls += 1
+        self.ppo.memory.clear()
+        return {
+            "mean_policy_loss": 0.0,
+            "mean_value_loss": 0.0,
+            "mean_entropy": 0.0,
+            "mean_kl": 0.0,
+            "clip_fraction": 0.0,
+            "explained_variance": 1.0,
+            "grad_norm": 0.0,
+            "lr": 1e-4,
+            "nonfinite_grad_steps": 0,
+            "skipped_optimizer_steps": 0,
+            "transitions_in_update": 4,
+            "return_mean": 0.0,
+            "return_std": 0.0,
+            "return_p10": 0.0,
+            "return_p50": 0.0,
+            "return_p90": 0.0,
+            "epochs_ran": 1,
+        }
 
-        # Mock spatial features using our custom ndarray subclass.
-        screen_data = np.random.randint(0, 256, size=self.spatial_dims, dtype=np.uint8)
-        player_relative_data = np.random.randint(
-            0, 5, size=(self.spatial_dims[1], self.spatial_dims[2]), dtype=np.uint8
+
+class DummyObs:
+    def __init__(self, max_steps, is_last=False):
+        self.max_steps = max_steps
+        self._last = is_last
+        self.reward = 0.0
+
+    def last(self):
+        return self._last
+
+
+class DummyEnv:
+    def __init__(self, episode_lengths):
+        self.episode_lengths = list(episode_lengths)
+        self.episode_idx = -1
+        self.step_in_episode = 0
+        self.current_max = None
+
+    def reset(self):
+        self.episode_idx += 1
+        self.current_max = self.episode_lengths[self.episode_idx]
+        self.step_in_episode = 0
+        return [DummyObs(self.current_max, is_last=False)]
+
+    def step(self, actions):
+        self.step_in_episode += 1
+        return [
+            DummyObs(
+                self.current_max,
+                is_last=self.step_in_episode >= self.current_max,
+            )
+        ]
+
+
+class DummyQueue:
+    def __init__(self):
+        self.items = []
+
+    def put(self, item):
+        self.items.append(item)
+
+
+def _make_reward_obs(friendly_health, enemy_health=100, enemy_count=1, last=False):
+    friendly = SimpleNamespace(
+        alliance=1,
+        health=friendly_health,
+        x=0,
+        y=0,
+        unit_type=48,
+        attack_range=5,
+    )
+    enemies = [
+        SimpleNamespace(
+            alliance=4,
+            health=enemy_health // enemy_count,
+            x=10,
+            y=10,
+            unit_type=110,
+            attack_range=5,
         )
-        obs.observation.feature_screen = MockFeatureScreen(screen_data, player_relative=player_relative_data)
+        for _ in range(enemy_count)
+    ]
+    return SimpleNamespace(
+        observation=SimpleNamespace(
+            player=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            feature_units=[friendly] + enemies,
+            score_cumulative=[0] * 13,
+        ),
+        reward=0,
+        last=lambda: last,
+    )
 
-        # Mock vector features and other required attributes.
-        obs.observation.player = [100, 100, 0, 0]
-        obs.observation.feature_units = []
-        obs.observation.score_cumulative = [0]
-        obs.observation.available_actions = {pysc2_mock.lib.actions.FUNCTIONS.Attack_screen.id}
 
-        # Mock the reward and the `last()` method.
-        obs.reward = 0
-        obs.last = lambda: False
+def test_get_friendly_health_reads_feature_units():
+    assert get_friendly_health(_make_reward_obs(100)) == 100.0
+    assert get_friendly_health(_make_reward_obs(90)) == 90.0
 
-        return obs
 
-    def test_endurance_training_loop(self):
-        """
-        Tests a simulated training loop to ensure that the agent can collect
-        data, perform a PPO update, and that the loss changes as expected.
-        """
-        try:
-            # 1. Data Collection Loop
-            for i in range(100):
-                mock_obs = self._create_mock_obs()
-                # Inject a 'Done' signal at step 50.
-                if i == 50:
-                    mock_obs.last = lambda: True
+def test_reward_health_penalty_fires_on_health_drop():
+    reward_fn = RewardFunctionV2()
 
-                _, action, log_prob, value, spatial_obs, vector_obs, reward = self.agent.step(mock_obs)
+    reward_fn.calculate_reward(_make_reward_obs(100), None)
+    total_reward = reward_fn.calculate_reward(_make_reward_obs(90), None)
+    components = reward_fn.get_last_reward_components()
 
-                # Convert scalars to tensors for storage.
-                action_tensor = torch.tensor(action, device=self.agent.policy.device)
-                log_prob_tensor = torch.tensor(log_prob, device=self.agent.policy.device)
-                reward_tensor = torch.tensor(reward, device=self.agent.policy.device)
-                value_tensor = torch.tensor(value, device=self.agent.policy.device)
-                done_tensor = torch.tensor(mock_obs.last(), device=self.agent.policy.device)
+    assert total_reward == -4.0
+    assert components["health_reward"] == -4.0
+    assert components["engagement_reward"] == 0.0
 
-                self.agent.ppo.store_transition(
-                    spatial_obs, vector_obs, action_tensor, log_prob_tensor,
-                    reward_tensor, value_tensor, done_tensor
-                )
 
-                # Check Detachment: Ensure stored tensors do not have a gradient function.
-                # This is crucial because these values should be treated as fixed data points
-                # for the PPO update, not as part of the computation graph.
-                stored_transition = self.agent.ppo.memory[-1]
-                self.assertIsNone(stored_transition['log_prob'].grad_fn)
-                self.assertIsNone(stored_transition['value'].grad_fn)
+def test_rollout_budget_triggers_update_on_transition_count(monkeypatch):
+    env = DummyEnv([2, 2])
+    agent = DummyAgent()
+    queue = DummyQueue()
 
-            # Assert that the 'Done' signal was correctly recorded.
-            self.assertTrue(self.agent.ppo.memory[50]['done'])
-            self.assertFalse(self.agent.ppo.memory[49]['done'])
-            self.assertFalse(self.agent.ppo.memory[51]['done'])
+    monkeypatch.setattr(run_mod.cfg.environment, "total_episodes", 2, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "steps_per_episode", 10, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "reward_window", 10, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "log_frequency", 999, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "eval_frequency", 0, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "eval_episodes", 0, raising=False)
+    monkeypatch.setattr(run_mod.cfg.hyperparameters, "rollout_steps", 4, raising=False)
+    monkeypatch.setattr(run_mod.cfg.hyperparameters, "reward_scale", 1.0, raising=False)
 
-            # 2. PPO Update
-            losses = self.agent.ppo.update_policy(batch_size=10, epochs=5)
+    with patch.object(
+        run_mod,
+        "load_checkpoint",
+        return_value=(0, float("-inf"), deque(maxlen=10)),
+    ):
+        best = run_mod.train_agent(env, agent, None, queue)
 
-            # 3. Verification
-            self.assertIsInstance(losses, list)
-            self.assertGreater(len(losses), 0, "Loss list should not be empty")
-            # In a real scenario, loss should decrease, but for this test, we just check that it changes.
-            self.assertNotEqual(losses[0], losses[-1], "Loss should change during training")
-            self.assertEqual(len(self.agent.ppo.memory), 0, "Memory buffer should be empty after update")
+    assert best == float("-inf")
+    assert agent.update_calls == 1
+    assert agent.ppo.memory == []
 
-        except Exception as e:
-            self.fail(f"Endurance test raised an exception unexpectedly: {e}")
 
-if __name__ == '__main__':
-    unittest.main()
+def test_train_agent_flushes_partial_rollout_at_shutdown(monkeypatch):
+    env = DummyEnv([2])
+    agent = DummyAgent()
+    queue = DummyQueue()
+
+    monkeypatch.setattr(run_mod.cfg.environment, "total_episodes", 1, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "steps_per_episode", 10, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "reward_window", 10, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "log_frequency", 999, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "eval_frequency", 0, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "eval_episodes", 0, raising=False)
+    monkeypatch.setattr(run_mod.cfg.hyperparameters, "rollout_steps", 4, raising=False)
+    monkeypatch.setattr(run_mod.cfg.hyperparameters, "reward_scale", 1.0, raising=False)
+
+    with patch.object(
+        run_mod,
+        "load_checkpoint",
+        return_value=(0, float("-inf"), deque(maxlen=10)),
+    ):
+        best = run_mod.train_agent(env, agent, None, queue)
+
+    assert best == float("-inf")
+    assert agent.update_calls == 1
+    assert agent.ppo.memory == []

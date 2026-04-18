@@ -3,7 +3,7 @@
 SNN + PPO on DefeatRoaches. Dense session covering architecture surgery,
 new diagnostics, a clean per-run directory layout, and the first round of
 post-collapse recovery knobs. This log lives separately from
-`PROJECT_LOGS.md` because that file predates most of the current code.
+`logs/PROJECT_LOGS.md` because that file predates most of the current code.
 
 ---
 

@@ -30,8 +30,11 @@ def main():
 
     payload = torch.load(best, map_location="cpu", weights_only=False)
     ep = payload.get("episode", "?")
-    avg = payload.get("avg_reward_at_save", payload.get("best_avg_reward", "?"))
-    print(f"Best checkpoint: {best} (episode={ep}, avg_reward={avg})")
+    metric = payload.get(
+        "eval_reward_at_save",
+        payload.get("avg_reward_at_save", payload.get("best_avg_reward", "?")),
+    )
+    print(f"Best checkpoint: {best} (episode={ep}, metric={metric})")
 
     if ckpt.exists():
         backup = ckpt.with_suffix(ckpt.suffix + ".before_resume")

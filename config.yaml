@@ -1,10 +1,15 @@
 hyperparameters:
-  lr: 1.0e-4            # initial LR
-  lr_min: 1.0e-5        # cosine-anneal floor
+  lr: 5.0e-5
+  lr_min: 5.0e-6
   gamma: 0.99
-  clip_eps: 0.10        # was 0.18 — tighter to prevent drift
+  clip_eps: 0.10
   batch_size: 128
-  epochs: 8             # was 20 — less overfit per rollout
+  epochs: 8
+  entropy_coef: 0.01
+  critic_loss_coef: 0.5
+  rollout_steps: 2048
+  target_kl: 0.03
+  reward_scale: 0.1
 
 environment:
   map_name: "DefeatRoaches"
@@ -12,16 +17,11 @@ environment:
   use_action_printer: false
   total_episodes: 10000
   steps_per_episode: 600
-  update_frequency: 10
   target_reward: 25.0
   reward_window: 200
-  # Per-run folder layout: all run artifacts (checkpoints + db) live in
-  # {models_dir}/{run_name}/ and all analyses in {analysis_dir}/{run_name}/.
-  # Leave run_name empty ("") to auto-generate a timestamped name.
   run_name: ""
   models_dir: "models"
   analysis_dir: "analysis_results"
-  # Filenames below are joined under {models_dir}/{run_name}/.
   checkpoint_path: "checkpoint.pth"
   best_checkpoint_path: "best_checkpoint.pth"
   best_min_episodes: 50
@@ -31,21 +31,17 @@ environment:
   observation_inspector_output_path: "analysis_results/observation_space.jsonl"
   observation_inspector_every_n_steps: 10
   observation_inspector_max_unit_samples: 5
+  eval_frequency: 50
+  eval_episodes: 5
 
 model:
   spatial_input_shape: [27, 84, 84]
   vector_input_dim: 100
-  action_dim: 3   # 0=attack, 1=move, 2=no-op
-  num_steps: 2
-
-  # Multi-temporal time constants (learnable — these are starting points)
-  snn_layer1_alpha: 0.5   # fast interneurons: rapid synaptic decay
-  snn_layer1_beta: 0.8
-  snn_layer2_alpha: 0.8   # medium pyramidal: slower synaptic filtering
-  snn_layer2_beta: 0.9
-  snn_layer3_beta: 0.95   # slow integrator: persistent working memory
-
-  # Spiking self-attention
+  action_dim: 3
+  screen_size: 84
+  num_steps: 1
+  token_snn_alpha: 0.8
+  token_snn_beta: 0.9
   attention_embed_dim: 64
   attention_pool_size: 7
-  attention_beta: 0.5     # Q/K/V spike encoder decay
+  attention_beta: 0.5
