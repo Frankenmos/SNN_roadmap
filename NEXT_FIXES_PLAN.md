@@ -274,9 +274,9 @@ Files to touch:
    fixes the drift, Fix 1 may be less urgent. (It won't be moot —
    stateful/stateless mismatch is still structurally wrong — but the
    priority order will be clearer.)
-2. **Fix 2 before Fix 1.** The entropy asymmetry is a 10-line change
-   with clean verification. Fix 1 is a larger refactor. Doing Fix 2
-   first also means when we evaluate Fix 1, the entropy signal in the
+2. **Fix 2 before Fix 1.** (IMPLEMENTED) The entropy asymmetry was a 10-line change
+   with clean verification, where we normalized by dividing by math.log(n).
+   Doing Fix 2 first also means when we evaluate Fix 1, the entropy signal in the
    logs is already trustworthy.
 3. **Fix 1** last among the structural pair.
 4. Then resume the deferred backlog (reward redesign, test + env-setup

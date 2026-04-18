@@ -264,8 +264,8 @@ Ordered by estimated impact.
 
 - **Stateful/stateless SNN mismatch** (HIGH). Most likely cause of the
   post-peak drift. Three possible fixes considered; decision deferred.
-- **Move-head entropy asymmetry** (HIGH). The ~10× entropy bonus for
-  moving vs attacking. Three possible fixes considered; deferred.
+- **Move-head entropy asymmetry** (HIGH) - **FIXED**. The ~10× entropy bonus for
+  moving vs attacking has been normalized using log(n) per head.
 - **No-op spam** (MED). Reward function rewards survival passively. Ties
   into the deferred reward-redesign carryover.
 - **Broken tests** (`tests/test_PPO.py`, `tests/test_agent.py`) — still
@@ -300,7 +300,7 @@ KL/clip-fraction/explained-variance/grad-norm/LR, cosine LR decay 1e-4
 
 1. Recovery verification — run training with the new knobs, interpret
    the new `ppo_updates` signals.
-2. Structural fixes: SNN stateful/stateless mismatch, entropy asymmetry.
+2. Structural fixes: SNN stateful/stateless mismatch.
 3. Reward redesign (no-op spam).
 4. Test + env-setup fixes.
 5. EventProp dive (paused mid-Socratic; three math forks queued).

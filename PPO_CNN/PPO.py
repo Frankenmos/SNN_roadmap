@@ -378,10 +378,16 @@ class PPO:
         # Value loss
         value_loss = self.critic_loss_coef * (returns - state_values).pow(2).mean()
 
+        import math
+        # Entropy bonus: Normalize each head's entropy by its log(n) so all heads contribute to [0, 1]
+        H_action_norm = action_dist.entropy() / math.log(3) # Action dim is 3
+        H_x_norm = move_x_dist.entropy() / math.log(84) # Screen size is 84
+        H_y_norm = move_y_dist.entropy() / math.log(84)
+
         # Entropy bonus: same masking — move-head entropy only when moving.
         entropy = (
-            action_dist.entropy()
-            + is_move * (move_x_dist.entropy() + move_y_dist.entropy())
+            H_action_norm
+            + is_move * (H_x_norm + H_y_norm)
         )
         entropy_loss = self.entropy_coef * entropy.mean()
 
