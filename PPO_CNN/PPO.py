@@ -380,9 +380,9 @@ class PPO:
 
         import math
         # Entropy bonus: Normalize each head's entropy by its log(n) so all heads contribute to [0, 1]
-        H_action_norm = action_dist.entropy() / math.log(3) # Action dim is 3
-        H_x_norm = move_x_dist.entropy() / math.log(84) # Screen size is 84
-        H_y_norm = move_y_dist.entropy() / math.log(84)
+        H_action_norm = action_dist.entropy() / math.log(action_logits.size(-1))
+        H_x_norm = move_x_dist.entropy() / math.log(move_x_logits.size(-1))
+        H_y_norm = move_y_dist.entropy() / math.log(move_y_logits.size(-1))
 
         # Entropy bonus: same masking — move-head entropy only when moving.
         entropy = (
