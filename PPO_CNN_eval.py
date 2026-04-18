@@ -34,6 +34,18 @@ flags.DEFINE_bool(
     True,
     "Use argmax actions instead of sampling. Disable with --nodeterministic.",
 )
+flags.DEFINE_bool(
+    "inspect",
+    False,
+    "Enable the ObservationInspectorWrapper to log obs schema/stats.",
+)
+flags.DEFINE_string(
+    "inspect_output",
+    None,
+    "Path for inspector JSONL. Defaults to "
+    "analysis_results/<run_name>/eval_observation_space.jsonl when "
+    "--run_name is known, otherwise analysis_results/eval_observation_space.jsonl.",
+)
 
 
 def _locate_checkpoint(explicit_path, run_name, prefer_best):
@@ -56,11 +68,33 @@ def _locate_checkpoint(explicit_path, run_name, prefer_best):
     return os.path.join(models_dir, name, filename)
 
 
-def play(checkpoint_path, episodes, visualize, deterministic):
+def play(
+    checkpoint_path,
+    episodes,
+    visualize,
+    deterministic,
+    inspect=False,
+    inspect_output_path=None,
+):
     env = create_env(
         map_name=cfg.environment.map_name,
         visualize=visualize,
         use_action_printer=False,
+        use_observation_inspector=inspect,
+        observation_inspector_output_path=(
+            inspect_output_path
+            or getattr(
+                cfg.environment,
+                "observation_inspector_output_path",
+                "analysis_results/eval_observation_space.jsonl",
+            )
+        ),
+        observation_inspector_every_n_steps=getattr(
+            cfg.environment, "observation_inspector_every_n_steps", 10,
+        ),
+        observation_inspector_max_unit_samples=getattr(
+            cfg.environment, "observation_inspector_max_unit_samples", 5,
+        ),
     )
     try:
         obs_ext = ObservationExtractor()
@@ -130,11 +164,26 @@ def main(argv):
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
+    inspect_output_path = FLAGS.inspect_output
+    if FLAGS.inspect and inspect_output_path is None:
+        analysis_dir = getattr(cfg.environment, "analysis_dir", "analysis_results")
+        name = FLAGS.run_name or getattr(cfg.environment, "run_name", "")
+        if name:
+            inspect_output_path = os.path.join(
+                analysis_dir, name, "eval_observation_space.jsonl",
+            )
+        else:
+            inspect_output_path = os.path.join(
+                analysis_dir, "eval_observation_space.jsonl",
+            )
+
     play(
         checkpoint_path=checkpoint_path,
         episodes=FLAGS.episodes,
         visualize=FLAGS.visualize,
         deterministic=FLAGS.deterministic,
+        inspect=FLAGS.inspect,
+        inspect_output_path=inspect_output_path,
     )
 
 

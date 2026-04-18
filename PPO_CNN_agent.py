@@ -131,7 +131,7 @@ class DefeatRoaches(base_agent.BaseAgent):
         )
 
         action_func = actions.FUNCTIONS.no_op()
-        learnable = True
+        learnable = False
 
         can_attack = (
             actions.FUNCTIONS.Attack_screen.id in obs.observation.available_actions
@@ -148,15 +148,17 @@ class DefeatRoaches(base_agent.BaseAgent):
                 target_position = self.action_space.nearest_enemy_unit_center(obs)
                 if target_position is not None:
                     action_func = self.action_space.attack(obs, target_position)
+                    learnable = True
             elif can_select_army:
                 action_func = actions.FUNCTIONS.select_army("select")
-                learnable = False
         elif action == 1:
             if can_move and self.selected_armies:
                 action_func = self.action_space.move(obs, move_x, move_y)
+                learnable = True
             elif can_select_army:
                 action_func = actions.FUNCTIONS.select_army("select")
-                learnable = False
+        elif action == 2:
+            learnable = True
 
         return (
             action_func,
