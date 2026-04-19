@@ -1,0 +1,76 @@
+import json
+from types import SimpleNamespace
+
+import numpy as np
+
+from MockedEnv.fake_pysc2 import build_mock_obs
+from Utility.policy_input_diagnostics_wrapper import PolicyInputDiagnosticsWrapper
+
+
+class DummyEnv:
+    def __init__(self, timesteps):
+        self.timesteps = list(timesteps)
+        self.idx = -1
+
+    def reset(self, *args, **kwargs):
+        self.idx = 0
+        return [self.timesteps[self.idx]]
+
+    def step(self, *args, **kwargs):
+        self.idx += 1
+        return [self.timesteps[self.idx]]
+
+
+def _to_timestep(obs):
+    return SimpleNamespace(observation=obs.observation)
+
+
+def test_policy_input_diagnostics_wrapper_logs_raw_and_batch_fields(
+    tmp_path,
+    fake_actions,
+):
+    reset_obs = build_mock_obs(
+        fake_actions=fake_actions,
+        multi_select=np.asarray([[48, 1, 45, 0, 0, 0, 100]], dtype=np.int32),
+        last_actions=np.asarray([fake_actions.select_army.id], dtype=np.int32),
+    )
+    step_obs = build_mock_obs(
+        fake_actions=fake_actions,
+        multi_select=np.asarray(
+            [
+                [48, 1, 45, 0, 0, 0, 100],
+                [48, 1, 30, 0, 0, 0, 100],
+            ],
+            dtype=np.int32,
+        ),
+        last_actions=np.asarray([fake_actions.Move_screen.id], dtype=np.int32),
+    )
+    env = DummyEnv([_to_timestep(reset_obs), _to_timestep(step_obs)])
+    output_path = tmp_path / "policy_input_diagnostics.jsonl"
+
+    wrapped = PolicyInputDiagnosticsWrapper(
+        env=env,
+        output_path=str(output_path),
+        log_every_n_steps=1,
+    )
+
+    wrapped.reset()
+    wrapped.step([fake_actions.no_op()])
+
+    records = [
+        json.loads(line)
+        for line in output_path.read_text(encoding="utf-8").splitlines()
+    ]
+
+    assert len(records) == 2
+    first = records[0]
+    second = records[1]
+
+    assert first["raw"]["available_action_ids"] == [1, 2, 3]
+    assert first["raw"]["last_action_ids"] == [3]
+    assert first["raw"]["selection_source"] == "multi_select"
+    assert first["batch"]["entity_count"] >= 2
+    assert first["batch"]["selection_count"] == 1
+    assert first["batch"]["meta_last_action_index"] > 0
+    assert second["batch"]["selection_count"] == 2
+    assert second["batch"]["meta_available_action_mask_active"] == 3

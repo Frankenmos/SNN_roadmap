@@ -130,6 +130,10 @@ class TrainingAnalyzer:
             "return_p10",
             "return_p50",
             "return_p90",
+            "entity_mask_utilization",
+            "entity_count_p50",
+            "entity_count_p99",
+            "selection_mask_utilization",
         ]
         present = [name for name in wanted if name in cols]
         if not present:
@@ -355,7 +359,7 @@ class TrainingAnalyzer:
             if "skipped_optimizer_steps" in tail.columns:
                 skipped_optimizer_steps = int(tail["skipped_optimizer_steps"].fillna(0).sum())
 
-            if mean_clip > 0.3:
+            if mean_clip > 0.3 and len(tail) >= 10:
                 flags.append((
                     "HIGH",
                     f"PPO clip fraction sustained high: {mean_clip:.2%} of "
@@ -456,8 +460,17 @@ class TrainingAnalyzer:
                         "epochs: 20 -> 8; update_frequency: 10 -> 20",
                     ))
 
-        # Catastrophic-forgetting-like action shifts
-        if not shift.empty and shift.max() > 0.3:
+        # Catastrophic-forgetting-like action shifts. Suppressed when bins
+        # collapse to single episodes (max_ep < 2*num_bins) — L1 between
+        # per-episode action histograms is noise, not drift.
+        ep_count = len(ep)
+        bins_are_meaningful = ep_count >= 2 * num_bins
+        if (
+            not shift.empty
+            and shift.max() > 0.3
+            and bins_are_meaningful
+            and ep_count >= 500
+        ):
             big = shift[shift > 0.3]
             flags.append((
                 "MED",
@@ -587,13 +600,35 @@ class TrainingAnalyzer:
                 lines.append(
                     f"    transitions/update  = {tail['transitions_in_update'].mean():.1f}"
                 )
+            if "entity_mask_utilization" in tail.columns:
+                lines.append(
+                    f"    entity_mask_util    = {tail['entity_mask_utilization'].mean():.3f}"
+                )
+            if "entity_count_p50" in tail.columns:
+                lines.append(
+                    f"    entity_count_p50    = {tail['entity_count_p50'].mean():.2f}"
+                )
+            if "entity_count_p99" in tail.columns:
+                lines.append(
+                    f"    entity_count_p99    = {tail['entity_count_p99'].mean():.2f}"
+                )
+            if "selection_mask_utilization" in tail.columns:
+                lines.append(
+                    f"    selection_mask_util = {tail['selection_mask_utilization'].mean():.3f}"
+                )
         if evals is None or evals.empty:
             lines.append("  eval_runs: none logged")
         else:
             latest_eval = evals.iloc[-1]
             lines.append(f"  eval_runs: {len(evals)} rows logged.")
+            extras = []
+            if "num_episodes" in evals.columns:
+                extras.append(f"n={int(latest_eval['num_episodes'])}")
+            if "deterministic" in evals.columns:
+                extras.append(f"det={bool(latest_eval['deterministic'])}")
+            tag = f" ({', '.join(extras)})" if extras else ""
             lines.append(
-                f"  latest eval @ ep {int(latest_eval['episode_index'])}: "
+                f"  latest eval @ ep {int(latest_eval['episode_index'])}{tag}: "
                 f"mean={float(latest_eval['mean_reward']):.2f}, "
                 f"std={float(latest_eval['std_reward']):.2f}"
             )

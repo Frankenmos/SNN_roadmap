@@ -116,13 +116,17 @@ class DefeatRoaches(base_agent.BaseAgent):
         super(DefeatRoaches, self).step(obs)
         self.steps += 1
 
-        spatial_observation, vector_observation = self.extractor.extract_observation(obs)
-
+        policy_input = self.extractor.extract_observation(
+            obs,
+            update_stats=not deterministic,
+        )
         pre_step_state = self.snn_state
-        action, move_x, move_y, log_prob, value, self.snn_state = self.ppo.select_action(
-            (spatial_observation, vector_observation),
-            state=pre_step_state,
-            deterministic=deterministic,
+        policy_input = policy_input.with_state(pre_step_state)
+        action, move_x, move_y, log_prob, value, self.snn_state = (
+            self.ppo.select_action(
+                policy_input,
+                deterministic=deterministic,
+            )
         )
 
         player_relative = obs.observation.feature_screen.player_relative
@@ -168,8 +172,7 @@ class DefeatRoaches(base_agent.BaseAgent):
             pre_step_state,
             float(log_prob),
             float(value),
-            spatial_observation,
-            vector_observation,
+            policy_input,
             learnable,
         )
 

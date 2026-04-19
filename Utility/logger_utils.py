@@ -81,6 +81,10 @@ def initialize_db(db_path):
                 return_p10 REAL,
                 return_p50 REAL,
                 return_p90 REAL,
+                entity_mask_utilization REAL,
+                entity_count_p50 REAL,
+                entity_count_p99 REAL,
+                selection_mask_utilization REAL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -112,6 +116,10 @@ def initialize_db(db_path):
         _safe_add_column(conn, "ppo_updates", "return_p10 REAL")
         _safe_add_column(conn, "ppo_updates", "return_p50 REAL")
         _safe_add_column(conn, "ppo_updates", "return_p90 REAL")
+        _safe_add_column(conn, "ppo_updates", "entity_mask_utilization REAL")
+        _safe_add_column(conn, "ppo_updates", "entity_count_p50 REAL")
+        _safe_add_column(conn, "ppo_updates", "entity_count_p99 REAL")
+        _safe_add_column(conn, "ppo_updates", "selection_mask_utilization REAL")
 
     return conn
 
@@ -161,8 +169,10 @@ class LogListener(multiprocessing.Process):
                     "clip_fraction, explained_variance, grad_norm, lr, "
                     "nonfinite_grad_steps, skipped_optimizer_steps, "
                     "transitions_in_update, return_mean, return_std, "
-                    "return_p10, return_p50, return_p90) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "return_p10, return_p50, return_p90, "
+                    "entity_mask_utilization, entity_count_p50, entity_count_p99, "
+                    "selection_mask_utilization) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     buffer_updates,
                 )
                 buffer_updates = []
@@ -240,6 +250,10 @@ class LogListener(multiprocessing.Process):
                             record.get("return_p10"),
                             record.get("return_p50"),
                             record.get("return_p90"),
+                            record.get("entity_mask_utilization"),
+                            record.get("entity_count_p50"),
+                            record.get("entity_count_p99"),
+                            record.get("selection_mask_utilization"),
                         )
                     )
 

@@ -4,6 +4,12 @@ import numpy as np
 import torch
 import torch.optim as optim
 
+from PPO_CNN.policy_input import (
+    MAX_ENTITY_TOKENS,
+    MAX_SELECTION_TOKENS,
+    PolicyInputBatch,
+)
+
 
 class PPO:
     def __init__(
@@ -18,13 +24,6 @@ class PPO:
         lr_min: float = 0.0,
         target_kl: float | None = None,
     ):
-        """
-        Proximal Policy Optimization with a screen-point action head.
-
-        total_updates is the estimated number of PPO updates expected
-        across the run and is used to size the cosine LR schedule.
-        """
-
         self.policy_net = policy_net
         self.device = policy_net.device
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
@@ -63,21 +62,13 @@ class PPO:
         }
 
     def select_action(self, observations, state=None, deterministic: bool = False):
-        spatial_obs, vector_obs = observations
-
-        if isinstance(spatial_obs, torch.Tensor):
-            spatial_tensor = spatial_obs.to(self.device).unsqueeze(0)
-        else:
-            spatial_tensor = torch.tensor(
-                spatial_obs, dtype=torch.float32, device=self.device,
-            ).unsqueeze(0)
-
-        if isinstance(vector_obs, torch.Tensor):
-            vector_tensor = vector_obs.to(self.device).unsqueeze(0)
-        else:
-            vector_tensor = torch.tensor(
-                vector_obs, dtype=torch.float32, device=self.device,
-            ).unsqueeze(0)
+        if not isinstance(observations, PolicyInputBatch):
+            raise TypeError(
+                f"PPO.select_action expects PolicyInputBatch, got {type(observations)!r}",
+            )
+        if state is not None:
+            observations = observations.with_state(state)
+        batch = observations.to(device=self.device, dtype=torch.float32)
 
         with torch.no_grad(), torch.amp.autocast(
             "cuda",
@@ -85,7 +76,7 @@ class PPO:
             enabled=self.policy_net.use_amp,
         ):
             action_logits, move_x_logits, move_y_logits, state_value, next_state = (
-                self.policy_net(spatial_tensor, vector_tensor, state=state)
+                self.policy_net(batch)
             )
 
             action_dist = torch.distributions.Categorical(
@@ -126,28 +117,8 @@ class PPO:
             next_state,
         )
 
-    @staticmethod
-    def _state_to_cpu(snn_state):
-        syn, mem = snn_state
-        return (syn.detach().to("cpu"), mem.detach().to("cpu"))
-
-    @staticmethod
-    def _state_to_device(snn_state, device):
-        syn, mem = snn_state
-        return (syn.to(device), mem.to(device))
-
-    @staticmethod
-    def _tensor_to_cpu(tensor_like):
-        if isinstance(tensor_like, torch.Tensor):
-            return tensor_like.detach().to("cpu")
-        return torch.tensor(tensor_like, dtype=torch.float32)
-
-    def set_final_next(self, spatial_obs, vector_obs, snn_state):
-        self.final_next = {
-            "spatial_obs": self._tensor_to_cpu(spatial_obs),
-            "vector_obs": self._tensor_to_cpu(vector_obs),
-            "snn_state": self._state_to_cpu(snn_state),
-        }
+    def set_final_next(self, observation_batch: PolicyInputBatch):
+        self.final_next = observation_batch.detach().to(device="cpu")
 
     def _clear_rollout_cache(self):
         self.memory = []
@@ -155,12 +126,10 @@ class PPO:
 
     def store_transition(
         self,
-        spatial_obs,
-        vector_obs,
+        observation_batch: PolicyInputBatch,
         action: torch.Tensor,
         move_x: torch.Tensor,
         move_y: torch.Tensor,
-        snn_state,
         log_prob: torch.Tensor,
         reward: torch.Tensor,
         value: torch.Tensor,
@@ -168,12 +137,10 @@ class PPO:
     ):
         self.memory.append(
             {
-                "spatial_obs": spatial_obs,
-                "vector_obs": vector_obs,
+                "observation_batch": observation_batch.detach().to(device="cpu"),
                 "action": action.detach(),
                 "move_x": move_x.detach(),
                 "move_y": move_y.detach(),
-                "snn_state": self._state_to_cpu(snn_state),
                 "log_prob": log_prob.detach(),
                 "reward": reward.detach(),
                 "value": value.detach(),
@@ -185,26 +152,9 @@ class PPO:
         if not self.memory:
             return [], None
 
-        spatial_list = []
-        vector_list = []
-        for transition in self.memory:
-            s = transition["spatial_obs"]
-            v = transition["vector_obs"]
-            if isinstance(s, torch.Tensor):
-                spatial_list.append(s.to(self.device))
-            else:
-                spatial_list.append(
-                    torch.tensor(s, dtype=torch.float32, device=self.device),
-                )
-            if isinstance(v, torch.Tensor):
-                vector_list.append(v.to(self.device))
-            else:
-                vector_list.append(
-                    torch.tensor(v, dtype=torch.float32, device=self.device),
-                )
-
-        spatial_obs = torch.stack(spatial_list, dim=0)
-        vector_obs = torch.stack(vector_list, dim=0)
+        rollout_batch = PolicyInputBatch.stack(
+            [transition["observation_batch"] for transition in self.memory],
+        ).to(device=self.device, dtype=torch.float32)
         actions = torch.stack(
             [transition["action"].to(self.device) for transition in self.memory],
         )
@@ -227,17 +177,6 @@ class PPO:
             [transition["done"].to(self.device) for transition in self.memory],
         )
 
-        state_parts = [transition["snn_state"] for transition in self.memory]
-        stacked_state = (
-            torch.cat([part[0] for part in state_parts], dim=0),
-            torch.cat([part[1] for part in state_parts], dim=0),
-        )
-        state_bytes = sum(t.numel() * t.element_size() for t in stacked_state)
-        print(
-            f"[PPO] stacked SNN state: {state_bytes / 1e9:.4f} GB on CPU "
-            f"for {len(self.memory)} transitions",
-        )
-
         with torch.no_grad():
             if dones[-1].item() == 1.0:
                 last_next_value = torch.zeros((), device=self.device)
@@ -247,14 +186,11 @@ class PPO:
                         "Non-terminal rollout tail is missing bootstrap data. "
                         "Call PPO.set_final_next() before update_policy().",
                     )
-                last_spatial = self.final_next["spatial_obs"].to(self.device).unsqueeze(0)
-                last_vector = self.final_next["vector_obs"].to(self.device).unsqueeze(0)
-                last_state = self._state_to_device(
-                    self.final_next["snn_state"], self.device,
+                last_batch = self.final_next.to(
+                    device=self.device,
+                    dtype=torch.float32,
                 )
-                _, _, _, last_next_value, _ = self.policy_net(
-                    last_spatial, last_vector, state=last_state,
-                )
+                _, _, _, last_next_value, _ = self.policy_net(last_batch)
                 last_next_value = last_next_value.squeeze(-1)
 
         advantages = self._compute_advantages(
@@ -265,7 +201,7 @@ class PPO:
             advantages - advantages.mean()
         ) / (advantages.std(unbiased=False) + 1e-8)
 
-        rollout_size = spatial_obs.size(0)
+        rollout_size = rollout_batch.batch_size
         losses = []
         acc_policy = []
         acc_value = []
@@ -287,8 +223,7 @@ class PPO:
             for start in range(0, rollout_size, batch_size):
                 idx = perm[start : start + batch_size]
 
-                batch_spatial = spatial_obs[idx]
-                batch_vector = vector_obs[idx]
+                batch_observation = rollout_batch.index_select(idx)
                 batch_actions = actions[idx]
                 batch_move_x = move_xs[idx]
                 batch_move_y = move_ys[idx]
@@ -296,22 +231,13 @@ class PPO:
                 batch_adv = advantages[idx]
                 batch_returns = returns[idx]
 
-                idx_cpu = idx.to("cpu")
-                syn_s, mem_s = stacked_state
-                batch_state = (
-                    syn_s[idx_cpu].to(self.device),
-                    mem_s[idx_cpu].to(self.device),
-                )
-
                 with torch.amp.autocast(
                     "cuda",
                     dtype=self.policy_net.amp_dtype,
                     enabled=self.policy_net.use_amp,
                 ):
                     action_logits, move_x_logits, move_y_logits, state_values, _ = (
-                        self.policy_net(
-                            batch_spatial, batch_vector, state=batch_state,
-                        )
+                        self.policy_net(batch_observation)
                     )
                     state_values = state_values.squeeze(-1)
                     policy_loss, value_loss, entropy_loss, diag = (
@@ -375,6 +301,8 @@ class PPO:
             )
 
         returns_cpu = returns.detach().to("cpu").float()
+        entity_counts = rollout_batch.entity_mask.sum(dim=1).to("cpu").float()
+        selection_counts = rollout_batch.selection_mask.sum(dim=1).to("cpu").float()
         stats = {
             "mean_policy_loss": float(np.mean(acc_policy)),
             "mean_value_loss": float(np.mean(acc_value)),
@@ -392,6 +320,14 @@ class PPO:
             "return_p10": float(torch.quantile(returns_cpu, 0.10).item()),
             "return_p50": float(torch.quantile(returns_cpu, 0.50).item()),
             "return_p90": float(torch.quantile(returns_cpu, 0.90).item()),
+            "entity_mask_utilization": float(
+                (entity_counts / MAX_ENTITY_TOKENS).mean().item(),
+            ),
+            "entity_count_p50": float(torch.quantile(entity_counts, 0.50).item()),
+            "entity_count_p99": float(torch.quantile(entity_counts, 0.99).item()),
+            "selection_mask_utilization": float(
+                (selection_counts / MAX_SELECTION_TOKENS).mean().item(),
+            ),
             "epochs_ran": int(epochs_ran),
         }
 
