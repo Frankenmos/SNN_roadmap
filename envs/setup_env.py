@@ -2,6 +2,7 @@ from pysc2.env import sc2_env
 from pysc2.lib import features, actions
 from Utility.available_actions_wrapper import AvailableActionsPrinter  # Ensure correct import
 from Utility.observation_inspector_wrapper import ObservationInspectorWrapper
+from Utility.policy_input_diagnostics_wrapper import PolicyInputDiagnosticsWrapper
 
 def create_env(
     map_name="DefeatZerglingsAndBanelings",
@@ -11,6 +12,11 @@ def create_env(
     observation_inspector_output_path="analysis_results/observation_space.jsonl",
     observation_inspector_every_n_steps=10,
     observation_inspector_max_unit_samples=5,
+    use_policy_input_diagnostics=False,
+    policy_input_diagnostics_output_path="analysis_results/policy_input_diagnostics.jsonl",
+    policy_input_diagnostics_every_n_steps=1,
+    policy_input_diagnostics_max_entity_samples=3,
+    policy_input_diagnostics_max_selection_samples=3,
 ):
     """Create and return a PySC2 environment, optionally with wrappers."""
     env = sc2_env.SC2Env(
@@ -37,6 +43,14 @@ def create_env(
             output_path=observation_inspector_output_path,
             log_every_n_steps=observation_inspector_every_n_steps,
             max_unit_samples=observation_inspector_max_unit_samples,
+        )
+    if use_policy_input_diagnostics:
+        env = PolicyInputDiagnosticsWrapper(
+            env=env,
+            output_path=policy_input_diagnostics_output_path,
+            log_every_n_steps=policy_input_diagnostics_every_n_steps,
+            max_entity_samples=policy_input_diagnostics_max_entity_samples,
+            max_selection_samples=policy_input_diagnostics_max_selection_samples,
         )
     return env
 

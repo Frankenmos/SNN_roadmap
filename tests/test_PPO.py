@@ -2,7 +2,12 @@ import pytest
 import torch
 import torch.nn as nn
 
+from MockedEnv.policy_batch import make_policy_batch
 from PPO_CNN.PPO import PPO
+from PPO_CNN.policy_input import (
+    META_VECTOR_DIM,
+    SPATIAL_OBS_SHAPE,
+)
 from PPO_CNN.policy_network import PolicyNetwork
 
 
@@ -24,9 +29,9 @@ class FakeNet(nn.Module):
             return None
         return logits.expand(batch_size, -1).clone()
 
-    def forward(self, spatial_obs, vector_obs, state=None):
-        batch_size = spatial_obs.shape[0]
-        base = self.fc(vector_obs[:, :4].float()).sum(dim=-1)
+    def forward(self, batch):
+        batch_size = batch.batch_size
+        base = self.fc(batch.meta_vec[:, :4].float()).sum(dim=-1)
 
         action_logits = self._repeat_logits(self._action_logits, batch_size)
         if action_logits is None:
@@ -44,7 +49,7 @@ class FakeNet(nn.Module):
         move_y_logits = move_y_logits.to(self.device) + base.unsqueeze(-1) * 0
 
         state_value = base * 0.1
-        return action_logits, move_x_logits, move_y_logits, state_value, state
+        return action_logits, move_x_logits, move_y_logits, state_value, batch.state_in
 
 
 def test_scheduler_decays_lr():
@@ -73,10 +78,9 @@ def test_select_action_deterministic_uses_argmax_for_move_heads():
     move_y_logits = torch.tensor([[-0.8, 0.0, 0.2, -0.4, 0.1, 0.3, 0.9, 1.7]])
     ppo = PPO(FakeNet(action_logits, move_x_logits, move_y_logits), lr=1e-4)
 
-    spatial_obs = torch.randn(3, 8, 8)
-    vector_obs = torch.randn(8)
+    batch = make_policy_batch(batch_size=1, meta_dim=8)
     action, move_x, move_y, log_prob, value, next_state = ppo.select_action(
-        (spatial_obs, vector_obs), deterministic=True,
+        batch, deterministic=True,
     )
 
     expected_log_prob = (
@@ -149,8 +153,8 @@ def test_calculate_losses_reports_normalized_entropy():
 def test_update_policy_replays_state_and_clears_memory():
     torch.manual_seed(0)
     net = PolicyNetwork(
-        (3, 16, 16),
-        vector_input_dim=8,
+        SPATIAL_OBS_SHAPE,
+        vector_input_dim=META_VECTOR_DIM,
         action_dim=3,
         num_steps=2,
         screen_size=16,
@@ -168,19 +172,19 @@ def test_update_policy_replays_state_and_clears_memory():
 
     for step in range(rollout_steps):
         state = net.init_concrete_state(batch_size=1, device=torch.device("cpu"))
-        spatial = torch.randn(3, 16, 16)
-        vector = torch.randn(8)
+        batch = make_policy_batch(
+            batch_size=1,
+            meta_dim=META_VECTOR_DIM,
+            with_state=True,
+            state_shape=state[0].shape,
+        )
         with torch.no_grad():
-            _, _, _, state_value, _ = net(
-                spatial.unsqueeze(0), vector.unsqueeze(0), state=state,
-            )
+            _, _, _, state_value, _ = net(batch.with_state(state))
         ppo.store_transition(
-            spatial,
-            vector,
+            batch.with_state(state),
             torch.tensor(1),
             torch.tensor(5),
             torch.tensor(10),
-            state,
             torch.tensor(-1.0),
             torch.tensor(1.0),
             torch.tensor(state_value.item()),
@@ -201,6 +205,10 @@ def test_update_policy_replays_state_and_clears_memory():
     assert stats["epochs_ran"] == 1
     assert stats["nonfinite_grad_steps"] == 0
     assert stats["skipped_optimizer_steps"] == 0
+    assert 0.0 <= stats["entity_mask_utilization"] <= 1.0
+    assert 0.0 <= stats["selection_mask_utilization"] <= 1.0
+    assert stats["entity_count_p50"] >= 0.0
+    assert stats["entity_count_p99"] >= stats["entity_count_p50"]
     assert changed_params > 0
     assert ppo.memory == []
     assert ppo.final_next is None

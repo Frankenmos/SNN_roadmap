@@ -2,8 +2,14 @@ from collections import deque
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import torch
+
 import PPO_CNN_run as run_mod
 
+from MockedEnv.policy_batch import make_dummy_state, make_policy_batch
+from PPO_CNN.policy_input import (
+    META_VECTOR_DIM,
+)
 from PPO_CNN.reward_function_2 import RewardFunctionV2
 from obs_space.obs_space_2 import get_friendly_health
 
@@ -35,6 +41,15 @@ class DummyPolicy:
     device = "cpu"
 
 
+def _dummy_state():
+    return make_dummy_state()
+
+
+def _dummy_batch():
+    batch = make_policy_batch(batch_size=1, meta_dim=META_VECTOR_DIM, zeros=True)
+    return batch.with_state(None)
+
+
 class DummyAgent:
     def __init__(self):
         self.policy = DummyPolicy()
@@ -42,29 +57,28 @@ class DummyAgent:
         self.reward_function = DummyReward()
         self._step = 0
         self.update_calls = 0
-        self.snn_state = ("syn_next", "mem_next")
+        self.snn_state = _dummy_state()
 
     def reset(self):
         self._step = 0
         self.reward_function.reset()
-        self.snn_state = ("syn_next", "mem_next")
+        self.snn_state = _dummy_state()
 
     def peek_observation(self, obs):
-        return ("next_spatial", "next_vector")
+        return _dummy_batch()
 
     def step(self, obs):
         self._step += 1
-        self.snn_state = ("syn_next", "mem_next")
+        self.snn_state = _dummy_state()
         return (
             "noop",
             0,
             0,
             0,
-            ("syn", "mem"),
+            _dummy_state(),
             0.0,
             0.0,
-            "spatial",
-            "vector",
+            _dummy_batch().with_state(_dummy_state()),
             True,
         )
 

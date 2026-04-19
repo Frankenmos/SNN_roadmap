@@ -4,6 +4,200 @@ import torch.nn.functional as F
 import snntorch as snn
 from snntorch import surrogate
 
+from PPO_CNN.policy_input import (
+    CURATED_FEATURE_UNIT_FIELDS,
+    MAX_ENTITY_TOKENS,
+    MAX_SELECTION_TOKENS,
+    META_AVAILABLE_ACTION_DIM,
+    META_LAST_ACTION_INDEX_DIM,
+    META_PLAYER_FEATURE_DIM,
+    PolicyInputBatch,
+    SELECTION_FEATURE_DIM,
+    SELECTION_UNIT_TYPE_INDEX,
+    TOKEN_TYPE_GROUPS,
+    UNIT_TYPE_FEATURE_INDEX,
+)
+
+
+class EntityEncoder(nn.Module):
+    def __init__(
+        self,
+        feature_dim: int,
+        embed_dim: int,
+        unit_type_vocab_size: int = 4096,
+        unit_type_embed_dim: int | None = None,
+    ):
+        super().__init__()
+        if feature_dim <= UNIT_TYPE_FEATURE_INDEX:
+            raise ValueError(
+                f"feature_dim must include unit_type, got {feature_dim}",
+            )
+
+        self.feature_dim = int(feature_dim)
+        self.embed_dim = int(embed_dim)
+        self.unit_type_index = int(UNIT_TYPE_FEATURE_INDEX)
+        self.unit_type_embed_dim = int(
+            unit_type_embed_dim or max(8, self.embed_dim // 4),
+        )
+        continuous_dim = self.feature_dim - 1 + self.unit_type_embed_dim
+
+        self.unit_type_embedding = nn.Embedding(
+            int(unit_type_vocab_size),
+            self.unit_type_embed_dim,
+            padding_idx=0,
+        )
+        self.pre_norm = nn.LayerNorm(continuous_dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(continuous_dim, self.embed_dim),
+            nn.ReLU(),
+            nn.Linear(self.embed_dim, self.embed_dim),
+        )
+
+    def forward(
+        self,
+        entity_features: torch.Tensor,
+        entity_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        unit_type_ids = entity_features[..., self.unit_type_index].round().long()
+        unit_type_ids = unit_type_ids.clamp(
+            0, self.unit_type_embedding.num_embeddings - 1,
+        )
+        unit_type_emb = self.unit_type_embedding(unit_type_ids)
+        continuous = torch.cat(
+            (
+                entity_features[..., : self.unit_type_index],
+                entity_features[..., self.unit_type_index + 1 :],
+            ),
+            dim=-1,
+        )
+        encoded = torch.cat((continuous, unit_type_emb), dim=-1)
+        encoded = self.mlp(self.pre_norm(encoded))
+
+        mask = entity_mask.unsqueeze(-1).to(dtype=encoded.dtype)
+        return encoded * mask
+
+
+class SelectionEncoder(nn.Module):
+    def __init__(
+        self,
+        feature_dim: int,
+        embed_dim: int,
+        unit_type_vocab_size: int = 4096,
+        unit_type_embed_dim: int | None = None,
+    ):
+        super().__init__()
+        if feature_dim <= SELECTION_UNIT_TYPE_INDEX:
+            raise ValueError(
+                f"feature_dim must include unit_type, got {feature_dim}",
+            )
+
+        self.feature_dim = int(feature_dim)
+        self.embed_dim = int(embed_dim)
+        self.unit_type_index = int(SELECTION_UNIT_TYPE_INDEX)
+        self.unit_type_embed_dim = int(
+            unit_type_embed_dim or max(8, self.embed_dim // 4),
+        )
+        continuous_dim = self.feature_dim - 1 + self.unit_type_embed_dim
+
+        self.unit_type_embedding = nn.Embedding(
+            int(unit_type_vocab_size),
+            self.unit_type_embed_dim,
+            padding_idx=0,
+        )
+        self.pre_norm = nn.LayerNorm(continuous_dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(continuous_dim, self.embed_dim),
+            nn.ReLU(),
+            nn.Linear(self.embed_dim, self.embed_dim),
+        )
+
+    def forward(
+        self,
+        selection_features: torch.Tensor,
+        selection_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        unit_type_ids = selection_features[..., self.unit_type_index].round().long()
+        unit_type_ids = unit_type_ids.clamp(
+            0, self.unit_type_embedding.num_embeddings - 1,
+        )
+        unit_type_emb = self.unit_type_embedding(unit_type_ids)
+        continuous = torch.cat(
+            (
+                selection_features[..., : self.unit_type_index],
+                selection_features[..., self.unit_type_index + 1 :],
+            ),
+            dim=-1,
+        )
+        encoded = torch.cat((continuous, unit_type_emb), dim=-1)
+        encoded = self.mlp(self.pre_norm(encoded))
+
+        mask = selection_mask.unsqueeze(-1).to(dtype=encoded.dtype)
+        return encoded * mask
+
+
+class MetaEncoder(nn.Module):
+    def __init__(
+        self,
+        meta_input_dim: int,
+        embed_dim: int,
+        player_dim: int = META_PLAYER_FEATURE_DIM,
+        available_action_dim: int = META_AVAILABLE_ACTION_DIM,
+        last_action_embed_dim: int | None = None,
+        last_action_vocab_size: int = META_AVAILABLE_ACTION_DIM + 2,
+    ):
+        super().__init__()
+        if meta_input_dim <= 0:
+            raise ValueError("meta_input_dim must be positive")
+
+        self.meta_input_dim = int(meta_input_dim)
+        self.embed_dim = int(embed_dim)
+        self.player_dim = int(player_dim)
+        self.available_action_dim = int(available_action_dim)
+        self.last_action_offset = self.player_dim + self.available_action_dim
+        self.use_structured_meta = (
+            self.meta_input_dim
+            >= self.player_dim + self.available_action_dim + META_LAST_ACTION_INDEX_DIM
+        )
+        self.last_action_embed_dim = int(
+            last_action_embed_dim or max(8, self.embed_dim // 4),
+        )
+        fused_input_dim = (
+            self.player_dim
+            + self.available_action_dim
+            + self.last_action_embed_dim
+            if self.use_structured_meta
+            else self.meta_input_dim
+        )
+
+        self.last_action_embedding = nn.Embedding(
+            int(last_action_vocab_size),
+            self.last_action_embed_dim,
+        )
+        self.pre_norm = nn.LayerNorm(fused_input_dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(fused_input_dim, self.embed_dim),
+            nn.ReLU(),
+            nn.Linear(self.embed_dim, self.embed_dim),
+        )
+
+    def forward(self, meta_vec: torch.Tensor) -> torch.Tensor:
+        if self.use_structured_meta:
+            player = meta_vec[..., : self.player_dim]
+            available_actions = meta_vec[
+                ...,
+                self.player_dim : self.player_dim + self.available_action_dim
+            ]
+            last_action_ids = meta_vec[..., self.last_action_offset].round().long()
+            last_action_ids = last_action_ids.clamp(
+                0, self.last_action_embedding.num_embeddings - 1,
+            )
+            last_action_emb = self.last_action_embedding(last_action_ids)
+            fused = torch.cat((player, available_actions, last_action_emb), dim=-1)
+        else:
+            fused = meta_vec
+
+        return self.mlp(self.pre_norm(fused)).unsqueeze(1)
+
 
 class SpikingSelfAttention(nn.Module):
     """
@@ -38,8 +232,14 @@ class SpikingSelfAttention(nn.Module):
             beta=beta_qkv, spike_grad=spike_grad, learn_beta=True,
         )
 
-    def forward(self, tokens):
+    def forward(self, tokens, token_mask: torch.Tensor | None = None):
         tokens_normed = self.pre_norm(tokens)
+        residual = tokens
+        query_mask = None
+        if token_mask is not None:
+            query_mask = token_mask.unsqueeze(-1).to(dtype=tokens.dtype)
+            tokens_normed = tokens_normed * query_mask
+            residual = residual * query_mask
 
         q_raw = self.W_q(tokens_normed)
         k_raw = self.W_k(tokens_normed)
@@ -53,9 +253,21 @@ class SpikingSelfAttention(nn.Module):
         spike_k, _ = self.lif_k(k_raw, mem_k)
         spike_v, _ = self.lif_v(v_raw, mem_v)
 
-        attn = torch.bmm(spike_q, spike_k.transpose(1, 2)) * self.scale
+        if query_mask is not None:
+            spike_q = spike_q * query_mask
+            spike_k = spike_k * query_mask
+            spike_v = spike_v * query_mask
+
+        attn_logits = torch.bmm(spike_q, spike_k.transpose(1, 2)) * self.scale
+        attn_logits = attn_logits.float()
+        if token_mask is not None:
+            key_mask = token_mask.unsqueeze(1)
+            attn_logits = attn_logits.masked_fill(~key_mask, -1.0e4)
+        attn = torch.softmax(attn_logits, dim=-1).to(dtype=tokens.dtype)
         out = torch.bmm(attn, spike_v)
-        return out + tokens
+        if query_mask is not None:
+            out = out * query_mask
+        return out + residual
 
 
 class TokenTemporalSNN(nn.Module):
@@ -124,7 +336,11 @@ class PolicyNetwork(nn.Module):
         self.screen_size = int(screen_size)
         self._pool_size = max(1, int(attention_pool_size))
         self._embed_dim = max(1, int(attention_embed_dim))
-        self._num_tokens = self._pool_size * self._pool_size
+        self._spatial_tokens = self._pool_size * self._pool_size
+        self._num_tokens = (
+            self._spatial_tokens + MAX_ENTITY_TOKENS + MAX_SELECTION_TOKENS + 1
+        )
+        self._meta_input_dim = int(vector_input_dim)
         self._config = {
             "num_steps": self.num_steps,
             "screen_size": self.screen_size,
@@ -133,6 +349,7 @@ class PolicyNetwork(nn.Module):
             "attention_embed_dim": self._embed_dim,
             "attention_pool_size": self._pool_size,
             "attention_beta": float(attention_beta),
+            "meta_input_dim": self._meta_input_dim,
         }
         spike_grad = surrogate.fast_sigmoid()
 
@@ -147,6 +364,22 @@ class PolicyNetwork(nn.Module):
         self.token_pool = nn.AdaptiveAvgPool2d(
             (self._pool_size, self._pool_size),
         )
+        self.entity_encoder = EntityEncoder(
+            feature_dim=len(CURATED_FEATURE_UNIT_FIELDS),
+            embed_dim=self._embed_dim,
+        )
+        self.selection_encoder = SelectionEncoder(
+            feature_dim=SELECTION_FEATURE_DIM,
+            embed_dim=self._embed_dim,
+        )
+        self.meta_encoder = MetaEncoder(
+            meta_input_dim=self._meta_input_dim,
+            embed_dim=self._embed_dim,
+        )
+        self.token_type_embedding = nn.Embedding(
+            TOKEN_TYPE_GROUPS,
+            self._embed_dim,
+        )
         self.attention = SpikingSelfAttention(
             embed_dim=self._embed_dim,
             beta_qkv=attention_beta,
@@ -158,7 +391,7 @@ class PolicyNetwork(nn.Module):
             spike_grad=spike_grad,
         )
 
-        fc_input_dim = self._num_tokens * self._embed_dim + vector_input_dim
+        fc_input_dim = self._num_tokens * self._embed_dim
         self.combined_norm = nn.LayerNorm(fc_input_dim)
         self.shared_fc1 = nn.Linear(fc_input_dim, 128)
         self.shared_fc2 = nn.Linear(128, 64)
@@ -178,6 +411,7 @@ class PolicyNetwork(nn.Module):
         return {
             **self._config,
             "num_tokens": self._num_tokens,
+            "spatial_tokens": self._spatial_tokens,
             "amp_enabled": bool(self.use_amp),
             "amp_dtype": str(self.amp_dtype),
             "device": str(self.device),
@@ -192,15 +426,34 @@ class PolicyNetwork(nn.Module):
             batch_size, self._num_tokens, self._embed_dim, device, dtype,
         )
 
-    def forward(self, spatial_input, vector_input, state=None):
-        if state is None:
+    def _add_token_type(
+        self,
+        tokens: torch.Tensor,
+        token_type_index: int,
+        token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        type_emb = self.token_type_embedding.weight[token_type_index].view(1, 1, -1)
+        typed = tokens + type_emb.to(dtype=tokens.dtype, device=tokens.device)
+        if token_mask is not None:
+            typed = typed * token_mask.unsqueeze(-1).to(dtype=tokens.dtype)
+        return typed
+
+    def forward(self, batch: PolicyInputBatch):
+        if not isinstance(batch, PolicyInputBatch):
+            raise TypeError(
+                f"PolicyNetwork.forward expects PolicyInputBatch, got {type(batch)!r}",
+            )
+
+        spatial_input = batch.spatial_obs
+        token_state = batch.state_in
+        if token_state is None:
             syn_tok, mem_tok = self.init_concrete_state(
                 batch_size=spatial_input.size(0),
                 device=spatial_input.device,
                 dtype=spatial_input.dtype,
             )
         else:
-            syn_tok, mem_tok = state
+            syn_tok, mem_tok = token_state
 
         x = F.relu(self.conv1(spatial_input))
         x = F.relu(self.conv2(x))
@@ -208,19 +461,60 @@ class PolicyNetwork(nn.Module):
         x = F.relu(self.conv3(x))
         x = self.pool(x)
 
-        tokens = self.token_pool(x)
-        tokens = tokens.flatten(2).transpose(1, 2)
-        attended = self.attention(tokens)
+        spatial_tokens = self.token_pool(x)
+        spatial_tokens = spatial_tokens.flatten(2).transpose(1, 2)
+        batch_size = spatial_tokens.size(0)
+        device = spatial_tokens.device
+        spatial_mask = torch.ones(
+            batch_size,
+            self._spatial_tokens,
+            dtype=torch.bool,
+            device=device,
+        )
+        entity_tokens = self.entity_encoder(
+            batch.entity_features,
+            batch.entity_mask,
+        )
+        selection_tokens = self.selection_encoder(
+            batch.selection_features,
+            batch.selection_mask,
+        )
+        meta_tokens = self.meta_encoder(batch.meta_vec)
+        meta_mask = torch.ones(batch_size, 1, dtype=torch.bool, device=device)
+
+        tokens = torch.cat(
+            (
+                self._add_token_type(spatial_tokens, 0, spatial_mask),
+                self._add_token_type(entity_tokens, 1, batch.entity_mask),
+                self._add_token_type(selection_tokens, 2, batch.selection_mask),
+                self._add_token_type(meta_tokens, 3, meta_mask),
+            ),
+            dim=1,
+        )
+        token_mask = torch.cat(
+            (
+                spatial_mask,
+                batch.entity_mask,
+                batch.selection_mask,
+                meta_mask,
+            ),
+            dim=1,
+        )
+        attended = self.attention(tokens, token_mask=token_mask)
 
         spike_rec = []
+        token_mask_f = token_mask.unsqueeze(-1).to(dtype=attended.dtype)
+        syn_tok = syn_tok * token_mask_f
+        mem_tok = mem_tok * token_mask_f
         for _ in range(self.num_steps):
             spk_tok, syn_tok, mem_tok = self.token_snn(attended, syn_tok, mem_tok)
+            spk_tok = spk_tok * token_mask_f
+            syn_tok = syn_tok * token_mask_f
+            mem_tok = mem_tok * token_mask_f
             spike_rec.append(spk_tok)
 
         aggregated = torch.stack(spike_rec, dim=0).sum(dim=0)
-        x = aggregated.flatten(start_dim=1)
-        combined = torch.cat([x, vector_input], dim=1)
-        combined = self.combined_norm(combined)
+        combined = self.combined_norm(aggregated.flatten(start_dim=1))
 
         x = F.relu(self.shared_fc1(combined))
         x = F.relu(self.shared_fc2(x))

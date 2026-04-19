@@ -46,6 +46,23 @@ flags.DEFINE_string(
     "analysis_results/<run_name>/eval_observation_space.jsonl when "
     "--run_name is known, otherwise analysis_results/eval_observation_space.jsonl.",
 )
+flags.DEFINE_bool(
+    "inspect_policy_input",
+    False,
+    "Enable PolicyInputDiagnosticsWrapper to log raw obs + extracted batch summaries.",
+)
+flags.DEFINE_string(
+    "policy_input_output",
+    None,
+    "Path for policy-input diagnostics JSONL. Defaults to "
+    "analysis_results/<run_name>/policy_input_diagnostics.jsonl when "
+    "--run_name is known, otherwise analysis_results/policy_input_diagnostics.jsonl.",
+)
+flags.DEFINE_integer(
+    "policy_input_every",
+    1,
+    "Log every N env steps when --inspect_policy_input is enabled.",
+)
 
 
 def _locate_checkpoint(explicit_path, run_name, prefer_best):
@@ -75,6 +92,9 @@ def play(
     deterministic,
     inspect=False,
     inspect_output_path=None,
+    inspect_policy_input=False,
+    policy_input_output_path=None,
+    policy_input_every=1,
 ):
     env = create_env(
         map_name=cfg.environment.map_name,
@@ -95,6 +115,16 @@ def play(
         observation_inspector_max_unit_samples=getattr(
             cfg.environment, "observation_inspector_max_unit_samples", 5,
         ),
+        use_policy_input_diagnostics=inspect_policy_input,
+        policy_input_diagnostics_output_path=(
+            policy_input_output_path
+            or getattr(
+                cfg.environment,
+                "policy_input_diagnostics_output_path",
+                "analysis_results/policy_input_diagnostics.jsonl",
+            )
+        ),
+        policy_input_diagnostics_every_n_steps=policy_input_every,
     )
     try:
         obs_ext = ObservationExtractor()
@@ -109,6 +139,7 @@ def play(
 
         state = torch.load(checkpoint_path, map_location=agent.policy.device)
         agent.policy.load_state_dict(state["agent_state"])
+        agent.extractor.load_state_dict(state.get("extractor_state", {}))
         agent.policy.eval()
         ckpt_ep = state.get("episode", "?")
         logger.info(
@@ -177,6 +208,19 @@ def main(argv):
                 analysis_dir, "eval_observation_space.jsonl",
             )
 
+    policy_input_output_path = FLAGS.policy_input_output
+    if FLAGS.inspect_policy_input and policy_input_output_path is None:
+        analysis_dir = getattr(cfg.environment, "analysis_dir", "analysis_results")
+        name = FLAGS.run_name or getattr(cfg.environment, "run_name", "")
+        if name:
+            policy_input_output_path = os.path.join(
+                analysis_dir, name, "policy_input_diagnostics.jsonl",
+            )
+        else:
+            policy_input_output_path = os.path.join(
+                analysis_dir, "policy_input_diagnostics.jsonl",
+            )
+
     play(
         checkpoint_path=checkpoint_path,
         episodes=FLAGS.episodes,
@@ -184,6 +228,9 @@ def main(argv):
         deterministic=FLAGS.deterministic,
         inspect=FLAGS.inspect,
         inspect_output_path=inspect_output_path,
+        inspect_policy_input=FLAGS.inspect_policy_input,
+        policy_input_output_path=policy_input_output_path,
+        policy_input_every=FLAGS.policy_input_every,
     )
 
 

@@ -123,6 +123,7 @@ def save_checkpoint(
         "avg_reward_at_save": avg_reward,
         "eval_reward_at_save": eval_reward,
         "episode_rewards": list(episode_rewards),
+        "extractor_state": agent.extractor.state_dict(),
     }
 
     temp_path = checkpoint_path + ".tmp"
@@ -188,6 +189,7 @@ def load_checkpoint(agent, checkpoint_path=None):
             sched_state = checkpoint.get("scheduler_state")
             if sched_state is not None and agent.ppo.scheduler is not None:
                 agent.ppo.scheduler.load_state_dict(sched_state)
+            agent.extractor.load_state_dict(checkpoint.get("extractor_state", {}))
             episode = checkpoint["episode"]
             best_eval_reward = checkpoint.get("best_eval_reward", float("-inf"))
             episode_rewards = deque(
@@ -320,8 +322,7 @@ def train_agent(env, agent, observation_extractor, log_queue):
                 pre_step_state,
                 log_prob,
                 value,
-                spatial,
-                vector,
+                policy_input,
                 learnable,
             ) = agent.step(obs)
 
@@ -340,12 +341,10 @@ def train_agent(env, agent, observation_extractor, log_queue):
 
             if learnable:
                 agent.ppo.store_transition(
-                    spatial,
-                    vector,
+                    policy_input,
                     torch.tensor(action_id, device=agent.policy.device),
                     torch.tensor(move_x, device=agent.policy.device),
                     torch.tensor(move_y, device=agent.policy.device),
-                    pre_step_state,
                     torch.tensor(log_prob, device=agent.policy.device),
                     torch.tensor(scaled_reward, device=agent.policy.device),
                     torch.tensor(value, device=agent.policy.device),
@@ -355,8 +354,10 @@ def train_agent(env, agent, observation_extractor, log_queue):
                         device=agent.policy.device,
                     ),
                 )
-                next_spatial, next_vector = agent.peek_observation(next_obs)
-                agent.ppo.set_final_next(next_spatial, next_vector, agent.snn_state)
+                next_policy_input = agent.peek_observation(next_obs).with_state(
+                    agent.snn_state,
+                )
+                agent.ppo.set_final_next(next_policy_input)
                 learnable_steps += 1
             else:
                 helper_steps += 1
