@@ -1,0 +1,13 @@
+metric,value
+total_episodes,314.0
+avg_episode_length,123.21656050955414
+max_total_reward,2655.7999999999993
+avg_total_reward,364.16050955414016
+reward_std,368.81306584901995
+final_100_avg_reward,507.358
+avg_health_reward,-1.979357039487286
+avg_engagement_reward,4.7123630349390115
+avg_positioning_reward,0.0
+avg_score_reward,0.3827268968368824
+avg_bonus_reward,0.0
+avg_end_of_episode_reward,-0.16074012817862313

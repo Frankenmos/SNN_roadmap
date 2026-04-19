@@ -51,6 +51,57 @@ class FakeNet(nn.Module):
         state_value = base * 0.1
         return action_logits, move_x_logits, move_y_logits, state_value, batch.state_in
 
+    def init_concrete_state(self, batch_size=1, device=None, dtype=None):
+        if device is None:
+            device = self.device
+        if dtype is None:
+            dtype = torch.float32
+        zeros = torch.zeros(batch_size, 1, 1, device=device, dtype=dtype)
+        return zeros.clone(), zeros.clone()
+
+
+class SequenceCarryNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.tensor(0.5))
+        self.device = torch.device("cpu")
+        self.use_amp = False
+        self.amp_dtype = torch.float32
+        self.scaler = torch.amp.GradScaler("cuda", enabled=False)
+        self.seen_states = []
+
+    def init_concrete_state(self, batch_size=1, device=None, dtype=None):
+        if device is None:
+            device = self.device
+        if dtype is None:
+            dtype = torch.float32
+        zeros = torch.zeros(batch_size, 1, 1, device=device, dtype=dtype)
+        return zeros.clone(), zeros.clone()
+
+    def forward(self, batch):
+        if batch.state_in is None:
+            state = self.init_concrete_state(
+                batch_size=batch.batch_size,
+                device=batch.meta_vec.device,
+                dtype=batch.meta_vec.dtype,
+            )
+        else:
+            state = batch.state_in
+        syn, mem = state
+        current = syn[:, 0, 0]
+        self.seen_states.append(float(current[0].detach().cpu().item()))
+        base = self.weight * current
+        action_logits = torch.stack((base, base + 0.1, base - 0.1), dim=-1)
+        move_x_logits = torch.stack([base + 0.01 * i for i in range(8)], dim=-1)
+        move_y_logits = torch.stack([base - 0.01 * i for i in range(8)], dim=-1)
+        state_value = base
+        next_value = (current + 1.0).view(-1, 1, 1)
+        next_state = (
+            next_value.expand(batch.batch_size, 1, 1),
+            next_value.expand(batch.batch_size, 1, 1),
+        )
+        return action_logits, move_x_logits, move_y_logits, state_value, next_state
+
 
 def test_scheduler_decays_lr():
     net = FakeNet()
@@ -167,7 +218,7 @@ def test_update_policy_replays_state_and_clears_memory():
     net.amp_dtype = torch.float32
     net.scaler = torch.amp.GradScaler("cuda", enabled=False)
 
-    ppo = PPO(net, lr=1e-4, total_updates=0, lr_min=0.0)
+    ppo = PPO(net, lr=1e-4, total_updates=0, lr_min=0.0, tbptt_window=3)
     rollout_steps = 6
 
     for step in range(rollout_steps):
@@ -212,3 +263,38 @@ def test_update_policy_replays_state_and_clears_memory():
     assert changed_params > 0
     assert ppo.memory == []
     assert ppo.final_next is None
+
+
+def test_update_policy_uses_chunk_state_carry_and_resets_on_done():
+    net = SequenceCarryNet()
+    ppo = PPO(net, lr=1e-3, total_updates=0, lr_min=0.0, tbptt_window=8)
+
+    def _state(fill_value):
+        tensor = torch.full((1, 1, 1), fill_value, dtype=torch.float32)
+        return tensor.clone(), tensor.clone()
+
+    stored_states = [0.0, 99.0, 7.0]
+    dones = [0.0, 1.0, 1.0]
+    for stored_state, done in zip(stored_states, dones):
+        batch = make_policy_batch(
+            batch_size=1,
+            meta_dim=8,
+            zeros=True,
+        ).with_state(_state(stored_state))
+        ppo.store_transition(
+            batch,
+            torch.tensor(1),
+            torch.tensor(2),
+            torch.tensor(3),
+            torch.tensor(-0.5),
+            torch.tensor(1.0),
+            torch.tensor(0.0),
+            torch.tensor(done),
+            policy_mask=torch.tensor(1.0),
+        )
+
+    losses, stats = ppo.update_policy(batch_size=8, epochs=1)
+
+    assert losses
+    assert stats is not None
+    assert net.seen_states[:3] == pytest.approx([0.0, 1.0, 7.0])

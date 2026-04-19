@@ -8,6 +8,7 @@ hyperparameters:
   entropy_coef: 0.01
   critic_loss_coef: 0.5
   rollout_steps: 2048
+  tbptt_window: 32
   target_kl: 0.03
   reward_scale: 0.1
 

@@ -337,9 +337,15 @@ class PolicyNetwork(nn.Module):
         self._pool_size = max(1, int(attention_pool_size))
         self._embed_dim = max(1, int(attention_embed_dim))
         self._spatial_tokens = self._pool_size * self._pool_size
+        self._entity_start = self._spatial_tokens
+        self._entity_end = self._entity_start + MAX_ENTITY_TOKENS
+        self._selection_start = self._entity_end
+        self._selection_end = self._selection_start + MAX_SELECTION_TOKENS
+        self._meta_start = self._selection_end
         self._num_tokens = (
             self._spatial_tokens + MAX_ENTITY_TOKENS + MAX_SELECTION_TOKENS + 1
         )
+        self._carry_entity_state = False
         self._meta_input_dim = int(vector_input_dim)
         self._config = {
             "num_steps": self.num_steps,
@@ -350,6 +356,7 @@ class PolicyNetwork(nn.Module):
             "attention_pool_size": self._pool_size,
             "attention_beta": float(attention_beta),
             "meta_input_dim": self._meta_input_dim,
+            "carry_entity_state": bool(self._carry_entity_state),
         }
         spike_grad = surrogate.fast_sigmoid()
 
@@ -417,6 +424,19 @@ class PolicyNetwork(nn.Module):
             "device": str(self.device),
         }
 
+    def _zero_entity_state(
+        self,
+        syn_tok: torch.Tensor,
+        mem_tok: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self._carry_entity_state:
+            return syn_tok, mem_tok
+        syn_tok = syn_tok.clone()
+        mem_tok = mem_tok.clone()
+        syn_tok[:, self._entity_start : self._entity_end, :] = 0.0
+        mem_tok[:, self._entity_start : self._entity_end, :] = 0.0
+        return syn_tok, mem_tok
+
     def init_concrete_state(self, batch_size=1, device=None, dtype=None):
         if device is None:
             device = self.device
@@ -454,6 +474,7 @@ class PolicyNetwork(nn.Module):
             )
         else:
             syn_tok, mem_tok = token_state
+        syn_tok, mem_tok = self._zero_entity_state(syn_tok, mem_tok)
 
         x = F.relu(self.conv1(spatial_input))
         x = F.relu(self.conv2(x))
@@ -512,6 +533,7 @@ class PolicyNetwork(nn.Module):
             syn_tok = syn_tok * token_mask_f
             mem_tok = mem_tok * token_mask_f
             spike_rec.append(spk_tok)
+        syn_tok, mem_tok = self._zero_entity_state(syn_tok, mem_tok)
 
         aggregated = torch.stack(spike_rec, dim=0).sum(dim=0)
         combined = self.combined_norm(aggregated.flatten(start_dim=1))

@@ -1,5 +1,17 @@
 # The BPTT Question
 
+Status note, 2026-04-19:
+
+- this document started as a gap analysis of the pre-TBPTT trainer
+- Stage-1 TBPTT has now been implemented
+- the historical analysis below is still useful because it explains why
+  the rewrite was needed
+- current code now does ordered chunk replay with helper-step masking
+  instead of flat shuffled timestep replay
+- current code also uses the staged compromise recommended here:
+  entity-token recurrent carry is disabled across env steps until slot
+  identity is pinned
+
 What follows is a code-grounded note on what Backpropagation Through
 Time would mean for this project, what PPO is doing today, and which
 changes are actually required.
@@ -156,7 +168,127 @@ makes the mismatch much more obvious.
 
 ---
 
-## 5. What we should aim for: TBPTT, not full-rollout BPTT
+## 5. Another important constraint: entity-slot identity is not pinned
+
+This is a real concern and it deserves to be stated explicitly.
+
+Current token-temporal state is per token position:
+
+- spatial token slots
+- entity token slots
+- selection token slots
+- one meta token
+
+But the current entity extractor:
+
+- reads `feature_units`
+- projects rows in the order they arrive
+- pads/truncates to `MAX_ENTITY_TOKENS`
+
+There is currently:
+
+- no `raw_units.tag`
+- no slot-to-tag pinning
+- no cross-step entity-slot assignment logic
+
+So slot `k` in the entity block is **not guaranteed** to refer to the
+same unit on the next env step.
+
+That means Claude's core warning is valid:
+
+- BPTT through entity slots cannot assume persistent unit identity
+
+But there is one nuance that matters:
+
+- this is **not only** a future BPTT problem
+- it is already a live recurrent-design caveat today
+
+Why?
+
+Because `TokenTemporalSNN` state already carries across all token
+positions during acting. So if an entity slot's semantic identity shifts
+between step `t` and `t+1`, the recurrent carry for that slot is already
+being reused on a different entity at inference time. BPTT would make
+the training dynamics care more about that temporal link, but it would
+not be inventing the slot-aliasing issue from scratch.
+
+So the right conclusion is:
+
+- entity-slot identity is a real blocker for **clean** entity-token
+  memory learning
+- but it is not a reason to claim the current recurrent path is fully
+  well-defined and BPTT alone is the only risky part
+
+There are three honest ways to proceed:
+
+### Option A. Full fix: pin entity slots by identity
+
+Use persistent unit identity, most likely via `raw_units.tag`, and build
+slot assignment across env steps.
+
+Pros:
+
+- semantically clean recurrent entity memory
+- best long-term BPTT story
+
+Cons:
+
+- bigger scope
+- crosses the current `feature_units`-only Fix-3 boundary
+
+### Option B. Stage-1 BPTT: keep entity tokens one-step only
+
+Keep BPTT for:
+
+- spatial tokens
+- selection tokens
+- meta token
+
+But zero recurrent carry for the entity-token segment at each env step.
+
+Pros:
+
+- preserves memory where token identity is much more stable
+- avoids pretending entity-slot persistence exists when it does not
+- much smaller scope than tag-based identity pinning
+
+Cons:
+
+- entity tokens do not get cross-step memory yet
+
+### Option C. Accept noisy entity-slot carry for now
+
+Proceed with TBPTT across all tokens and rely on the model to learn that
+entity-slot temporal carry is only partially reliable.
+
+Pros:
+
+- smallest code delta
+
+Cons:
+
+- semantically messier
+- harder to reason about
+- may waste recurrent capacity on slot aliasing noise
+
+My recommendation is:
+
+- **Stage 1:** Option B
+- **Stage 2:** add entity-slot identity pinning if BPTT proves useful
+
+That gives us real temporal learning on the parts most relevant to
+kiting:
+
+- spatial battlefield layout
+- selection persistence
+- meta/action-context persistence
+
+without overclaiming that unordered `feature_units` rows already support
+clean entity memory.
+
+---
+
+## 6. What we should aim for: TBPTT, not full-rollout BPTT
 
 For this project, the right target is **Truncated BPTT (TBPTT)**.
 
@@ -184,7 +316,7 @@ internal spike-accumulation loop inside one env step.
 
 ---
 
-## 6. Needed changes
+## 7. Needed changes
 
 ### 1. Stop treating rollout samples as IID timesteps
 
@@ -259,6 +391,28 @@ Option B, cleaner:
 Recommendation:
 
 - start with **Option A** to minimize code churn
+
+---
+
+### 3b. Decide the Stage-1 policy for entity tokens
+
+Before implementing BPTT, we should explicitly choose one of:
+
+- carry recurrent state through entity slots
+- or zero recurrent state for entity slots at each env step
+
+Recommended Stage-1 choice:
+
+- zero entity-token recurrent carry each step
+- keep recurrent carry for spatial / selection / meta tokens
+
+Why:
+
+- current entity slots are not identity-pinned
+- this keeps Stage-1 BPTT honest and easier to interpret
+
+This can be implemented by masking the entity-token slice in `syn_tok`
+and `mem_tok` before/after the env-step recurrent update.
 
 ---
 
@@ -409,7 +563,7 @@ Needed tests:
 
 ---
 
-## 7. File-by-file impact
+## 8. File-by-file impact
 
 ### `PPO_CNN/PPO.py`
 
@@ -450,6 +604,8 @@ Probably no architecture rewrite needed, but replay helpers would help.
 Potential additions:
 
 - small helper to reset state with a done mask
+- small helper to zero the entity-token recurrent slice if we choose the
+  Stage-1 "entity one-step only" route
 - optional `forward_sequence(...)` helper, though a PPO-side loop is
   enough for the first implementation
 
@@ -469,7 +625,7 @@ of the current unit tests.
 
 ---
 
-## 8. What we do **not** need
+## 9. What we do **not** need
 
 To avoid overbuilding:
 
@@ -486,7 +642,7 @@ family.
 
 ---
 
-## 9. Bottom line
+## 10. Bottom line
 
 Current code has:
 
@@ -506,3 +662,38 @@ To get there, the minimum conceptual shift is:
 And because helper steps currently mutate recurrent state while being
 dropped from memory, the rollout format itself must become more faithful
 before BPTT can be correct.
+
+One more practical qualifier:
+
+- entity-token memory is not cleanly defined across env steps until slot
+  identity is pinned
+
+So the most honest near-term BPTT plan is:
+
+- fix rollout sequencing
+- fix done boundaries
+- apply TBPTT
+- keep entity-token memory disabled or explicitly treated as
+  one-step-only until identity pinning arrives
+
+---
+
+## 11. Current implementation status
+
+Stage-1 TBPTT is now in the codebase.
+
+Implemented:
+
+- ordered TBPTT chunk replay during PPO update
+- helper steps stored in rollout memory with masked actor/entropy loss
+- done-boundary chunk splitting
+- chunk replay that carries `next_state -> state_in` inside the training
+  graph
+- entity-token recurrent carry disabled across env steps
+
+Still not implemented:
+
+- tag-pinned entity identity via `raw_units.tag`
+- a more ambitious sequence container beyond the current PPO chunk
+  builder
+- deeper BPTT-specific diagnostics on gradient flow horizon

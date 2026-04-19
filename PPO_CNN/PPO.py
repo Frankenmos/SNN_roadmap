@@ -23,6 +23,7 @@ class PPO:
         total_updates: int = 0,
         lr_min: float = 0.0,
         target_kl: float | None = None,
+        tbptt_window: int | None = None,
     ):
         self.policy_net = policy_net
         self.device = policy_net.device
@@ -34,6 +35,9 @@ class PPO:
         self.target_kl = target_kl
         self.initial_lr = lr
         self.lr_min = lr_min
+        self.tbptt_window = (
+            None if tbptt_window is None else max(1, int(tbptt_window))
+        )
 
         if total_updates > 0:
             self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -59,6 +63,9 @@ class PPO:
             "lr": float(self.initial_lr),
             "lr_min": float(self.lr_min),
             "scheduler_enabled": bool(self.scheduler is not None),
+            "tbptt_window": (
+                None if self.tbptt_window is None else int(self.tbptt_window)
+            ),
         }
 
     def select_action(self, observations, state=None, deterministic: bool = False):
@@ -134,17 +141,21 @@ class PPO:
         reward: torch.Tensor,
         value: torch.Tensor,
         done: torch.Tensor,
+        policy_mask: torch.Tensor | None = None,
     ):
+        if policy_mask is None:
+            policy_mask = torch.tensor(1.0, dtype=torch.float32)
         self.memory.append(
             {
                 "observation_batch": observation_batch.detach().to(device="cpu"),
-                "action": action.detach(),
-                "move_x": move_x.detach(),
-                "move_y": move_y.detach(),
-                "log_prob": log_prob.detach(),
-                "reward": reward.detach(),
-                "value": value.detach(),
-                "done": done.detach(),
+                "action": action.detach().to(device="cpu"),
+                "move_x": move_x.detach().to(device="cpu"),
+                "move_y": move_y.detach().to(device="cpu"),
+                "log_prob": log_prob.detach().to(device="cpu"),
+                "reward": reward.detach().to(device="cpu"),
+                "value": value.detach().to(device="cpu"),
+                "done": done.detach().to(device="cpu"),
+                "policy_mask": policy_mask.detach().to(device="cpu"),
             }
         )
 
@@ -152,9 +163,6 @@ class PPO:
         if not self.memory:
             return [], None
 
-        rollout_batch = PolicyInputBatch.stack(
-            [transition["observation_batch"] for transition in self.memory],
-        ).to(device=self.device, dtype=torch.float32)
         actions = torch.stack(
             [transition["action"].to(self.device) for transition in self.memory],
         )
@@ -176,6 +184,15 @@ class PPO:
         dones = torch.stack(
             [transition["done"].to(self.device) for transition in self.memory],
         )
+        policy_masks = torch.stack(
+            [
+                transition.get(
+                    "policy_mask",
+                    torch.tensor(1.0, dtype=torch.float32),
+                ).to(self.device)
+                for transition in self.memory
+            ],
+        ).float()
 
         with torch.no_grad():
             if dones[-1].item() == 1.0:
@@ -193,15 +210,30 @@ class PPO:
                 _, _, _, last_next_value, _ = self.policy_net(last_batch)
                 last_next_value = last_next_value.squeeze(-1)
 
-        advantages = self._compute_advantages(
+        raw_advantages = self._compute_advantages(
             rewards, values, dones, last_next_value,
         )
-        returns = (advantages + values).detach()
-        advantages = (
-            advantages - advantages.mean()
-        ) / (advantages.std(unbiased=False) + 1e-8)
+        returns = (raw_advantages + values).detach()
+        if bool((policy_masks > 0.0).any().item()):
+            valid_advantages = raw_advantages[policy_masks > 0.0]
+            advantages = (
+                raw_advantages - valid_advantages.mean()
+            ) / (valid_advantages.std(unbiased=False) + 1e-8)
+        else:
+            advantages = torch.zeros_like(raw_advantages, device=self.device)
 
-        rollout_size = rollout_batch.batch_size
+        chunks = self._build_tbptt_chunks(
+            actions=actions,
+            move_xs=move_xs,
+            move_ys=move_ys,
+            log_probs_old=log_probs_old,
+            advantages=advantages,
+            returns=returns,
+            dones=dones,
+            policy_masks=policy_masks,
+        )
+
+        rollout_size = len(self.memory)
         losses = []
         acc_policy = []
         acc_value = []
@@ -219,50 +251,87 @@ class PPO:
 
         for _ in range(epochs):
             epoch_kls = []
-            perm = torch.randperm(rollout_size, device=self.device)
-            for start in range(0, rollout_size, batch_size):
-                idx = perm[start : start + batch_size]
-
-                batch_observation = rollout_batch.index_select(idx)
-                batch_actions = actions[idx]
-                batch_move_x = move_xs[idx]
-                batch_move_y = move_ys[idx]
-                batch_old_logp = log_probs_old[idx]
-                batch_adv = advantages[idx]
-                batch_returns = returns[idx]
+            for chunk_group in self._iter_chunk_groups(chunks, batch_size):
+                policy_num = torch.zeros((), device=self.device)
+                policy_den = torch.zeros((), device=self.device)
+                value_num = torch.zeros((), device=self.device)
+                value_den = torch.zeros((), device=self.device)
+                entropy_num = torch.zeros((), device=self.device)
+                diag_kl_num = 0.0
+                diag_clip_num = 0.0
+                diag_entropy_num = 0.0
+                diag_policy_count = 0.0
 
                 with torch.amp.autocast(
                     "cuda",
                     dtype=self.policy_net.amp_dtype,
                     enabled=self.policy_net.use_amp,
                 ):
-                    action_logits, move_x_logits, move_y_logits, state_values, _ = (
-                        self.policy_net(batch_observation)
-                    )
-                    state_values = state_values.squeeze(-1)
-                    policy_loss, value_loss, entropy_loss, diag = (
-                        self._calculate_losses(
+                    for chunk in chunk_group:
+                        (
                             action_logits,
                             move_x_logits,
                             move_y_logits,
                             state_values,
-                            batch_actions,
-                            batch_move_x,
-                            batch_move_y,
-                            batch_old_logp,
-                            batch_adv,
-                            batch_returns,
+                        ) = self._replay_chunk(chunk)
+                        policy_loss, value_loss, entropy_loss, diag = (
+                            self._calculate_losses(
+                                action_logits,
+                                move_x_logits,
+                                move_y_logits,
+                                state_values,
+                                chunk["actions"],
+                                chunk["move_x"],
+                                chunk["move_y"],
+                                chunk["old_log_prob"],
+                                chunk["advantages"],
+                                chunk["returns"],
+                                chunk["policy_mask"],
+                            )
                         )
-                    )
+                        policy_num = policy_num + policy_loss * diag["policy_count"]
+                        policy_den = policy_den + diag["policy_count"]
+                        value_num = value_num + value_loss * diag["value_count"]
+                        value_den = value_den + diag["value_count"]
+                        entropy_num = entropy_num + entropy_loss * diag["policy_count"]
+                        policy_weight = float(diag["policy_count"].item())
+                        diag_kl_num += float(diag["approx_kl"].item()) * policy_weight
+                        diag_clip_num += (
+                            float(diag["clip_frac"].item()) * policy_weight
+                        )
+                        diag_entropy_num += (
+                            float(diag["entropy_mean"].item()) * policy_weight
+                        )
+                        diag_policy_count += policy_weight
+
+                    policy_loss = policy_num / policy_den.clamp_min(1.0)
+                    value_loss = value_num / value_den.clamp_min(1.0)
+                    entropy_loss = entropy_num / policy_den.clamp_min(1.0)
                     loss = policy_loss + value_loss - entropy_loss
+
+                approx_kl = (
+                    0.0
+                    if diag_policy_count <= 0.0
+                    else diag_kl_num / diag_policy_count
+                )
+                clip_frac = (
+                    0.0
+                    if diag_policy_count <= 0.0
+                    else diag_clip_num / diag_policy_count
+                )
+                entropy_mean = (
+                    0.0
+                    if diag_policy_count <= 0.0
+                    else diag_entropy_num / diag_policy_count
+                )
 
                 losses.append(float(loss.item()))
                 acc_policy.append(float(policy_loss.item()))
                 acc_value.append(float(value_loss.item()))
-                acc_entropy.append(float(diag["entropy_mean"].item()))
-                acc_kl.append(float(diag["approx_kl"].item()))
-                acc_clip_frac.append(float(diag["clip_frac"].item()))
-                epoch_kls.append(float(diag["approx_kl"].item()))
+                acc_entropy.append(float(entropy_mean))
+                acc_kl.append(float(approx_kl))
+                acc_clip_frac.append(float(clip_frac))
+                epoch_kls.append(float(approx_kl))
 
                 self.optimizer.zero_grad(set_to_none=True)
                 self.policy_net.scaler.scale(loss).backward()
@@ -301,8 +370,24 @@ class PPO:
             )
 
         returns_cpu = returns.detach().to("cpu").float()
-        entity_counts = rollout_batch.entity_mask.sum(dim=1).to("cpu").float()
-        selection_counts = rollout_batch.selection_mask.sum(dim=1).to("cpu").float()
+        entity_counts = torch.tensor(
+            [
+                float(
+                    transition["observation_batch"].entity_mask.sum().item(),
+                )
+                for transition in self.memory
+            ],
+            dtype=torch.float32,
+        )
+        selection_counts = torch.tensor(
+            [
+                float(
+                    transition["observation_batch"].selection_mask.sum().item(),
+                )
+                for transition in self.memory
+            ],
+            dtype=torch.float32,
+        )
         stats = {
             "mean_policy_loss": float(np.mean(acc_policy)),
             "mean_value_loss": float(np.mean(acc_value)),
@@ -336,6 +421,114 @@ class PPO:
 
         self._clear_rollout_cache()
         return losses, stats
+
+    def _build_tbptt_chunks(
+        self,
+        actions: torch.Tensor,
+        move_xs: torch.Tensor,
+        move_ys: torch.Tensor,
+        log_probs_old: torch.Tensor,
+        advantages: torch.Tensor,
+        returns: torch.Tensor,
+        dones: torch.Tensor,
+        policy_masks: torch.Tensor,
+    ):
+        chunks = []
+        rollout_size = len(self.memory)
+        window = rollout_size if self.tbptt_window is None else self.tbptt_window
+        start = 0
+        while start < rollout_size:
+            end = min(start + window, rollout_size)
+            done_indices = torch.nonzero(dones[start:end] > 0.5, as_tuple=False)
+            if len(done_indices) > 0:
+                end = start + int(done_indices[0].item()) + 1
+
+            step_batches = [
+                self.memory[idx]["observation_batch"].with_state(None)
+                for idx in range(start, end)
+            ]
+            chunks.append(
+                {
+                    "observations": PolicyInputBatch.stack(step_batches),
+                    "initial_state": self.memory[start][
+                        "observation_batch"
+                    ].state_in,
+                    "actions": actions[start:end],
+                    "move_x": move_xs[start:end],
+                    "move_y": move_ys[start:end],
+                    "old_log_prob": log_probs_old[start:end],
+                    "advantages": advantages[start:end],
+                    "returns": returns[start:end],
+                    "dones": dones[start:end],
+                    "policy_mask": policy_masks[start:end],
+                    "length": int(end - start),
+                }
+            )
+            start = end
+        return chunks
+
+    @staticmethod
+    def _iter_chunk_groups(chunks, batch_size: int):
+        if not chunks:
+            return
+        max_steps = max(1, int(batch_size))
+        order = torch.randperm(len(chunks)).tolist()
+        group = []
+        steps_in_group = 0
+        for idx in order:
+            chunk = chunks[idx]
+            chunk_len = int(chunk["length"])
+            if group and steps_in_group + chunk_len > max_steps:
+                yield group
+                group = []
+                steps_in_group = 0
+            group.append(chunk)
+            steps_in_group += chunk_len
+        if group:
+            yield group
+
+    def _replay_chunk(self, chunk):
+        state = chunk["initial_state"]
+        if state is not None:
+            state = (
+                state[0].to(device=self.device, dtype=torch.float32).detach(),
+                state[1].to(device=self.device, dtype=torch.float32).detach(),
+            )
+
+        action_logits_seq = []
+        move_x_logits_seq = []
+        move_y_logits_seq = []
+        state_values_seq = []
+
+        for t in range(int(chunk["length"])):
+            step_observation = chunk["observations"].index_select([t]).to(
+                device=self.device,
+                dtype=torch.float32,
+            ).with_state(state)
+            action_logits, move_x_logits, move_y_logits, state_values, state = (
+                self.policy_net(step_observation)
+            )
+            action_logits_seq.append(action_logits)
+            move_x_logits_seq.append(move_x_logits)
+            move_y_logits_seq.append(move_y_logits)
+            state_values_seq.append(state_values)
+
+            if (
+                bool(chunk["dones"][t].item() > 0.5)
+                and t + 1 < int(chunk["length"])
+            ):
+                state = self.policy_net.init_concrete_state(
+                    batch_size=step_observation.batch_size,
+                    device=self.device,
+                    dtype=step_observation.spatial_obs.dtype,
+                )
+
+        return (
+            torch.cat(action_logits_seq, dim=0),
+            torch.cat(move_x_logits_seq, dim=0),
+            torch.cat(move_y_logits_seq, dim=0),
+            torch.cat(state_values_seq, dim=0),
+        )
 
     def _compute_advantages(
         self,
@@ -375,6 +568,7 @@ class PPO:
         old_log_probs: torch.Tensor,
         advantages: torch.Tensor,
         returns: torch.Tensor,
+        policy_mask: torch.Tensor | None = None,
     ):
         action_dist = torch.distributions.Categorical(
             logits=action_logits.float(),
@@ -395,12 +589,17 @@ class PPO:
             )
         )
 
+        if policy_mask is None:
+            policy_mask = torch.ones_like(advantages)
+        policy_mask = policy_mask.to(device=advantages.device, dtype=advantages.dtype)
+        policy_count = policy_mask.sum()
+
         ratio = torch.exp(new_log_probs - old_log_probs)
         surr1 = ratio * advantages
         surr2 = torch.clamp(
             ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon,
         ) * advantages
-        policy_loss = -torch.min(surr1, surr2).mean()
+        policy_loss = -self._masked_mean(torch.min(surr1, surr2), policy_mask)
 
         value_loss = (
             self.critic_loss_coef * (returns - state_values).pow(2).mean()
@@ -420,19 +619,32 @@ class PPO:
                 + move_y_dist.entropy() * inv_log_y
             )
         )
-        entropy_loss = self.entropy_coef * entropy.mean()
+        entropy_loss = self.entropy_coef * self._masked_mean(entropy, policy_mask)
 
         with torch.no_grad():
-            approx_kl = (
-                (ratio - 1.0) - (new_log_probs - old_log_probs)
-            ).mean()
-            clip_frac = (
-                (ratio - 1.0).abs() > self.clip_epsilon
-            ).float().mean()
-            entropy_mean = entropy.mean()
+            approx_kl = self._masked_mean(
+                (ratio - 1.0) - (new_log_probs - old_log_probs),
+                policy_mask,
+            )
+            clip_frac = self._masked_mean(
+                ((ratio - 1.0).abs() > self.clip_epsilon).float(),
+                policy_mask,
+            )
+            entropy_mean = self._masked_mean(entropy, policy_mask)
 
         return policy_loss, value_loss, entropy_loss, {
             "approx_kl": approx_kl,
             "clip_frac": clip_frac,
             "entropy_mean": entropy_mean,
+            "policy_count": policy_count.detach(),
+            "value_count": torch.tensor(
+                float(state_values.numel()),
+                device=state_values.device,
+            ),
         }
+
+    @staticmethod
+    def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        mask = mask.to(device=values.device, dtype=values.dtype)
+        denom = mask.sum().clamp_min(1.0)
+        return (values * mask).sum() / denom
