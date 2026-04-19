@@ -89,7 +89,7 @@ class SequenceCarryNet(nn.Module):
             state = batch.state_in
         syn, mem = state
         current = syn[:, 0, 0]
-        self.seen_states.append(float(current[0].detach().cpu().item()))
+        self.seen_states.extend(current.detach().cpu().tolist())
         base = self.weight * current
         action_logits = torch.stack((base, base + 0.1, base - 0.1), dim=-1)
         move_x_logits = torch.stack([base + 0.01 * i for i in range(8)], dim=-1)
@@ -273,6 +273,11 @@ def test_update_policy_uses_chunk_state_carry_and_resets_on_done():
         tensor = torch.full((1, 1, 1), fill_value, dtype=torch.float32)
         return tensor.clone(), tensor.clone()
 
+    # With uniform TBPTT chunks, chunks span across 'done' boundaries.
+    # A single chunk starts with the initial_state (0.0).
+    # t=0: state is 0.0 -> next_value is 1.0, done=0
+    # t=1: state is 1.0 -> next_value is 2.0, done=1 -> state is reset to 0.0 for next step.
+    # t=2: state is 0.0 (reset) -> next_value is 1.0, done=1 -> state is reset to 0.0 for next step.
     stored_states = [0.0, 99.0, 7.0]
     dones = [0.0, 1.0, 1.0]
     for stored_state, done in zip(stored_states, dones):
@@ -297,4 +302,8 @@ def test_update_policy_uses_chunk_state_carry_and_resets_on_done():
 
     assert losses
     assert stats is not None
-    assert net.seen_states[:3] == pytest.approx([0.0, 1.0, 7.0])
+    # Since the chunks are not broken by done=1, they span multiple steps
+    # First step (t=0) sees 0.0 (from initial chunk state).
+    # Second step (t=1) sees 1.0 (from t=0 output).
+    # Third step (t=2) sees 0.0 (reset because done[1] was 1.0).
+    assert net.seen_states[:3] == pytest.approx([0.0, 1.0, 0.0])

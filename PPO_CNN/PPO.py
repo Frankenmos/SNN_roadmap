@@ -267,42 +267,79 @@ class PPO:
                     dtype=self.policy_net.amp_dtype,
                     enabled=self.policy_net.use_amp,
                 ):
-                    for chunk in chunk_group:
-                        (
+                    (
+                        action_logits,
+                        move_x_logits,
+                        move_y_logits,
+                        state_values,
+                    ) = self._replay_chunk(chunk_group)
+
+                    # We need to concatenate all chunk targets in the same order we flattened outputs.
+                    # In `_replay_chunk`, we grouped by length, stacked, transposed, and flattened.
+                    # We must do the exact same sequence-to-flat grouping for the targets.
+                    lengths = set(int(c["length"]) for c in chunk_group)
+                    actions_flat = []
+                    move_x_flat = []
+                    move_y_flat = []
+                    old_log_prob_flat = []
+                    advantages_flat = []
+                    returns_flat = []
+                    policy_mask_flat = []
+
+                    for length in lengths:
+                        sub_chunks = [c for c in chunk_group if int(c["length"]) == length]
+
+                        def stack_transpose_flatten(key):
+                            tensors = [c[key] for c in sub_chunks]
+                            stacked = torch.stack(tensors, dim=0) # [B, T, ...]
+                            # Since we transposes action_logits to [B, T] in _replay_chunk,
+                            # the stacked shape here is exactly [B, T, ...]
+                            # Flattening combines B and T exactly in the same order as flatting [B, T]
+                            if stacked.ndim == 1:
+                                return stacked
+                            elif stacked.ndim == 2:
+                                # [B, T] -> [B*T]
+                                return stacked.flatten()
+                            else:
+                                return stacked.flatten(0, 1)
+
+                        actions_flat.append(stack_transpose_flatten("actions"))
+                        move_x_flat.append(stack_transpose_flatten("move_x"))
+                        move_y_flat.append(stack_transpose_flatten("move_y"))
+                        old_log_prob_flat.append(stack_transpose_flatten("old_log_prob"))
+                        advantages_flat.append(stack_transpose_flatten("advantages"))
+                        returns_flat.append(stack_transpose_flatten("returns"))
+                        policy_mask_flat.append(stack_transpose_flatten("policy_mask"))
+
+                    policy_loss, value_loss, entropy_loss, diag = (
+                        self._calculate_losses(
                             action_logits,
                             move_x_logits,
                             move_y_logits,
                             state_values,
-                        ) = self._replay_chunk(chunk)
-                        policy_loss, value_loss, entropy_loss, diag = (
-                            self._calculate_losses(
-                                action_logits,
-                                move_x_logits,
-                                move_y_logits,
-                                state_values,
-                                chunk["actions"],
-                                chunk["move_x"],
-                                chunk["move_y"],
-                                chunk["old_log_prob"],
-                                chunk["advantages"],
-                                chunk["returns"],
-                                chunk["policy_mask"],
-                            )
+                            torch.cat(actions_flat, dim=0),
+                            torch.cat(move_x_flat, dim=0),
+                            torch.cat(move_y_flat, dim=0),
+                            torch.cat(old_log_prob_flat, dim=0),
+                            torch.cat(advantages_flat, dim=0),
+                            torch.cat(returns_flat, dim=0),
+                            torch.cat(policy_mask_flat, dim=0),
                         )
-                        policy_num = policy_num + policy_loss * diag["policy_count"]
-                        policy_den = policy_den + diag["policy_count"]
-                        value_num = value_num + value_loss * diag["value_count"]
-                        value_den = value_den + diag["value_count"]
-                        entropy_num = entropy_num + entropy_loss * diag["policy_count"]
-                        policy_weight = float(diag["policy_count"].item())
-                        diag_kl_num += float(diag["approx_kl"].item()) * policy_weight
-                        diag_clip_num += (
-                            float(diag["clip_frac"].item()) * policy_weight
-                        )
-                        diag_entropy_num += (
-                            float(diag["entropy_mean"].item()) * policy_weight
-                        )
-                        diag_policy_count += policy_weight
+                    )
+                    policy_num = policy_num + policy_loss * diag["policy_count"]
+                    policy_den = policy_den + diag["policy_count"]
+                    value_num = value_num + value_loss * diag["value_count"]
+                    value_den = value_den + diag["value_count"]
+                    entropy_num = entropy_num + entropy_loss * diag["policy_count"]
+                    policy_weight = float(diag["policy_count"].item())
+                    diag_kl_num += float(diag["approx_kl"].item()) * policy_weight
+                    diag_clip_num += (
+                        float(diag["clip_frac"].item()) * policy_weight
+                    )
+                    diag_entropy_num += (
+                        float(diag["entropy_mean"].item()) * policy_weight
+                    )
+                    diag_policy_count += policy_weight
 
                     policy_loss = policy_num / policy_den.clamp_min(1.0)
                     value_loss = value_num / value_den.clamp_min(1.0)
@@ -439,9 +476,6 @@ class PPO:
         start = 0
         while start < rollout_size:
             end = min(start + window, rollout_size)
-            done_indices = torch.nonzero(dones[start:end] > 0.5, as_tuple=False)
-            if len(done_indices) > 0:
-                end = start + int(done_indices[0].item()) + 1
 
             step_batches = [
                 self.memory[idx]["observation_batch"].with_state(None)
@@ -471,63 +505,132 @@ class PPO:
     def _iter_chunk_groups(chunks, batch_size: int):
         if not chunks:
             return
-        max_steps = max(1, int(batch_size))
+
+        # Batch size here is number of *transitions* allowed.
+        # But for batched chunks, it's cleaner to batch by number of chunks.
+        # Estimate number of chunks per batch based on the first chunk's length
+        avg_chunk_len = max(1, int(chunks[0]["length"]))
+        chunks_per_group = max(1, batch_size // avg_chunk_len)
+
         order = torch.randperm(len(chunks)).tolist()
         group = []
-        steps_in_group = 0
         for idx in order:
-            chunk = chunks[idx]
-            chunk_len = int(chunk["length"])
-            if group and steps_in_group + chunk_len > max_steps:
+            group.append(chunks[idx])
+            if len(group) == chunks_per_group:
                 yield group
                 group = []
-                steps_in_group = 0
-            group.append(chunk)
-            steps_in_group += chunk_len
         if group:
             yield group
 
-    def _replay_chunk(self, chunk):
-        state = chunk["initial_state"]
-        if state is not None:
-            state = (
-                state[0].to(device=self.device, dtype=torch.float32).detach(),
-                state[1].to(device=self.device, dtype=torch.float32).detach(),
-            )
+    def _replay_chunk(self, chunk_list):
+        # We now expect a list of chunks, which we will stack into a batch.
+        # Assuming all chunks in chunk_list have the SAME length (or we pad, but they should based on _build_tbptt_chunks)
 
-        action_logits_seq = []
-        move_x_logits_seq = []
-        move_y_logits_seq = []
-        state_values_seq = []
+        # In our case, the last chunk might be smaller. For simplicity of batching,
+        # we can just process them, but index_select requires them to be the same size.
+        # So we group them by length if there is a mismatch (rare, only at the end)
 
-        for t in range(int(chunk["length"])):
-            step_observation = chunk["observations"].index_select([t]).to(
-                device=self.device,
-                dtype=torch.float32,
-            ).with_state(state)
-            action_logits, move_x_logits, move_y_logits, state_values, state = (
-                self.policy_net(step_observation)
-            )
-            action_logits_seq.append(action_logits)
-            move_x_logits_seq.append(move_x_logits)
-            move_y_logits_seq.append(move_y_logits)
-            state_values_seq.append(state_values)
+        # To handle potential length mismatches (e.g. the very last chunk of rollout),
+        # we just pad or group. Let's just group by length inside _replay_chunk.
+        # Actually, since all chunks except possibly the last are `tbptt_window`, we can just
+        # process each chunk_list by stacking them if they have same length.
 
-            if (
-                bool(chunk["dones"][t].item() > 0.5)
-                and t + 1 < int(chunk["length"])
-            ):
-                state = self.policy_net.init_concrete_state(
-                    batch_size=step_observation.batch_size,
-                    device=self.device,
-                    dtype=step_observation.spatial_obs.dtype,
+        # Find max length in this group
+        max_len = max(int(c["length"]) for c in chunk_list)
+
+        # For simplicity, if we have chunks of different lengths in the same group,
+        # we can just fall back to unbatched for the short ones, or pad.
+        # Let's group them by length to be safe.
+
+        lengths = set(int(c["length"]) for c in chunk_list)
+
+        action_logits_all = []
+        move_x_logits_all = []
+        move_y_logits_all = []
+        state_values_all = []
+
+        for length in lengths:
+            sub_chunks = [c for c in chunk_list if int(c["length"]) == length]
+
+            # Stack the states
+            syns = []
+            mems = []
+            for c in sub_chunks:
+                s = c["initial_state"]
+                if s is not None:
+                    syns.append(s[0])
+                    mems.append(s[1])
+
+            if syns:
+                state = (
+                    torch.cat(syns, dim=0).to(device=self.device, dtype=torch.float32).detach(),
+                    torch.cat(mems, dim=0).to(device=self.device, dtype=torch.float32).detach(),
                 )
+            else:
+                state = None
+
+            observations_list = [c["observations"] for c in sub_chunks]
+            batched_observations = PolicyInputBatch.stack(observations_list)
+
+            action_logits_seq = []
+            move_x_logits_seq = []
+            move_y_logits_seq = []
+            state_values_seq = []
+
+            batched_dones = torch.stack([c["dones"] for c in sub_chunks], dim=0) # [B, T]
+
+            for t in range(length):
+                # batched_observations shape: time is not a dimension in PolicyInputBatch.stack,
+                # stack concatenates along batch dim (0).
+                # Wait, chunk["observations"] has batch_size = length.
+                # PolicyInputBatch.stack on [obs_len1, obs_len2] will yield batch_size = len1 + len2.
+                # So the time dimension is interleaved.
+                # Let's fix this: we need to select the t-th step for ALL chunks.
+
+                indices = [(b * length) + t for b in range(len(sub_chunks))]
+
+                step_observation = batched_observations.index_select(indices).to(
+                    device=self.device,
+                    dtype=torch.float32,
+                ).with_state(state)
+
+                action_logits, move_x_logits, move_y_logits, state_values, state = (
+                    self.policy_net(step_observation)
+                )
+                action_logits_seq.append(action_logits)
+                move_x_logits_seq.append(move_x_logits)
+                move_y_logits_seq.append(move_y_logits)
+                state_values_seq.append(state_values)
+
+                # Check if any episode ended, if so, zero out their state
+                dones_t = batched_dones[:, t] # shape [B]
+                if (dones_t > 0.5).any() and t + 1 < length:
+                    zero_state = self.policy_net.init_concrete_state(
+                        batch_size=len(sub_chunks),
+                        device=self.device,
+                        dtype=step_observation.spatial_obs.dtype,
+                    )
+                    mask = (dones_t > 0.5).view(-1, *([1] * (state[0].ndim - 1))).to(self.device, dtype=torch.float32)
+                    # Use torch.where instead of multiply/add to ensure gradients/values are correct
+                    state = (
+                        torch.where(mask > 0.5, zero_state[0], state[0]),
+                        torch.where(mask > 0.5, zero_state[1], state[1]),
+                    )
+
+            # The sequences are lists of [B, ...]. We want to interleave them back into [B * T, ...]
+            # or just match the order of chunks.
+            # Currently we append to _seq which are lists of length T, each tensor [B, ...]
+            # We stack them to [T, B, ...] then transpose to [B, T, ...] then flatten to [B * T, ...]
+            action_logits_all.append(torch.stack(action_logits_seq, dim=0).transpose(0, 1).flatten(0, 1))
+            move_x_logits_all.append(torch.stack(move_x_logits_seq, dim=0).transpose(0, 1).flatten(0, 1))
+            move_y_logits_all.append(torch.stack(move_y_logits_seq, dim=0).transpose(0, 1).flatten(0, 1))
+            state_values_all.append(torch.stack(state_values_seq, dim=0).transpose(0, 1).flatten(0, 1))
 
         return (
-            torch.cat(action_logits_seq, dim=0),
-            torch.cat(move_x_logits_seq, dim=0),
-            torch.cat(move_y_logits_seq, dim=0),
-            torch.cat(state_values_seq, dim=0),
+            torch.cat(action_logits_all, dim=0),
+            torch.cat(move_x_logits_all, dim=0),
+            torch.cat(move_y_logits_all, dim=0),
+            torch.cat(state_values_all, dim=0),
         )
 
     def _compute_advantages(
