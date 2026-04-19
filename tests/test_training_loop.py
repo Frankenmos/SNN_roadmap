@@ -29,11 +29,15 @@ class DummyPPO:
     def __init__(self):
         self.memory = []
         self.final_next = None
+        self.store_calls = 0
+        self.final_next_calls = 0
 
     def store_transition(self, *args, **kwargs):
+        self.store_calls += 1
         self.memory.append(1)
 
     def set_final_next(self, *args, **kwargs):
+        self.final_next_calls += 1
         self.final_next = True
 
 
@@ -245,3 +249,46 @@ def test_train_agent_flushes_partial_rollout_at_shutdown(monkeypatch):
     assert best == float("-inf")
     assert agent.update_calls == 1
     assert agent.ppo.memory == []
+
+
+def test_train_agent_stores_helper_steps_for_recurrent_replay(monkeypatch):
+    class HelperMixAgent(DummyAgent):
+        def step(self, obs):
+            self._step += 1
+            self.snn_state = _dummy_state()
+            learnable = self._step != 1
+            return (
+                "noop",
+                0,
+                0,
+                0,
+                _dummy_state(),
+                0.0,
+                0.0,
+                _dummy_batch().with_state(_dummy_state()),
+                learnable,
+            )
+
+    env = DummyEnv([2])
+    agent = HelperMixAgent()
+    queue = DummyQueue()
+
+    monkeypatch.setattr(run_mod.cfg.environment, "total_episodes", 1, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "steps_per_episode", 10, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "reward_window", 10, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "log_frequency", 999, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "eval_frequency", 0, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "eval_episodes", 0, raising=False)
+    monkeypatch.setattr(run_mod.cfg.hyperparameters, "rollout_steps", 4, raising=False)
+    monkeypatch.setattr(run_mod.cfg.hyperparameters, "reward_scale", 1.0, raising=False)
+
+    with patch.object(
+        run_mod,
+        "load_checkpoint",
+        return_value=(0, float("-inf"), deque(maxlen=10)),
+    ):
+        best = run_mod.train_agent(env, agent, None, queue)
+
+    assert best == float("-inf")
+    assert agent.ppo.store_calls == 2
+    assert agent.ppo.final_next_calls == 2

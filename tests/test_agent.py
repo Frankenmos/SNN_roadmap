@@ -218,6 +218,32 @@ def test_policy_forward_shapes_and_state_continuity():
     assert state2[1].shape == state1[1].shape
 
 
+def test_policy_zeroes_entity_recurrent_state_between_env_steps():
+    net = _small_policy()
+    state = net.init_concrete_state(batch_size=1, device=torch.device("cpu"))
+    state = (torch.ones_like(state[0]), torch.ones_like(state[1]))
+    batch = _policy_batch(batch_size=1, spatial_shape=SPATIAL_OBS_SHAPE)
+
+    _, _, _, _, next_state = net(
+        PolicyInputBatch(
+            spatial_obs=batch.spatial_obs,
+            entity_features=batch.entity_features,
+            entity_mask=batch.entity_mask,
+            selection_features=batch.selection_features,
+            selection_mask=batch.selection_mask,
+            meta_vec=batch.meta_vec,
+            state_in=state,
+        )
+    )
+
+    assert torch.count_nonzero(
+        next_state[0][:, net._entity_start : net._entity_end, :],
+    ) == 0
+    assert torch.count_nonzero(
+        next_state[1][:, net._entity_start : net._entity_end, :],
+    ) == 0
+
+
 def test_learnable_time_constants_receive_gradients():
     net = _small_policy()
     batch = _policy_batch(batch_size=1, spatial_shape=SPATIAL_OBS_SHAPE)

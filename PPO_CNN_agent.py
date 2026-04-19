@@ -97,6 +97,7 @@ class DefeatRoaches(base_agent.BaseAgent):
             total_updates=self.total_updates_estimate,
             lr_min=lr_min,
             target_kl=getattr(cfg.hyperparameters, "target_kl", None),
+            tbptt_window=getattr(cfg.hyperparameters, "tbptt_window", 32),
         )
 
         self.selected_armies = []

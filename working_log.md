@@ -103,3 +103,13 @@
   Main conclusion: the project currently replays detached recurrent state during PPO updates, but it does not do BPTT through env steps because the update path shuffles flat timesteps, ignores returned `next_state`, and never re-unrolls the recurrent chain inside the training graph.
 - Important extra finding from that pass:
   helper steps are currently dropped from PPO memory even though they still mutate `self.snn_state` during acting. That means true BPTT cannot be implemented correctly by "just chunking learnable steps"; rollout storage itself has to become faithful to every state-mutating env step, with masked actor loss where appropriate.
+- Follow-up BPTT clarification:
+  added the entity-slot identity caveat to `THE_BPTT.md`. Current entity tokens come from padded `feature_units` rows with no tag-based slot pinning, so clean cross-step entity memory is not guaranteed. Important nuance: that is already a live recurrent-design caveat today because token-temporal state is carried across entity slots during acting. My current recommendation is a staged approach: TBPTT first for spatial/selection/meta, with entity-token recurrent carry explicitly disabled until we introduce identity pinning.
+- Stage-1 TBPTT implementation:
+  rewired PPO update from flat shuffled timestep replay to ordered TBPTT chunk replay. Rollout memory now stores every policy-touched env step with a `policy_mask`, PPO re-unrolls `next_state -> state_in` inside update-time sequence replay, and helper steps contribute to recurrent/value learning without receiving actor loss.
+- Recurrent-state staging choice:
+  to keep the first BPTT pass honest, `policy_network.py` now zeroes the entity-token recurrent slice between env steps. Spatial, selection, and meta tokens keep temporal carry; entity tokens stay one-step-only until we introduce tag-based slot pinning.
+- Verification added for the new path:
+  `tests/test_PPO.py` now checks ordered chunk replay and done-boundary reset behavior, `tests/test_training_loop.py` now checks helper-step storage, and `tests/test_agent.py` now checks entity-token recurrent carry is zeroed. Full local suite after the rewrite:
+  `pytest tests -q`
+  `31 passed`
