@@ -8,10 +8,13 @@ import numpy as np
 from pysc2.env import base_env_wrapper
 
 from PPO_CNN.policy_input import (
+    AGENT_LAST_ACTION_OFFSET,
     CURATED_FEATURE_UNIT_FIELDS,
     DEFEAT_ROACHES_ACTION_IDS,
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
+    META_AVAILABLE_ACTION_OFFSET,
+    META_LAST_ACTION_INDEX_OFFSET,
     META_PLAYER_FEATURE_DIM,
     SELECTION_FEATURE_NAMES,
 )
@@ -97,7 +100,11 @@ class PolicyInputDiagnosticsWrapper(base_env_wrapper.BaseEnvWrapper):
         selection_count = int(batch.selection_mask[0].sum().item())
         meta_vec = batch.meta_vec[0].detach().cpu().float()
         avail_slice = meta_vec[
-            META_PLAYER_FEATURE_DIM: META_PLAYER_FEATURE_DIM + len(DEFEAT_ROACHES_ACTION_IDS)
+            META_AVAILABLE_ACTION_OFFSET : META_AVAILABLE_ACTION_OFFSET
+            + len(DEFEAT_ROACHES_ACTION_IDS)
+        ]
+        bridge_token = meta_vec[
+            AGENT_LAST_ACTION_OFFSET : AGENT_LAST_ACTION_OFFSET + 4
         ]
 
         return {
@@ -134,8 +141,11 @@ class PolicyInputDiagnosticsWrapper(base_env_wrapper.BaseEnvWrapper):
                 "selection_count": selection_count,
                 "selection_mask_utilization": selection_count / MAX_SELECTION_TOKENS,
                 "meta_dim": int(batch.meta_vec.shape[-1]),
-                "meta_last_action_index": int(round(float(meta_vec[-1].item()))),
+                "meta_last_action_index": int(
+                    round(float(meta_vec[META_LAST_ACTION_INDEX_OFFSET].item()))
+                ),
                 "meta_available_action_mask_active": int(round(float(avail_slice.sum().item()))),
+                "meta_agent_last_action_token": bridge_token.tolist(),
                 "entity_feature_sample": batch.entity_features[
                     0, : min(entity_count, self.max_entity_samples)
                 ].detach().cpu().tolist(),

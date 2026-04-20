@@ -5,13 +5,19 @@ import snntorch as snn
 from snntorch import surrogate
 
 from PPO_CNN.policy_input import (
+    AGENT_LAST_ACTION_OFFSET,
+    AGENT_LAST_ACTION_DIM,
+    BRIDGE_ACTION_VOCAB_SIZE,
     CURATED_FEATURE_UNIT_FIELDS,
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
+    META_AVAILABLE_ACTION_OFFSET,
     META_AVAILABLE_ACTION_DIM,
+    META_LAST_ACTION_INDEX_OFFSET,
     META_LAST_ACTION_INDEX_DIM,
     META_PLAYER_FEATURE_DIM,
     PolicyInputBatch,
+    POLICY_ACTION_NO_OP,
     SELECTION_FEATURE_DIM,
     SELECTION_UNIT_TYPE_INDEX,
     TOKEN_TYPE_GROUPS,
@@ -144,6 +150,8 @@ class MetaEncoder(nn.Module):
         available_action_dim: int = META_AVAILABLE_ACTION_DIM,
         last_action_embed_dim: int | None = None,
         last_action_vocab_size: int = META_AVAILABLE_ACTION_DIM + 2,
+        bridge_action_embed_dim: int | None = None,
+        bridge_action_vocab_size: int = BRIDGE_ACTION_VOCAB_SIZE,
     ):
         super().__init__()
         if meta_input_dim <= 0:
@@ -153,18 +161,30 @@ class MetaEncoder(nn.Module):
         self.embed_dim = int(embed_dim)
         self.player_dim = int(player_dim)
         self.available_action_dim = int(available_action_dim)
-        self.last_action_offset = self.player_dim + self.available_action_dim
-        self.use_structured_meta = (
-            self.meta_input_dim
-            >= self.player_dim + self.available_action_dim + META_LAST_ACTION_INDEX_DIM
+        self.last_action_offset = int(META_LAST_ACTION_INDEX_OFFSET)
+        self.agent_last_action_offset = int(AGENT_LAST_ACTION_OFFSET)
+        self.agent_last_action_dim = int(AGENT_LAST_ACTION_DIM)
+        self.use_structured_meta = self.meta_input_dim >= (
+            self.player_dim + self.available_action_dim + META_LAST_ACTION_INDEX_DIM
+        )
+        self.use_agent_last_action = (
+            self.meta_input_dim >= self.agent_last_action_offset + self.agent_last_action_dim
         )
         self.last_action_embed_dim = int(
             last_action_embed_dim or max(8, self.embed_dim // 4),
+        )
+        self.bridge_action_embed_dim = int(
+            bridge_action_embed_dim or max(4, self.embed_dim // 8),
         )
         fused_input_dim = (
             self.player_dim
             + self.available_action_dim
             + self.last_action_embed_dim
+            + (
+                self.bridge_action_embed_dim + (self.agent_last_action_dim - 1)
+                if self.use_agent_last_action
+                else 0
+            )
             if self.use_structured_meta
             else self.meta_input_dim
         )
@@ -172,6 +192,10 @@ class MetaEncoder(nn.Module):
         self.last_action_embedding = nn.Embedding(
             int(last_action_vocab_size),
             self.last_action_embed_dim,
+        )
+        self.bridge_action_embedding = nn.Embedding(
+            int(bridge_action_vocab_size),
+            self.bridge_action_embed_dim,
         )
         self.pre_norm = nn.LayerNorm(fused_input_dim)
         self.mlp = nn.Sequential(
@@ -185,14 +209,28 @@ class MetaEncoder(nn.Module):
             player = meta_vec[..., : self.player_dim]
             available_actions = meta_vec[
                 ...,
-                self.player_dim : self.player_dim + self.available_action_dim
+                META_AVAILABLE_ACTION_OFFSET : META_AVAILABLE_ACTION_OFFSET
+                + self.available_action_dim
             ]
             last_action_ids = meta_vec[..., self.last_action_offset].round().long()
             last_action_ids = last_action_ids.clamp(
                 0, self.last_action_embedding.num_embeddings - 1,
             )
             last_action_emb = self.last_action_embedding(last_action_ids)
-            fused = torch.cat((player, available_actions, last_action_emb), dim=-1)
+            fused_parts = [player, available_actions, last_action_emb]
+            if self.use_agent_last_action:
+                agent_token = meta_vec[
+                    ...,
+                    self.agent_last_action_offset : self.agent_last_action_offset
+                    + self.agent_last_action_dim
+                ]
+                agent_type_ids = agent_token[..., 0].round().long().clamp(
+                    0, self.bridge_action_embedding.num_embeddings - 1,
+                )
+                agent_type_emb = self.bridge_action_embedding(agent_type_ids)
+                fused_parts.append(agent_type_emb)
+                fused_parts.append(agent_token[..., 1:])
+            fused = torch.cat(fused_parts, dim=-1)
         else:
             fused = meta_vec
 
@@ -410,8 +448,10 @@ class PolicyNetwork(nn.Module):
         self.shared_fc1 = nn.Linear(pooled_dim, 128)
         self.shared_fc2 = nn.Linear(128, 64)
 
+        self._action_dim = int(action_dim)
         self.actor_fc = nn.Linear(64, action_dim)
         self.critic_fc = nn.Linear(64, 1)
+        self.action_condition_embedding = nn.Embedding(self._action_dim, 64)
         self.move_x_fc = nn.Linear(64, self.screen_size)
         self.move_y_fc = nn.Linear(64, self.screen_size)
 
@@ -519,7 +559,7 @@ class PolicyNetwork(nn.Module):
             summaries.append(summed / count)
         return torch.cat(summaries, dim=-1)
 
-    def forward_step_tensors(
+    def encode_step_tensors(
         self,
         spatial_obs: torch.Tensor,
         entity_features: torch.Tensor,
@@ -604,17 +644,63 @@ class PolicyNetwork(nn.Module):
         pooled = self._group_masked_mean(aggregated, token_mask)
         combined = self.combined_norm(pooled)
 
-        x = F.relu(self.shared_fc1(combined))
-        x = F.relu(self.shared_fc2(x))
-
-        action_logits = self.actor_fc(x)
-        move_x_logits = self.move_x_fc(x)
-        move_y_logits = self.move_y_fc(x)
-        state_value = self.critic_fc(x).squeeze(-1)
+        latent = F.relu(self.shared_fc1(combined))
+        latent = F.relu(self.shared_fc2(latent))
+        state_value = self.critic_fc(latent).squeeze(-1)
         next_state = (syn_tok, mem_tok)
+        return latent, state_value, next_state
+
+    def action_head(self, latent: torch.Tensor) -> torch.Tensor:
+        return self.actor_fc(latent)
+
+    def conditioned_spatial_head(
+        self,
+        latent: torch.Tensor,
+        action_ids: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if action_ids is None:
+            action_ids = torch.full(
+                (latent.size(0),),
+                POLICY_ACTION_NO_OP,
+                device=latent.device,
+                dtype=torch.long,
+            )
+        else:
+            action_ids = action_ids.to(device=latent.device, dtype=torch.long)
+        action_ids = action_ids.clamp(0, self._action_dim - 1)
+        conditioned = latent + self.action_condition_embedding(action_ids)
+        return self.move_x_fc(conditioned), self.move_y_fc(conditioned)
+
+    def forward_step_tensors(
+        self,
+        spatial_obs: torch.Tensor,
+        entity_features: torch.Tensor,
+        entity_mask: torch.Tensor,
+        selection_features: torch.Tensor,
+        selection_mask: torch.Tensor,
+        meta_vec: torch.Tensor,
+        state_in: tuple[torch.Tensor, torch.Tensor] | None,
+        action_ids: torch.Tensor | None = None,
+    ):
+        latent, state_value, next_state = self.encode_step_tensors(
+            spatial_obs=spatial_obs,
+            entity_features=entity_features,
+            entity_mask=entity_mask,
+            selection_features=selection_features,
+            selection_mask=selection_mask,
+            meta_vec=meta_vec,
+            state_in=state_in,
+        )
+        action_logits = self.action_head(latent)
+        if action_ids is None:
+            action_ids = action_logits.float().argmax(dim=-1)
+        move_x_logits, move_y_logits = self.conditioned_spatial_head(
+            latent,
+            action_ids,
+        )
         return action_logits, move_x_logits, move_y_logits, state_value, next_state
 
-    def forward(self, batch: PolicyInputBatch):
+    def forward(self, batch: PolicyInputBatch, action_ids: torch.Tensor | None = None):
         if not isinstance(batch, PolicyInputBatch):
             raise TypeError(
                 f"PolicyNetwork.forward expects PolicyInputBatch, got {type(batch)!r}",
@@ -627,4 +713,5 @@ class PolicyNetwork(nn.Module):
             selection_mask=batch.selection_mask,
             meta_vec=batch.meta_vec,
             state_in=batch.state_in,
+            action_ids=action_ids,
         )

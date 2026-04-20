@@ -8,6 +8,11 @@ from pysc2.lib import actions
 from pysc2.lib import colors as _colors
 
 from PPO_CNN.PPO import PPO
+from PPO_CNN.policy_input import (
+    POLICY_ACTION_ATTACK,
+    POLICY_ACTION_MOVE,
+    POLICY_ACTION_NO_OP,
+)
 from PPO_CNN.policy_network import PolicyNetwork
 from PPO_CNN.reward_function_2 import RewardFunctionV2
 from Utility.config import cfg
@@ -24,7 +29,17 @@ def _shuffled_hue_fixed(scale):
 
 _colors.shuffled_hue = _shuffled_hue_fixed
 
-_PLAYER_FRIENDLY = 1
+
+def _matches_function_call(action_call, target_function) -> bool:
+    function_id = getattr(action_call, "function", None)
+    if function_id is None:
+        function_id = getattr(action_call, "id", None)
+    if function_id is not None:
+        return int(function_id) == int(target_function.id)
+
+    function_name = getattr(action_call, "name", None)
+    target_name = getattr(target_function, "name", None)
+    return function_name is not None and function_name == target_name
 
 
 class DefeatRoaches(base_agent.BaseAgent):
@@ -100,7 +115,8 @@ class DefeatRoaches(base_agent.BaseAgent):
             tbptt_window=getattr(cfg.hyperparameters, "tbptt_window", 32),
         )
 
-        self.selected_armies = []
+        self.bootstrap_pending = True
+        self.last_action_token = self.action_space.get_last_token()
 
     def effective_config(self):
         return {
@@ -111,7 +127,10 @@ class DefeatRoaches(base_agent.BaseAgent):
         }
 
     def peek_observation(self, obs):
-        return self.extractor.peek_observation(obs)
+        return self.extractor.peek_observation(
+            obs,
+            last_action_token=self.last_action_token,
+        )
 
     def step(self, obs, deterministic: bool = False):
         super(DefeatRoaches, self).step(obs)
@@ -120,23 +139,8 @@ class DefeatRoaches(base_agent.BaseAgent):
         policy_input = self.extractor.extract_observation(
             obs,
             update_stats=not deterministic,
+            last_action_token=self.last_action_token,
         )
-        pre_step_state = self.snn_state
-        policy_input = policy_input.with_state(pre_step_state)
-        action, move_x, move_y, log_prob, value, self.snn_state = (
-            self.ppo.select_action(
-                policy_input,
-                deterministic=deterministic,
-            )
-        )
-
-        player_relative = obs.observation.feature_screen.player_relative
-        self.selected_armies = self.action_space.find_units(
-            player_relative, _PLAYER_FRIENDLY,
-        )
-
-        action_func = actions.FUNCTIONS.no_op()
-        learnable = False
 
         can_attack = (
             actions.FUNCTIONS.Attack_screen.id in obs.observation.available_actions
@@ -148,22 +152,54 @@ class DefeatRoaches(base_agent.BaseAgent):
             actions.FUNCTIONS.select_army.id in obs.observation.available_actions
         )
 
-        if action == 0:
-            if can_attack:
-                target_position = self.action_space.nearest_enemy_unit_center(obs)
-                if target_position is not None:
-                    action_func = self.action_space.attack(obs, target_position)
-                    learnable = True
-            elif can_select_army:
-                action_func = actions.FUNCTIONS.select_army("select")
-        elif action == 1:
-            if can_move and self.selected_armies:
-                action_func = self.action_space.move(obs, move_x, move_y)
-                learnable = True
-            elif can_select_army:
-                action_func = actions.FUNCTIONS.select_army("select")
-        elif action == 2:
-            learnable = True
+        if self.bootstrap_pending and can_select_army and not (can_move or can_attack):
+            self.bootstrap_pending = False
+            self.action_space.reset()
+            action_func = self.action_space.bootstrap_select_army(obs)
+            self.last_action_token = self.action_space.get_last_token()
+            return (
+                action_func,
+                None,
+                0,
+                0,
+                self.snn_state,
+                0.0,
+                0.0,
+                None,
+                False,
+            )
+
+        self.bootstrap_pending = False
+        pre_step_state = self.snn_state
+        policy_input = policy_input.with_state(pre_step_state)
+        action, move_x, move_y, log_prob, value, self.snn_state = (
+            self.ppo.select_action(
+                policy_input,
+                deterministic=deterministic,
+            )
+        )
+
+        action_func = self.action_space.no_op()
+        learnable = True
+
+        if action == POLICY_ACTION_ATTACK:
+            action_func = self.action_space.attack(obs, (move_x, move_y))
+            learnable = _matches_function_call(
+                action_func,
+                actions.FUNCTIONS.Attack_screen,
+            )
+        elif action == POLICY_ACTION_MOVE:
+            action_func = self.action_space.move(obs, move_x, move_y)
+            learnable = _matches_function_call(
+                action_func,
+                actions.FUNCTIONS.Move_screen,
+            )
+        elif action == POLICY_ACTION_NO_OP:
+            action_func = self.action_space.no_op()
+        else:
+            raise ValueError(f"Unknown policy action id: {action}")
+
+        self.last_action_token = self.action_space.get_last_token()
 
         return (
             action_func,
@@ -182,7 +218,9 @@ class DefeatRoaches(base_agent.BaseAgent):
         self.snn_state = self.policy.init_concrete_state(batch_size=1)
         self.extractor.reset()
         self.reward_function.reset()
-        self.selected_armies = []
+        self.bootstrap_pending = True
+        self.action_space.reset()
+        self.last_action_token = self.action_space.get_last_token()
 
     def update_policy(self):
         _, stats = self.ppo.update_policy(

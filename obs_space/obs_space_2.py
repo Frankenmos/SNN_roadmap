@@ -26,10 +26,15 @@ from pysc2.lib import features  # noqa: E402,F401  (kept for downstream consumer
 import torch  # noqa: E402
 
 from PPO_CNN.policy_input import (
+    AGENT_LAST_ACTION_DIM,
+    AGENT_LAST_ACTION_OFFSET,
+    BRIDGE_ACTION_NO_OP,
     CURATED_FEATURE_UNIT_FIELDS,
     DEFEAT_ROACHES_ACTION_IDS,
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
+    META_AVAILABLE_ACTION_OFFSET,
+    META_LAST_ACTION_INDEX_OFFSET,
     META_PLAYER_FEATURE_DIM,
     META_VECTOR_DIM,
     NO_ACTION_SENTINEL_INDEX,
@@ -214,7 +219,7 @@ class ObservationExtractor:
             ),
         )
 
-    def extract_observation(self, obs, update_stats=True):
+    def extract_observation(self, obs, update_stats=True, last_action_token=None):
         feature_screen = getattr(obs.observation, "feature_screen", None)
         if feature_screen is not None and getattr(feature_screen, "size", 0) > 0:
             spatial_obs = torch.as_tensor(
@@ -249,7 +254,10 @@ class ObservationExtractor:
             max_rows=MAX_SELECTION_TOKENS,
             width=len(SELECTION_FEATURE_NAMES),
         )
-        meta_vec = self._extract_meta_vector(obs)
+        meta_vec = self._extract_meta_vector(
+            obs,
+            last_action_token=last_action_token,
+        )
 
         return PolicyInputBatch(
             spatial_obs=spatial_obs,
@@ -260,8 +268,12 @@ class ObservationExtractor:
             meta_vec=meta_vec.unsqueeze(0),
         )
 
-    def peek_observation(self, obs):
-        return self.extract_observation(obs, update_stats=False)
+    def peek_observation(self, obs, last_action_token=None):
+        return self.extract_observation(
+            obs,
+            update_stats=False,
+            last_action_token=last_action_token,
+        )
 
     def _extract_entity_rows(self, obs):
         feature_units = getattr(obs.observation, "feature_units", None)
@@ -294,7 +306,7 @@ class ObservationExtractor:
             field_names=SELECTION_FEATURE_NAMES,
         )
 
-    def _extract_meta_vector(self, obs):
+    def _extract_meta_vector(self, obs, last_action_token=None):
         player = getattr(obs.observation, "player", None)
         if player is None:
             player_vec = np.zeros(META_PLAYER_FEATURE_DIM, dtype=np.float32)
@@ -332,17 +344,45 @@ class ObservationExtractor:
                 _LAST_ACTION_TO_INDEX.get(raw_last_action, UNKNOWN_LAST_ACTION_INDEX),
             )
 
-        return torch.as_tensor(
-            np.concatenate(
-                (
-                    player_vec,
-                    available_mask,
-                    np.asarray([last_action_index], dtype=np.float32),
-                )
+        agent_last = self._normalize_last_action_token(last_action_token)
+        full = np.concatenate(
+            (
+                player_vec,
+                available_mask,
+                np.asarray([last_action_index], dtype=np.float32),
+                agent_last,
             ),
+        )
+        return torch.as_tensor(
+            full,
             dtype=torch.float32,
             device=self.device,
         )
+
+    def _normalize_last_action_token(self, token):
+        if token is None:
+            token = np.asarray(
+                [BRIDGE_ACTION_NO_OP, 0, 0, 0],
+                dtype=np.float32,
+            )
+        else:
+            token = np.asarray(token, dtype=np.float32).reshape(-1)
+        if token.size < AGENT_LAST_ACTION_DIM:
+            token = np.pad(
+                token,
+                (0, AGENT_LAST_ACTION_DIM - token.size),
+                mode="constant",
+            )
+        else:
+            token = token[:AGENT_LAST_ACTION_DIM]
+
+        max_coord = float(SPATIAL_OBS_SHAPE[-1] - 1)
+        out = token.astype(np.float32, copy=True)
+        out[0] = float(max(0.0, out[0]))
+        out[1] = float(np.clip(out[1], 0.0, max_coord) / max_coord)
+        out[2] = float(np.clip(out[2], 0.0, max_coord) / max_coord)
+        out[3] = float(out[3])
+        return out
 
     def _coerce_numeric_rows(self, rows):
         if rows is None:

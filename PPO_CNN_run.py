@@ -371,31 +371,34 @@ def train_agent(env, agent, observation_extractor, log_queue):
             )
             scaled_reward = raw_reward * reward_scale
 
-            agent.ppo.store_transition(
-                policy_input,
-                torch.tensor(action_id, device=agent.policy.device),
-                torch.tensor(move_x, device=agent.policy.device),
-                torch.tensor(move_y, device=agent.policy.device),
-                torch.tensor(log_prob, device=agent.policy.device),
-                torch.tensor(scaled_reward, device=agent.policy.device),
-                torch.tensor(value, device=agent.policy.device),
-                torch.tensor(
-                    done,
-                    dtype=torch.float32,
-                    device=agent.policy.device,
-                ),
-                policy_mask=torch.tensor(
-                    1.0 if learnable else 0.0,
-                    dtype=torch.float32,
-                    device=agent.policy.device,
-                ),
-            )
-            next_policy_input = agent.peek_observation(next_obs).with_state(
-                agent.snn_state,
-            )
-            agent.ppo.set_final_next(next_policy_input)
-            if learnable:
-                learnable_steps += 1
+            if policy_input is not None:
+                agent.ppo.store_transition(
+                    policy_input,
+                    torch.tensor(action_id, device=agent.policy.device),
+                    torch.tensor(move_x, device=agent.policy.device),
+                    torch.tensor(move_y, device=agent.policy.device),
+                    torch.tensor(log_prob, device=agent.policy.device),
+                    torch.tensor(scaled_reward, device=agent.policy.device),
+                    torch.tensor(value, device=agent.policy.device),
+                    torch.tensor(
+                        done,
+                        dtype=torch.float32,
+                        device=agent.policy.device,
+                    ),
+                    policy_mask=torch.tensor(
+                        1.0 if learnable else 0.0,
+                        dtype=torch.float32,
+                        device=agent.policy.device,
+                    ),
+                )
+                next_policy_input = agent.peek_observation(next_obs).with_state(
+                    agent.snn_state,
+                )
+                agent.ppo.set_final_next(next_policy_input)
+                if learnable:
+                    learnable_steps += 1
+                else:
+                    helper_steps += 1
             else:
                 helper_steps += 1
 
@@ -407,9 +410,9 @@ def train_agent(env, agent, observation_extractor, log_queue):
                     "type": "STEP",
                     "internal_ep": episode,
                     "step": step_count,
-                    "act": int(action_id),
-                    "move_x": int(move_x),
-                    "move_y": int(move_y),
+                    "act": None if action_id is None else int(action_id),
+                    "move_x": None if action_id is None else int(move_x),
+                    "move_y": None if action_id is None else int(move_y),
                     "rew": float(raw_reward),
                     "cum_rew": float(cumulative_reward),
                 }

@@ -3,7 +3,11 @@ import torch
 
 from MockedEnv.policy_batch import make_policy_batch
 from PPO_CNN.policy_input import (
+    AGENT_LAST_ACTION_OFFSET,
+    BRIDGE_ACTION_BOOTSTRAP_SELECT,
     META_VECTOR_DIM,
+    POLICY_ACTION_ATTACK,
+    POLICY_ACTION_MOVE,
     PolicyInputBatch,
     SPATIAL_OBS_SHAPE,
 )
@@ -73,7 +77,6 @@ def test_agent_step_returns_current_training_tuple(make_obs):
         "no_op",
         "Attack_screen",
         "Move_screen",
-        "select_army",
     }
     assert action in {0, 1, 2}
     assert 0 <= move_x < 84
@@ -92,7 +95,7 @@ def test_agent_step_returns_current_training_tuple(make_obs):
     assert isinstance(learnable, bool)
 
 
-def test_attack_targets_nearest_enemy_unit_center(make_obs, monkeypatch):
+def test_attack_uses_policy_coordinates(make_obs, monkeypatch):
     agent = DefeatRoaches()
     next_state = agent.policy.init_concrete_state(batch_size=1)
 
@@ -100,50 +103,50 @@ def test_attack_targets_nearest_enemy_unit_center(make_obs, monkeypatch):
         agent.ppo,
         "select_action",
         lambda observations, state=None, deterministic=False: (
-            0,
-            0,
-            0,
+            POLICY_ACTION_ATTACK,
+            17,
+            19,
             -0.25,
             0.5,
             next_state,
         ),
     )
 
-    obs = make_obs(
-        friendly_positions=[(10, 10), (11, 10)],
-        enemy_positions=[(50, 50), (12, 12), (18, 18)],
-    )
+    obs = make_obs()
     action_func, action, *_rest, learnable = agent.step(obs)
 
-    assert action == 0
+    assert action == POLICY_ACTION_ATTACK
     assert action_func.name == "Attack_screen"
-    assert action_func.args == ("now", [12, 12])
+    assert action_func.args == ("now", [17, 19])
     assert learnable is True
 
 
-def test_helper_fallback_marks_transition_non_learnable(make_obs, monkeypatch, fake_actions):
+def test_bootstrap_selection_stays_outside_policy_memory(make_obs, fake_actions):
     agent = DefeatRoaches()
-    next_state = agent.policy.init_concrete_state(batch_size=1)
-
-    monkeypatch.setattr(
-        agent.ppo,
-        "select_action",
-        lambda observations, state=None, deterministic=False: (
-            1,
-            30,
-            40,
-            -0.1,
-            0.2,
-            next_state,
-        ),
-    )
 
     obs = make_obs(available_actions={fake_actions.select_army.id})
-    action_func, *_prefix, learnable = agent.step(obs)
+    (
+        action_func,
+        action,
+        move_x,
+        move_y,
+        _pre_step_state,
+        log_prob,
+        value,
+        policy_input,
+        learnable,
+    ) = agent.step(obs)
 
     assert action_func.name == "select_army"
     assert action_func.args == ("select",)
+    assert action is None
+    assert move_x == 0
+    assert move_y == 0
+    assert log_prob == 0.0
+    assert value == 0.0
+    assert policy_input is None
     assert learnable is False
+    assert agent.last_action_token[0] == BRIDGE_ACTION_BOOTSTRAP_SELECT
 
 
 def test_deterministic_step_does_not_update_extractor_stats(make_obs, monkeypatch):
@@ -217,6 +220,36 @@ def test_policy_forward_shapes_and_state_continuity():
     assert len(state2) == 2
     assert state2[0].shape == state1[0].shape
     assert state2[1].shape == state1[1].shape
+
+
+def test_conditioned_spatial_head_changes_with_action_id():
+    net = _small_policy()
+    batch = _policy_batch(batch_size=2, spatial_shape=SPATIAL_OBS_SHAPE)
+    latent, _value, _next_state = net.encode_step_tensors(
+        spatial_obs=batch.spatial_obs,
+        entity_features=batch.entity_features,
+        entity_mask=batch.entity_mask,
+        selection_features=batch.selection_features,
+        selection_mask=batch.selection_mask,
+        meta_vec=batch.meta_vec,
+        state_in=batch.state_in,
+    )
+
+    move_x_logits, move_y_logits = net.conditioned_spatial_head(
+        latent,
+        torch.full((2,), POLICY_ACTION_MOVE, dtype=torch.long),
+    )
+    attack_x_logits, attack_y_logits = net.conditioned_spatial_head(
+        latent,
+        torch.full((2,), POLICY_ACTION_ATTACK, dtype=torch.long),
+    )
+
+    assert move_x_logits.shape == (2, 16)
+    assert move_y_logits.shape == (2, 16)
+    assert attack_x_logits.shape == move_x_logits.shape
+    assert attack_y_logits.shape == move_y_logits.shape
+    assert not torch.allclose(move_x_logits, attack_x_logits)
+    assert not torch.allclose(move_y_logits, attack_y_logits)
 
 
 def test_policy_zeroes_entity_recurrent_state_between_env_steps():
@@ -337,9 +370,9 @@ def test_selection_encoder_zeroes_padded_slots():
 
 
 def test_meta_encoder_returns_single_token():
-    encoder = MetaEncoder(meta_input_dim=28, embed_dim=32)
-    meta_vec = torch.randn(4, 28)
-    meta_vec[:, -1] = torch.tensor([0.0, 1.0, 5.0, 17.0])
+    encoder = MetaEncoder(meta_input_dim=META_VECTOR_DIM, embed_dim=32)
+    meta_vec = torch.randn(4, META_VECTOR_DIM)
+    meta_vec[:, AGENT_LAST_ACTION_OFFSET] = torch.tensor([0.0, 1.0, 2.0, 3.0])
 
     encoded = encoder(meta_vec)
 
