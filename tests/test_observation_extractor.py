@@ -2,6 +2,9 @@ import numpy as np
 import pytest
 
 from PPO_CNN.policy_input import (
+    AGENT_LAST_ACTION_OFFSET,
+    BRIDGE_ACTION_ATTACK,
+    META_LAST_ACTION_INDEX_OFFSET,
     NO_ACTION_SENTINEL_INDEX,
     UNKNOWN_LAST_ACTION_INDEX,
 )
@@ -67,11 +70,26 @@ def test_last_action_indices_keep_no_action_no_op_and_unknown_distinct(make_obs)
         make_obs(last_actions=np.asarray([999], dtype=np.int32)),
     )
 
-    no_action = float(no_action_batch.meta_vec[0, -1].item())
-    no_op = float(no_op_batch.meta_vec[0, -1].item())
-    unknown = float(unknown_batch.meta_vec[0, -1].item())
+    no_action = float(no_action_batch.meta_vec[0, META_LAST_ACTION_INDEX_OFFSET].item())
+    no_op = float(no_op_batch.meta_vec[0, META_LAST_ACTION_INDEX_OFFSET].item())
+    unknown = float(unknown_batch.meta_vec[0, META_LAST_ACTION_INDEX_OFFSET].item())
 
     assert no_action == pytest.approx(float(NO_ACTION_SENTINEL_INDEX))
     assert no_op == pytest.approx(float(obs_space_2._LAST_ACTION_TO_INDEX[0]))
     assert unknown == pytest.approx(float(UNKNOWN_LAST_ACTION_INDEX))
     assert len({int(no_action), int(no_op), int(unknown)}) == 3
+
+
+def test_observation_extractor_appends_last_action_bridge_token(make_obs):
+    extractor = obs_space_2.ObservationExtractor()
+    batch = extractor.peek_observation(
+        make_obs(),
+        last_action_token=np.asarray([BRIDGE_ACTION_ATTACK, 42, 21, 0], dtype=np.int32),
+    )
+
+    token = batch.meta_vec[0, AGENT_LAST_ACTION_OFFSET : AGENT_LAST_ACTION_OFFSET + 4]
+    assert batch.meta_vec.shape[-1] == 32
+    assert float(token[0].item()) == pytest.approx(float(BRIDGE_ACTION_ATTACK))
+    assert float(token[1].item()) == pytest.approx(42.0 / 83.0)
+    assert float(token[2].item()) == pytest.approx(21.0 / 83.0)
+    assert float(token[3].item()) == pytest.approx(0.0)

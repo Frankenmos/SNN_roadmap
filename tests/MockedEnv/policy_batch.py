@@ -3,6 +3,9 @@ import torch
 from PPO_CNN.policy_input import (
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
+    META_AVAILABLE_ACTION_DIM,
+    META_AVAILABLE_ACTION_OFFSET,
+    META_LAST_ACTION_INDEX_OFFSET,
     META_VECTOR_DIM,
     PolicyInputBatch,
     SELECTION_FEATURE_DIM,
@@ -36,7 +39,14 @@ def make_policy_batch(
 ):
     tensor_factory = torch.zeros if zeros else torch.randn
     meta_vec = tensor_factory(batch_size, meta_dim)
-    meta_vec[:, -1] = 0.0
+    if meta_dim >= META_AVAILABLE_ACTION_OFFSET + META_AVAILABLE_ACTION_DIM:
+        meta_vec[
+            :,
+            META_AVAILABLE_ACTION_OFFSET : META_AVAILABLE_ACTION_OFFSET
+            + META_AVAILABLE_ACTION_DIM,
+        ] = 1.0
+    if meta_dim > META_LAST_ACTION_INDEX_OFFSET:
+        meta_vec[:, META_LAST_ACTION_INDEX_OFFSET] = 0.0
 
     state_in = None
     if with_state:

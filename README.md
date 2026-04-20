@@ -22,8 +22,8 @@ The repository is structured into several logical components:
 - `setup_env.py`: Encapsulates the PySC2 environment initialization, ensuring the correct map (`DefeatRoaches`), step multipliers, and observation dimensions are loaded.
 
 ### 2. Observation & Action Space (`obs_space/`, `action_space/`)
-- `ObservationExtractor`: Converts raw PySC2 observations into the current hybrid policy input: spatial screen tensor, padded entity tokens, padded selection tokens, and meta features.
-- `ActionSpace`: Maps the policy's current compact action heads into PySC2 `FunctionCall`s. The tokenized action-space redesign is still future work.
+- `ObservationExtractor`: Converts raw PySC2 observations into the current hybrid policy input: spatial screen tensor, padded entity tokens, padded selection tokens, and a 32-dim meta vector that now includes the executed-action bridge token.
+- `ActionSpace`: Maps the current 3-way conditioned policy (`NO_OP`, `MOVE`, `ATTACK`) into explicit PySC2 `FunctionCall`s (`no_op`, `Move_screen`, `Attack_screen`). Broader action-space expansion is still future work.
 
 ### 3. The Agent & Policy (`PPO_CNN/`)
 - **`DefeatRoaches` (Agent):** The orchestrator that binds the observation extractor, the reward function, and the PPO update logic.
@@ -209,7 +209,8 @@ historical docs live under [`docs/`](docs/README.md).
 
 Recommended starting points:
 - [`docs/current/REPO_STATE.md`](docs/current/REPO_STATE.md): current repo state and open questions
+- [`docs/current/action_refactor.md`](docs/current/action_refactor.md): what the Stage-1 action refactor landed and what remains
 - [`docs/current/THE_BPTT.md`](docs/current/THE_BPTT.md): current BPTT/TBPTT reasoning note
-- [`docs/current/working_log.md`](docs/current/working_log.md): living implementation log
+- [`docs/current/working_log.md`](docs/current/working_log.md): compressed implementation log
 - [`docs/README.md`](docs/README.md): full doc index
 - `logs/PROJECT_LOGS.md` / `logs/SESSION_LOG_*.md`: longer historical narrative
