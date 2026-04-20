@@ -85,6 +85,13 @@ def initialize_db(db_path):
                 entity_count_p50 REAL,
                 entity_count_p99 REAL,
                 selection_mask_utilization REAL,
+                update_wall_seconds REAL,
+                tbptt_chunks INTEGER,
+                tbptt_chunk_groups INTEGER,
+                tbptt_window INTEGER,
+                tbptt_group_max_steps INTEGER,
+                tbptt_group_mean_active_chunks REAL,
+                tbptt_forward_calls INTEGER,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -120,6 +127,13 @@ def initialize_db(db_path):
         _safe_add_column(conn, "ppo_updates", "entity_count_p50 REAL")
         _safe_add_column(conn, "ppo_updates", "entity_count_p99 REAL")
         _safe_add_column(conn, "ppo_updates", "selection_mask_utilization REAL")
+        _safe_add_column(conn, "ppo_updates", "update_wall_seconds REAL")
+        _safe_add_column(conn, "ppo_updates", "tbptt_chunks INTEGER")
+        _safe_add_column(conn, "ppo_updates", "tbptt_chunk_groups INTEGER")
+        _safe_add_column(conn, "ppo_updates", "tbptt_window INTEGER")
+        _safe_add_column(conn, "ppo_updates", "tbptt_group_max_steps INTEGER")
+        _safe_add_column(conn, "ppo_updates", "tbptt_group_mean_active_chunks REAL")
+        _safe_add_column(conn, "ppo_updates", "tbptt_forward_calls INTEGER")
 
     return conn
 
@@ -171,8 +185,11 @@ class LogListener(multiprocessing.Process):
                     "transitions_in_update, return_mean, return_std, "
                     "return_p10, return_p50, return_p90, "
                     "entity_mask_utilization, entity_count_p50, entity_count_p99, "
-                    "selection_mask_utilization) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "selection_mask_utilization, update_wall_seconds, "
+                    "tbptt_chunks, tbptt_chunk_groups, tbptt_window, "
+                    "tbptt_group_max_steps, tbptt_group_mean_active_chunks, "
+                    "tbptt_forward_calls) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     buffer_updates,
                 )
                 buffer_updates = []
@@ -254,6 +271,13 @@ class LogListener(multiprocessing.Process):
                             record.get("entity_count_p50"),
                             record.get("entity_count_p99"),
                             record.get("selection_mask_utilization"),
+                            record.get("update_wall_seconds"),
+                            record.get("tbptt_chunks"),
+                            record.get("tbptt_chunk_groups"),
+                            record.get("tbptt_window"),
+                            record.get("tbptt_group_max_steps"),
+                            record.get("tbptt_group_mean_active_chunks"),
+                            record.get("tbptt_forward_calls"),
                         )
                     )
 

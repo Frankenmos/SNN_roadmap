@@ -6,6 +6,7 @@ Checkpoint inspector plus optional 2D weight-map visualizer.
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -74,6 +75,145 @@ def pick_state_dict(ckpt):
         if all(isinstance(v, torch.Tensor) for v in ckpt.values()):
             return ckpt
     return None
+
+
+ENTITY_NORMALIZED_FIELDS = (
+    "health",
+    "health_ratio",
+    "shield",
+    "shield_ratio",
+    "energy",
+    "energy_ratio",
+    "weapon_cooldown",
+    "x",
+    "y",
+    "radius",
+    "build_progress",
+    "order_id_0",
+    "order_id_1",
+    "assigned_harvesters",
+    "ideal_harvesters",
+)
+SELECTION_NORMALIZED_FIELDS = (
+    "health",
+    "shields",
+    "energy",
+    "transport_slots_taken",
+    "build_progress",
+)
+DEFAULT_NORMALIZER_WARMUP_COUNT = 32.0
+
+
+def collect_checkpoint_metadata(ckpt) -> dict:
+    metadata = {}
+    if not isinstance(ckpt, dict):
+        return metadata
+
+    for key, value in ckpt.items():
+        if key in {
+            "agent_state",
+            "policy_net_state_dict",
+            "model_state_dict",
+            "state_dict",
+            "optimizer_state",
+            "scheduler_state",
+            "extractor_state",
+        }:
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            metadata[key] = value
+        elif isinstance(value, torch.Tensor) and value.numel() == 1:
+            metadata[key] = float(value.detach().cpu().item())
+        elif isinstance(value, (list, tuple)) and len(value) <= 5:
+            if all(isinstance(item, (str, int, float, bool)) for item in value):
+                metadata[key] = list(value)
+
+    metadata["has_optimizer_state"] = isinstance(ckpt.get("optimizer_state"), dict)
+    metadata["has_scheduler_state"] = isinstance(ckpt.get("scheduler_state"), dict)
+    metadata["has_extractor_state"] = isinstance(ckpt.get("extractor_state"), dict)
+    state_dict = pick_state_dict(ckpt)
+    if isinstance(state_dict, dict):
+        metadata["state_tensor_count"] = len(state_dict)
+        metadata["parameter_count"] = int(
+            sum(
+                int(tensor.numel())
+                for tensor in state_dict.values()
+                if isinstance(tensor, torch.Tensor)
+            )
+        )
+    return metadata
+
+
+def collect_time_constant_rows(state_dict) -> list[dict]:
+    rows = []
+    if not isinstance(state_dict, dict):
+        return rows
+    for name, tensor in state_dict.items():
+        if not isinstance(tensor, torch.Tensor):
+            continue
+        if "alpha" not in name and "beta" not in name:
+            continue
+        flat = tensor.detach().cpu().float().reshape(-1)
+        rows.append(
+            {
+                "name": name,
+                "kind": "alpha" if "alpha" in name else "beta",
+                "module": name.rsplit(".", 1)[0] if "." in name else name,
+                "numel": int(flat.numel()),
+                "mean": float(flat.mean().item()),
+                "std": float(flat.std(unbiased=False).item()) if flat.numel() > 1 else 0.0,
+                "min": float(flat.min().item()),
+                "max": float(flat.max().item()),
+            }
+        )
+    return rows
+
+
+def _normalizer_rows(state: dict | None, field_names: tuple[str, ...]) -> dict:
+    if not isinstance(state, dict):
+        return {
+            "count": 0.0,
+            "warm": False,
+            "rows": [],
+        }
+
+    count = float(state.get("count", 0.0))
+    mean = np.asarray(state.get("mean", []), dtype=np.float64)
+    m2 = np.asarray(state.get("m2", []), dtype=np.float64)
+    size = min(len(field_names), len(mean), len(m2))
+    denom = max(count - 1.0, 1.0)
+    rows = []
+    for index in range(size):
+        variance = max(float(m2[index]) / denom, 0.0)
+        rows.append(
+            {
+                "field": field_names[index],
+                "mean": float(mean[index]),
+                "std": float(math.sqrt(variance)),
+                "m2": float(m2[index]),
+            }
+        )
+    return {
+        "count": count,
+        "warm": count >= DEFAULT_NORMALIZER_WARMUP_COUNT,
+        "rows": rows,
+    }
+
+
+def collect_extractor_state_rows(ckpt) -> dict:
+    extractor_state = {}
+    if isinstance(ckpt, dict):
+        extractor_state = ckpt.get("extractor_state", {}) or {}
+    return {
+        "entity_normalizer": _normalizer_rows(
+            extractor_state.get("entity_normalizer"),
+            ENTITY_NORMALIZED_FIELDS,
+        ),
+        "selection_normalizer": _normalizer_rows(
+            extractor_state.get("selection_normalizer"),
+            SELECTION_NORMALIZED_FIELDS,
+        ),
+    }
 
 
 def extract_weight_vectors(state_dict, max_points: int = 5000):
@@ -237,6 +377,39 @@ def inspect_checkpoint(path: str, make_map: bool = True, max_points: int = 5000)
     if state_dict is None:
         print("Could not find a model state_dict inside this checkpoint.")
         return
+
+    metadata = collect_checkpoint_metadata(ckpt)
+    if metadata:
+        print("Checkpoint metadata:")
+        for key in sorted(metadata):
+            print(f"  {key}: {metadata[key]}")
+        print()
+
+    time_constant_rows = collect_time_constant_rows(state_dict)
+    if time_constant_rows:
+        print("Learned alpha/beta parameters:")
+        for row in time_constant_rows:
+            print(
+                f"  {row['name']:35s} | numel={row['numel']:4d} | "
+                f"mean={row['mean']:+.4f} | std={row['std']:.4f} | "
+                f"min={row['min']:+.4f} | max={row['max']:+.4f}"
+            )
+        print()
+
+    extractor_rows = collect_extractor_state_rows(ckpt)
+    for normalizer_name, summary in extractor_rows.items():
+        if not summary["rows"]:
+            continue
+        print(
+            f"{normalizer_name}: count={summary['count']:.1f} | "
+            f"warm={summary['warm']}"
+        )
+        for row in summary["rows"]:
+            print(
+                f"  {row['field']:24s} | mean={row['mean']:+.4f} | "
+                f"std={row['std']:.4f}"
+            )
+        print()
 
     print("Interpreting part of checkpoint as model state_dict.")
     print(f"Number of tensors in state_dict: {len(state_dict)}")

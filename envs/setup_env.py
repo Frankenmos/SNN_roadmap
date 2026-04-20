@@ -1,13 +1,20 @@
 from pysc2.env import sc2_env
 from pysc2.lib import features, actions
-from Utility.available_actions_wrapper import AvailableActionsPrinter  # Ensure correct import
+from Utility.available_actions_wrapper import (
+    AvailableActionsDiagnosticsWrapper,
+    AvailableActionsPrinter,
+)
 from Utility.observation_inspector_wrapper import ObservationInspectorWrapper
 from Utility.policy_input_diagnostics_wrapper import PolicyInputDiagnosticsWrapper
+
 
 def create_env(
     map_name="DefeatZerglingsAndBanelings",
     visualize=False,
     use_action_printer=False,
+    use_available_actions_diagnostics=False,
+    available_actions_diagnostics_output_path="analysis_results/available_actions_diagnostics.jsonl",
+    available_actions_diagnostics_every_n_steps=1,
     use_observation_inspector=False,
     observation_inspector_output_path="analysis_results/observation_space.jsonl",
     observation_inspector_every_n_steps=10,
@@ -37,6 +44,12 @@ def create_env(
     )
     if use_action_printer:
         env = AvailableActionsPrinter(env)  # Conditionally wrap environment
+    if use_available_actions_diagnostics:
+        env = AvailableActionsDiagnosticsWrapper(
+            env=env,
+            output_path=available_actions_diagnostics_output_path,
+            log_every_n_steps=available_actions_diagnostics_every_n_steps,
+        )
     if use_observation_inspector:
         env = ObservationInspectorWrapper(
             env=env,

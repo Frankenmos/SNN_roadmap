@@ -12,6 +12,7 @@ from PPO_CNN.policy_network import (
     MetaEncoder,
     PolicyNetwork,
     SelectionEncoder,
+    SpikingSelfAttention,
 )
 from PPO_CNN_agent import DefeatRoaches
 
@@ -270,6 +271,27 @@ def test_learnable_time_constants_receive_gradients():
     ]:
         assert param.grad is not None, f"{name} is missing gradients"
         assert torch.isfinite(param.grad).all(), f"{name} has non-finite gradients"
+
+
+def test_spiking_self_attention_sdpa_respects_padding_mask():
+    attention = SpikingSelfAttention(embed_dim=8)
+    tokens = torch.randn(2, 4, 8, requires_grad=True)
+    token_mask = torch.tensor(
+        [
+            [True, True, True, True],
+            [True, True, False, False],
+        ],
+        dtype=torch.bool,
+    )
+
+    output = attention(tokens, token_mask=token_mask)
+    loss = output.sum()
+    loss.backward()
+
+    assert output.shape == (2, 4, 8)
+    assert torch.count_nonzero(output[1, 2:]) == 0
+    assert tokens.grad is not None
+    assert torch.isfinite(tokens.grad).all()
 
 
 def test_policy_parameter_count_stays_below_one_million():

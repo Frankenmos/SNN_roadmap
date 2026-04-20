@@ -13,6 +13,11 @@ import streamlit as st
 import torch
 import torchvision
 
+from tools.analysis.analyze_pth import (
+    collect_checkpoint_metadata,
+    collect_extractor_state_rows,
+    collect_time_constant_rows,
+)
 from tools.analysis.results import ACTION_LABELS, TrainingAnalyzer
 
 
@@ -74,6 +79,7 @@ def load_analysis_bundle(
         bundle = {
             "episodes": analyzer.get_episode_metrics(),
             "steps": analyzer.get_step_metrics(),
+            "phase_mix": analyzer.action_mix_by_episode_phase(num_bins=num_bins),
             "reward_components": reward_components,
             "updates": analyzer.get_update_metrics(),
             "evals": analyzer.get_eval_metrics(),
@@ -201,6 +207,39 @@ def _episode_length_figure(episodes_df: pd.DataFrame, window: int) -> go.Figure:
     return fig
 
 
+def _reward_efficiency_figure(episodes_df: pd.DataFrame, window: int) -> go.Figure:
+    efficiency = (
+        episodes_df["total_reward"] / episodes_df["steps"].clip(lower=1)
+    ).replace([np.inf, -np.inf], np.nan)
+    rolling = efficiency.rolling(window, min_periods=1).mean()
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=episodes_df["episode_id"],
+            y=efficiency,
+            mode="lines",
+            name="Reward / step",
+            line={"color": "rgba(148,103,189,0.25)"},
+            hoverinfo="skip",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=episodes_df["episode_id"],
+            y=rolling,
+            mode="lines",
+            name=f"Rolling mean ({window})",
+            line={"color": "#9467bd"},
+        )
+    )
+    fig.update_layout(
+        title="Reward efficiency",
+        xaxis_title="Episode",
+        yaxis_title="Reward / step",
+    )
+    return fig
+
+
 def _oscillation_figure(cov: pd.Series) -> go.Figure:
     cov_df = cov.reset_index()
     cov_df.columns = ["episode_id", "cov"]
@@ -237,6 +276,39 @@ def _action_mix_figure(mix_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def _phase_action_mix_figure(
+    phase_mix_df: pd.DataFrame,
+    phase: str,
+) -> go.Figure:
+    phase_df = phase_mix_df[phase_mix_df["phase"] == phase]
+    title = f"{phase.title()}-phase action mix"
+    if phase_df.empty:
+        fig = go.Figure()
+        fig.update_layout(title=title)
+        return fig
+    pivot = phase_df.pivot(index="bin", columns="action", values="prob").fillna(0.0)
+    pivot = pivot.reindex(columns=[0, 1, 2], fill_value=0.0)
+    fig = go.Figure()
+    for action_id in [0, 1, 2]:
+        fig.add_trace(
+            go.Scatter(
+                x=pivot.index,
+                y=pivot[action_id],
+                mode="lines",
+                stackgroup="one",
+                name=ACTION_LABELS.get(action_id, str(action_id)),
+                showlegend=(phase == "early"),
+            )
+        )
+    fig.update_layout(
+        title=title,
+        xaxis_title="Episode bin",
+        yaxis_title="Share",
+        yaxis_range=[0, 1],
+    )
+    return fig
+
+
 def _action_heatmap_figure(steps_df: pd.DataFrame, num_bins: int) -> go.Figure:
     if steps_df.empty:
         return go.Figure()
@@ -266,6 +338,32 @@ def _action_heatmap_figure(steps_df: pd.DataFrame, num_bins: int) -> go.Figure:
         color_continuous_scale="Viridis",
         labels={"episode_bin": "Episode bin", "probability": "Probability"},
     )
+    return fig
+
+
+def _move_target_heatmap_figure(steps_df: pd.DataFrame) -> go.Figure:
+    required = {"action", "move_x", "move_y"}
+    if steps_df.empty or not required.issubset(set(steps_df.columns)):
+        return go.Figure()
+    moves = steps_df[
+        (steps_df["action"] == 1)
+        & steps_df["move_x"].notna()
+        & steps_df["move_y"].notna()
+    ]
+    if moves.empty:
+        fig = go.Figure()
+        fig.update_layout(title="Move target heatmap")
+        return fig
+    fig = px.density_heatmap(
+        moves,
+        x="move_x",
+        y="move_y",
+        nbinsx=32,
+        nbinsy=32,
+        title="Move target heatmap",
+        color_continuous_scale="Viridis",
+    )
+    fig.update_layout(xaxis_title="move_x", yaxis_title="move_y")
     return fig
 
 
@@ -319,15 +417,113 @@ def _ppo_metric_figure(ppo_updates_df: pd.DataFrame, metric: str) -> go.Figure:
     return fig
 
 
-def _eval_figure(eval_runs_df: pd.DataFrame) -> go.Figure:
-    fig = px.line(
-        eval_runs_df,
-        x="episode_index",
-        y="mean_reward",
-        error_y="std_reward" if "std_reward" in eval_runs_df.columns else None,
-        title="Evaluation reward",
+def _speed_scatter_figure(
+    ppo_updates_df: pd.DataFrame,
+    x_metric: str,
+    y_metric: str,
+    title: str,
+) -> go.Figure:
+    fig = px.scatter(
+        ppo_updates_df,
+        x=x_metric,
+        y=y_metric,
+        title=title,
     )
+    fig.update_layout(xaxis_title=x_metric, yaxis_title=y_metric)
+    return fig
+
+
+def _eval_figure(eval_runs_df: pd.DataFrame) -> go.Figure:
+    if eval_runs_df.empty:
+        return go.Figure()
+
+    fig = go.Figure()
+    has_det = "deterministic" in eval_runs_df.columns
+    groups = [("all", eval_runs_df)] if not has_det else [
+        ("stochastic", eval_runs_df[eval_runs_df["deterministic"].fillna(0).astype(int) == 0]),
+        ("deterministic", eval_runs_df[eval_runs_df["deterministic"].fillna(0).astype(int) == 1]),
+    ]
+    colors = {
+        "all": "#1f77b4",
+        "stochastic": "#1f77b4",
+        "deterministic": "#d62728",
+    }
+    fills = {
+        "all": "rgba(31,119,180,0.10)",
+        "stochastic": "rgba(31,119,180,0.10)",
+        "deterministic": "rgba(214,39,40,0.10)",
+    }
+    for label, subset in groups:
+        if subset.empty:
+            continue
+        if {"min_reward", "max_reward"}.issubset(set(subset.columns)):
+            fig.add_trace(
+                go.Scatter(
+                    x=subset["episode_index"],
+                    y=subset["max_reward"],
+                    mode="lines",
+                    line={"width": 0},
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=subset["episode_index"],
+                    y=subset["min_reward"],
+                    mode="lines",
+                    line={"width": 0},
+                    fill="tonexty",
+                    fillcolor=fills[label],
+                    hoverinfo="skip",
+                    name=f"{label.title()} min/max",
+                )
+            )
+        fig.add_trace(
+            go.Scatter(
+                x=subset["episode_index"],
+                y=subset["mean_reward"],
+                mode="lines+markers",
+                name=f"{label.title()} mean",
+                line={"color": colors[label]},
+                error_y={
+                    "type": "data",
+                    "array": subset["std_reward"],
+                    "visible": True,
+                } if "std_reward" in subset.columns else None,
+            )
+        )
     fig.update_layout(xaxis_title="Episode", yaxis_title="Mean reward")
+    return fig
+
+
+def _eval_gap_figure(eval_runs_df: pd.DataFrame) -> go.Figure | None:
+    required = {"episode_index", "mean_reward", "deterministic"}
+    if eval_runs_df.empty or not required.issubset(set(eval_runs_df.columns)):
+        return None
+    pivot = eval_runs_df.copy()
+    pivot["mode"] = np.where(
+        pivot["deterministic"].fillna(0).astype(int) == 1,
+        "deterministic",
+        "stochastic",
+    )
+    pivot = pivot.pivot_table(
+        index="episode_index",
+        columns="mode",
+        values="mean_reward",
+        aggfunc="last",
+    )
+    if not {"deterministic", "stochastic"}.issubset(set(pivot.columns)):
+        return None
+    gap = (pivot["stochastic"] - pivot["deterministic"]).reset_index(name="gap")
+    fig = px.line(
+        gap,
+        x="episode_index",
+        y="gap",
+        title="Eval reward gap (stochastic - deterministic)",
+    )
+    fig.add_hline(y=0.0, line_dash="dot", line_color="gray")
+    fig.update_layout(xaxis_title="Episode", yaxis_title="Reward gap")
     return fig
 
 
@@ -344,6 +540,42 @@ def _render_checkpoint_panel(ckpt_path: str | None) -> None:
     if state_dict is None:
         st.error("Could not identify a state_dict in this checkpoint.")
         return
+
+    metadata = collect_checkpoint_metadata(ckpt)
+    if metadata:
+        st.markdown("#### Checkpoint metadata")
+        meta_df = pd.DataFrame(
+            [{"key": key, "value": value} for key, value in sorted(metadata.items())],
+        )
+        st.dataframe(meta_df, use_container_width=True, hide_index=True)
+
+    time_constant_rows = collect_time_constant_rows(state_dict)
+    if time_constant_rows:
+        st.markdown("#### Learned alpha / beta")
+        st.dataframe(
+            pd.DataFrame(time_constant_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    extractor_rows = collect_extractor_state_rows(ckpt)
+    if any(summary["rows"] for summary in extractor_rows.values()):
+        st.markdown("#### Extractor normalizers")
+        normalizer_cols = st.columns(2)
+        for index, (normalizer_name, summary) in enumerate(extractor_rows.items()):
+            with normalizer_cols[index % 2]:
+                st.caption(
+                    f"{normalizer_name}: count={summary['count']:.1f}, "
+                    f"warm={summary['warm']}",
+                )
+                if summary["rows"]:
+                    st.dataframe(
+                        pd.DataFrame(summary["rows"]),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.info("No saved stats.")
 
     layer_names = list(state_dict.keys())
     selected_layer = st.selectbox("Layer / parameter", layer_names)
@@ -490,6 +722,7 @@ def render_dashboard() -> None:
 
     episodes_df = bundle["episodes"]
     steps_df = bundle["steps"]
+    phase_mix_df = bundle["phase_mix"]
     reward_components_df = bundle["reward_components"]
     ppo_updates_df = bundle["updates"]
     eval_runs_df = bundle["evals"]
@@ -592,12 +825,24 @@ def render_dashboard() -> None:
             hover_data=["episode_id"],
         )
         st.plotly_chart(scatter, use_container_width=True)
+        st.plotly_chart(
+            _reward_efficiency_figure(episodes_df, window),
+            use_container_width=True,
+        )
 
     with tab_policy:
         if mix_df.empty:
             st.info("No step data available for action-mix analysis.")
         else:
             st.plotly_chart(_action_mix_figure(mix_df), use_container_width=True)
+            phase_cols = st.columns(3)
+            for idx, phase in enumerate(["early", "mid", "late"]):
+                with phase_cols[idx]:
+                    st.plotly_chart(
+                        _phase_action_mix_figure(phase_mix_df, phase),
+                        use_container_width=True,
+                    )
+
             left, right = st.columns(2)
             with left:
                 st.plotly_chart(
@@ -609,6 +854,10 @@ def render_dashboard() -> None:
                     _entropy_figure(entropy_df),
                     use_container_width=True,
                 )
+            st.plotly_chart(
+                _move_target_heatmap_figure(steps_df),
+                use_container_width=True,
+            )
 
     with tab_ppo:
         if ppo_updates_df.empty:
@@ -631,6 +880,13 @@ def render_dashboard() -> None:
                 "return_p10",
                 "return_p50",
                 "return_p90",
+                "update_wall_seconds",
+                "tbptt_chunks",
+                "tbptt_chunk_groups",
+                "tbptt_window",
+                "tbptt_group_max_steps",
+                "tbptt_group_mean_active_chunks",
+                "tbptt_forward_calls",
             ]
             present_metrics = [
                 metric for metric in metrics_to_plot if metric in ppo_updates_df.columns
@@ -642,6 +898,7 @@ def render_dashboard() -> None:
                     "clip_fraction",
                     "explained_variance",
                     "grad_norm",
+                    "update_wall_seconds",
                 ]
                 if metric in present_metrics
             ]
@@ -656,6 +913,85 @@ def render_dashboard() -> None:
                     with cols[index % 2]:
                         st.plotly_chart(
                             _ppo_metric_figure(ppo_updates_df, metric),
+                            use_container_width=True,
+                        )
+
+            speed_fields = {
+                "update_wall_seconds",
+                "tbptt_forward_calls",
+                "transitions_in_update",
+                "tbptt_chunks",
+                "tbptt_chunk_groups",
+                "tbptt_group_mean_active_chunks",
+            }
+            if speed_fields.intersection(set(ppo_updates_df.columns)):
+                st.markdown("#### TBPTT / speed")
+                tail = ppo_updates_df.tail(max(1, len(ppo_updates_df) // 4)).copy()
+                if {
+                    "transitions_in_update",
+                    "update_wall_seconds",
+                }.issubset(set(tail.columns)):
+                    tail["transitions_per_second"] = (
+                        tail["transitions_in_update"] /
+                        tail["update_wall_seconds"].clip(lower=1.0e-6)
+                    )
+                if {
+                    "tbptt_forward_calls",
+                    "update_wall_seconds",
+                }.issubset(set(tail.columns)):
+                    tail["forward_calls_per_second"] = (
+                        tail["tbptt_forward_calls"] /
+                        tail["update_wall_seconds"].clip(lower=1.0e-6)
+                    )
+                summary_cols = st.columns(4)
+                if "update_wall_seconds" in tail.columns:
+                    summary_cols[0].metric(
+                        "Late update sec",
+                        f"{float(tail['update_wall_seconds'].mean()):.2f}",
+                    )
+                if "transitions_per_second" in tail.columns:
+                    summary_cols[1].metric(
+                        "Late transitions / s",
+                        f"{float(tail['transitions_per_second'].mean()):.1f}",
+                    )
+                if "tbptt_forward_calls" in tail.columns:
+                    summary_cols[2].metric(
+                        "Late forward calls",
+                        f"{float(tail['tbptt_forward_calls'].mean()):.1f}",
+                    )
+                if "tbptt_group_mean_active_chunks" in tail.columns:
+                    summary_cols[3].metric(
+                        "Active chunks",
+                        f"{float(tail['tbptt_group_mean_active_chunks'].mean()):.2f}",
+                    )
+
+                speed_left, speed_right = st.columns(2)
+                if {
+                    "update_wall_seconds",
+                    "transitions_in_update",
+                }.issubset(set(ppo_updates_df.columns)):
+                    with speed_left:
+                        st.plotly_chart(
+                            _speed_scatter_figure(
+                                ppo_updates_df,
+                                "update_wall_seconds",
+                                "transitions_in_update",
+                                "Transitions per update vs wall time",
+                            ),
+                            use_container_width=True,
+                        )
+                if {
+                    "update_wall_seconds",
+                    "tbptt_forward_calls",
+                }.issubset(set(ppo_updates_df.columns)):
+                    with speed_right:
+                        st.plotly_chart(
+                            _speed_scatter_figure(
+                                ppo_updates_df,
+                                "update_wall_seconds",
+                                "tbptt_forward_calls",
+                                "Forward calls vs wall time",
+                            ),
                             use_container_width=True,
                         )
 
@@ -678,6 +1014,9 @@ def render_dashboard() -> None:
             st.info("No `eval_runs` table found in this DB.")
         else:
             st.plotly_chart(_eval_figure(eval_runs_df), use_container_width=True)
+            eval_gap_fig = _eval_gap_figure(eval_runs_df)
+            if eval_gap_fig is not None:
+                st.plotly_chart(eval_gap_fig, use_container_width=True)
 
     with tab_rewards:
         reward_fig = _reward_components_figure(reward_components_df, window)

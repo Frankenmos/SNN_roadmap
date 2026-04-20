@@ -21,8 +21,8 @@ class ActionSpace:
         target_x = int(np.clip(target_x, 0, max_coord))
         target_y = int(np.clip(target_y, 0, max_coord))
 
-        if actions.FUNCTIONS.Move_screen.id in obs.observation.available_actions:
-            return actions.FUNCTIONS.Move_screen("now", [target_x, target_y])
+        if actions.FUNCTIONS.Smart_screen.id in obs.observation.available_actions:
+            return actions.FUNCTIONS.Smart_screen("now", [target_x, target_y])
         return actions.FUNCTIONS.no_op()
 
     def nearest_enemy_unit_center(self, obs):

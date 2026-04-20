@@ -51,6 +51,11 @@ flags.DEFINE_bool(
     False,
     "Enable PolicyInputDiagnosticsWrapper to log raw obs + extracted batch summaries.",
 )
+flags.DEFINE_bool(
+    "inspect_actions",
+    False,
+    "Enable AvailableActionsDiagnosticsWrapper to log per-step action availability and dispatched calls.",
+)
 flags.DEFINE_string(
     "policy_input_output",
     None,
@@ -62,6 +67,18 @@ flags.DEFINE_integer(
     "policy_input_every",
     1,
     "Log every N env steps when --inspect_policy_input is enabled.",
+)
+flags.DEFINE_string(
+    "actions_output",
+    None,
+    "Path for action-space diagnostics JSONL. Defaults to "
+    "analysis_results/<run_name>/available_actions_diagnostics.jsonl when "
+    "--run_name is known, otherwise analysis_results/available_actions_diagnostics.jsonl.",
+)
+flags.DEFINE_integer(
+    "actions_every",
+    1,
+    "Log every N env steps when --inspect_actions is enabled.",
 )
 
 
@@ -95,11 +112,24 @@ def play(
     inspect_policy_input=False,
     policy_input_output_path=None,
     policy_input_every=1,
+    inspect_actions=False,
+    actions_output_path=None,
+    actions_every=1,
 ):
     env = create_env(
         map_name=cfg.environment.map_name,
         visualize=visualize,
         use_action_printer=False,
+        use_available_actions_diagnostics=inspect_actions,
+        available_actions_diagnostics_output_path=(
+            actions_output_path
+            or getattr(
+                cfg.environment,
+                "available_actions_diagnostics_output_path",
+                "analysis_results/available_actions_diagnostics.jsonl",
+            )
+        ),
+        available_actions_diagnostics_every_n_steps=actions_every,
         use_observation_inspector=inspect,
         observation_inspector_output_path=(
             inspect_output_path
@@ -221,6 +251,19 @@ def main(argv):
                 analysis_dir, "policy_input_diagnostics.jsonl",
             )
 
+    actions_output_path = FLAGS.actions_output
+    if FLAGS.inspect_actions and actions_output_path is None:
+        analysis_dir = getattr(cfg.environment, "analysis_dir", "analysis_results")
+        name = FLAGS.run_name or getattr(cfg.environment, "run_name", "")
+        if name:
+            actions_output_path = os.path.join(
+                analysis_dir, name, "available_actions_diagnostics.jsonl",
+            )
+        else:
+            actions_output_path = os.path.join(
+                analysis_dir, "available_actions_diagnostics.jsonl",
+            )
+
     play(
         checkpoint_path=checkpoint_path,
         episodes=FLAGS.episodes,
@@ -231,6 +274,9 @@ def main(argv):
         inspect_policy_input=FLAGS.inspect_policy_input,
         policy_input_output_path=policy_input_output_path,
         policy_input_every=FLAGS.policy_input_every,
+        inspect_actions=FLAGS.inspect_actions,
+        actions_output_path=actions_output_path,
+        actions_every=FLAGS.actions_every,
     )
 
 

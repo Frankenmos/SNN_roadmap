@@ -113,3 +113,37 @@
   `tests/test_PPO.py` now checks ordered chunk replay and done-boundary reset behavior, `tests/test_training_loop.py` now checks helper-step storage, and `tests/test_agent.py` now checks entity-token recurrent carry is zeroed. Full local suite after the rewrite:
   `pytest tests -q`
   `31 passed`
+- TBPTT speed pass, policy-side groundwork:
+  added `PolicyNetwork.forward_step_tensors(...)` as a replay-only fast path so PPO can feed pre-packed tensors directly without rebuilding a `PolicyInputBatch` every timestep. The public `forward(PolicyInputBatch)` contract stays unchanged and now just forwards into the tensor path.
+- Added `PolicyNetwork.reset_state_rows(...)`:
+  recurrent done resets now have a dedicated mask-based helper. This keeps the reset semantics explicit and avoids rebuilding one-row zero states in Python during replay.
+- TBPTT speed pass, packed replay:
+  `PPO.py` now packs each chunk group once into time-major tensors (`[T, B, ...]` for obs fields plus `done`, `policy_mask`, and `alive_mask`) and replays that packed group with one forward call per replay timestep. The slow per-step `PolicyInputBatch` assembly path is retained only as `_replay_chunk_group_reference(...)` for regression testing.
+- Why I kept the old replay implementation around as a reference:
+  this refactor changes the hot path, so having a known-good replay implementation still in-tree made it possible to add exact equivalence tests instead of trusting the optimization by inspection.
+- New PPO update instrumentation:
+  each `ppo_updates` row now records `update_wall_seconds`, `tbptt_chunks`, `tbptt_chunk_groups`, `tbptt_window`, `tbptt_group_max_steps`, `tbptt_group_mean_active_chunks`, and `tbptt_forward_calls`. That gives the next real run enough signal to separate "still slow because of true compute" from "still slow because batching is poor."
+- Logging and regression coverage for the speed pass:
+  `Utility/logger_utils.py` now persists the new TBPTT metrics, `tests/test_PPO.py` locks packed replay shapes/equivalence/reset behavior/forward-call counts, and `tests/test_logger_utils.py` runs the actual log-listener insert path against a temp SQLite DB.
+- Local verification after the packed replay pass:
+  `pytest tests -q`
+  `36 passed`
+- Attention kernel quick win:
+  swapped `SpikingSelfAttention` from manual `QK^T -> masked softmax -> AV` to `torch.nn.functional.scaled_dot_product_attention(...)`. This keeps the same dense attention semantics but lets PyTorch dispatch to its fused SDPA backends automatically when the runtime/device supports them.
+- Why SDPA and not FlexAttention here:
+  our attention pattern is still plain dense attention with a simple padding mask. SDPA is the lowest-risk fast path for that case, while FlexAttention is more useful once we need custom score modifications or structured sparsity.
+- Action-space diagnostics pass:
+  the old `Utility/available_actions_wrapper.py` printer only showed newly seen available actions, which is fine for quick inspection but not enough for tokenized action-space design. I replaced it with a dual-purpose module: the original printer stays, and a new `AvailableActionsDiagnosticsWrapper` writes JSONL with previous/current `available_actions`, dispatched PySC2 call info, `last_actions`, and small selection/unit-count breadcrumbs.
+- Eval wiring for action-space design:
+  `PPO_CNN_eval.py` now supports `--inspect_actions`, `--actions_output`, and `--actions_every`, and `envs/setup_env.py` can wrap the env with the structured action diagnostics logger. That gives us real per-step availability/dispatch traces to design the next action tokenization pass against.
+- Analysis/dashboard catch-up pass:
+  `tools/analysis/results.py` now loads the current BPTT/TBPTT fields already present in `ppo_updates`, carries `move_x/move_y` through `steps`, and derives phase-of-episode action mix (`early/mid/late`) so the dashboard can reason about policy timing instead of only whole-run action shares.
+- Dashboard alignment with the current branch:
+  `tools/analysis/dashboard.py` now exposes a real TBPTT/speed section (update wall time, chunk/group metrics, forward calls, derived throughput), splits eval curves into deterministic vs stochastic with an explicit reward-gap plot, adds reward-efficiency and move-target views, and surfaces phase-specific action mix panels.
+- Checkpoint introspection upgraded for this repo:
+  `tools/analysis/analyze_pth.py` and the dashboard checkpoint tab now summarize top-level checkpoint metadata, saved extractor normalizer stats, and learned SNN/attention `alpha`/`beta` parameters. That replaces some of the old generic "weight cloud" emphasis with branch-specific signals that are actually useful while debugging the SNN+BPTT path.
+- AI-friendly analysis export:
+  `results.py` now supports `--aismart`, which writes a focused bundle of static PNG panels under `analysis_results/<run_name>/ai_friendly_results/`. The goal is not to duplicate the whole Streamlit dashboard, but to expose the high-signal panels we most often end up discussing back in text-only contexts: reward, episode length, efficiency, entropy, whole/phase action mix, move-target heatmap, TBPTT speed, eval split/gap, and reward-component trends when present.
+- Local verification for the analysis pass:
+  `pytest tests -q`
+  `40 passed`

@@ -61,6 +61,7 @@ def install_fake_pysc2():
         Attack_screen=FakeFunction("Attack_screen", 1),
         Move_screen=FakeFunction("Move_screen", 2),
         select_army=FakeFunction("select_army", 3),
+        Smart_screen=FakeFunction("Smart_screen", 4),
     )
 
     colors_mod = types.ModuleType("pysc2.lib.colors")
