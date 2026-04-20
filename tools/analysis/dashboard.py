@@ -18,7 +18,7 @@ from tools.analysis.analyze_pth import (
     collect_extractor_state_rows,
     collect_time_constant_rows,
 )
-from tools.analysis.results import ACTION_LABELS, TrainingAnalyzer
+from tools.analysis.results import TrainingAnalyzer
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -83,6 +83,8 @@ def load_analysis_bundle(
             "reward_components": reward_components,
             "updates": analyzer.get_update_metrics(),
             "evals": analyzer.get_eval_metrics(),
+            "action_labels": analyzer.action_labels.copy(),
+            "action_semantics": analyzer.action_semantics,
             "diagnosis": analyzer.diagnose(
                 window=window,
                 num_bins=num_bins,
@@ -253,7 +255,7 @@ def _oscillation_figure(cov: pd.Series) -> go.Figure:
     return fig
 
 
-def _action_mix_figure(mix_df: pd.DataFrame) -> go.Figure:
+def _action_mix_figure(mix_df: pd.DataFrame, action_labels: dict[int, str]) -> go.Figure:
     pivot = mix_df.pivot(index="bin", columns="action", values="prob").fillna(0.0)
     pivot = pivot.reindex(columns=[0, 1, 2], fill_value=0.0)
     fig = go.Figure()
@@ -264,7 +266,7 @@ def _action_mix_figure(mix_df: pd.DataFrame) -> go.Figure:
                 y=pivot[action_id],
                 mode="lines",
                 stackgroup="one",
-                name=ACTION_LABELS.get(action_id, str(action_id)),
+                name=action_labels.get(action_id, str(action_id)),
             )
         )
     fig.update_layout(
@@ -279,6 +281,7 @@ def _action_mix_figure(mix_df: pd.DataFrame) -> go.Figure:
 def _phase_action_mix_figure(
     phase_mix_df: pd.DataFrame,
     phase: str,
+    action_labels: dict[int, str],
 ) -> go.Figure:
     phase_df = phase_mix_df[phase_mix_df["phase"] == phase]
     title = f"{phase.title()}-phase action mix"
@@ -296,7 +299,7 @@ def _phase_action_mix_figure(
                 y=pivot[action_id],
                 mode="lines",
                 stackgroup="one",
-                name=ACTION_LABELS.get(action_id, str(action_id)),
+                name=action_labels.get(action_id, str(action_id)),
                 showlegend=(phase == "early"),
             )
         )
@@ -309,7 +312,11 @@ def _phase_action_mix_figure(
     return fig
 
 
-def _action_heatmap_figure(steps_df: pd.DataFrame, num_bins: int) -> go.Figure:
+def _action_heatmap_figure(
+    steps_df: pd.DataFrame,
+    num_bins: int,
+    action_labels: dict[int, str],
+) -> go.Figure:
     if steps_df.empty:
         return go.Figure()
     max_ep = int(steps_df["episode_id"].max())
@@ -328,15 +335,22 @@ def _action_heatmap_figure(steps_df: pd.DataFrame, num_bins: int) -> go.Figure:
     )
     counts = counts.merge(totals, on="episode_bin")
     counts["probability"] = counts["count"] / counts["total"]
+    counts["action_label"] = counts["action"].map(
+        lambda action_id: action_labels.get(int(action_id), str(action_id))
+    )
     fig = px.density_heatmap(
         counts,
         x="episode_bin",
-        y="action",
+        y="action_label",
         z="probability",
         nbinsx=num_bins,
         title="Action probability heatmap",
         color_continuous_scale="Viridis",
-        labels={"episode_bin": "Episode bin", "probability": "Probability"},
+        labels={
+            "episode_bin": "Episode bin",
+            "action_label": "Action",
+            "probability": "Probability",
+        },
     )
     return fig
 
@@ -726,6 +740,8 @@ def render_dashboard() -> None:
     reward_components_df = bundle["reward_components"]
     ppo_updates_df = bundle["updates"]
     eval_runs_df = bundle["evals"]
+    action_labels = bundle["action_labels"]
+    action_semantics = bundle["action_semantics"]
     diagnosis = bundle["diagnosis"]
 
     summary = diagnosis["summary"]
@@ -769,7 +785,10 @@ def render_dashboard() -> None:
     else:
         metrics[4].metric("Avg ep length", f"{summary['avg_episode_length']:.1f}")
 
-    st.caption(f"Source DB: `{db_path}`")
+    st.caption(
+        f"Source DB: `{db_path}` | action semantics: `{action_semantics}` "
+        f"(0={action_labels[0]}, 1={action_labels[1]}, 2={action_labels[2]})"
+    )
 
     with st.expander("Results-style diagnosis", expanded=True):
         if diagnosis["flags"]:
@@ -834,19 +853,22 @@ def render_dashboard() -> None:
         if mix_df.empty:
             st.info("No step data available for action-mix analysis.")
         else:
-            st.plotly_chart(_action_mix_figure(mix_df), use_container_width=True)
+            st.plotly_chart(
+                _action_mix_figure(mix_df, action_labels),
+                use_container_width=True,
+            )
             phase_cols = st.columns(3)
             for idx, phase in enumerate(["early", "mid", "late"]):
                 with phase_cols[idx]:
                     st.plotly_chart(
-                        _phase_action_mix_figure(phase_mix_df, phase),
+                        _phase_action_mix_figure(phase_mix_df, phase, action_labels),
                         use_container_width=True,
                     )
 
             left, right = st.columns(2)
             with left:
                 st.plotly_chart(
-                    _action_heatmap_figure(steps_df, num_bins),
+                    _action_heatmap_figure(steps_df, num_bins, action_labels),
                     use_container_width=True,
                 )
             with right:
