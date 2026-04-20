@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 import pytest
@@ -250,6 +251,76 @@ def test_training_analyzer_exports_ai_friendly_panels(tmp_path):
     assert "10_eval_split.png" in exported
     assert "11_eval_gap.png" in exported
     assert (out_dir / "manifest.txt").exists()
+
+
+def test_training_analyzer_uses_current_action_semantics_from_effective_config(tmp_path):
+    run_dir = tmp_path / "BPTT-1"
+    run_dir.mkdir()
+    db_path = run_dir / "training_logs.db"
+    conn = initialize_db(str(db_path))
+    with conn:
+        conn.execute(
+            "INSERT INTO episodes (episode_id, total_reward, average_reward, steps) "
+            "VALUES (1, 10.0, 1.0, 10)",
+        )
+        step_rows = [
+            (1, idx, 2 if idx < 7 else 1 if idx < 9 else 0, 10, 11, 1.0, float(idx + 1))
+            for idx in range(10)
+        ]
+        conn.executemany(
+            "INSERT INTO steps "
+            "(episode_id, step_number, action, move_x, move_y, reward, cumulative_reward) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            step_rows,
+        )
+    conn.close()
+    (run_dir / "effective_config.json").write_text(
+        json.dumps({"model": {"vector_input_dim": 32}}),
+        encoding="utf-8",
+    )
+
+    analyzer = TrainingAnalyzer(str(db_path))
+    try:
+        diagnosis = analyzer.diagnose(window=2, num_bins=2)
+    finally:
+        analyzer.close()
+
+    assert diagnosis["action_semantics"] == "conditioned_spatial_v1"
+    assert diagnosis["action_labels"][2] == "attack"
+    assert diagnosis["noop_action_id"] == 0
+    assert not any("late-training steps are no-op" in flag[1] for flag in diagnosis["flags"])
+
+
+def test_training_analyzer_keeps_legacy_action_semantics_without_effective_config(tmp_path):
+    db_path = tmp_path / "legacy_analysis.db"
+    conn = initialize_db(str(db_path))
+    with conn:
+        conn.execute(
+            "INSERT INTO episodes (episode_id, total_reward, average_reward, steps) "
+            "VALUES (1, 10.0, 1.0, 10)",
+        )
+        step_rows = [
+            (1, idx, 2 if idx < 7 else 1 if idx < 9 else 0, 10, 11, 1.0, float(idx + 1))
+            for idx in range(10)
+        ]
+        conn.executemany(
+            "INSERT INTO steps "
+            "(episode_id, step_number, action, move_x, move_y, reward, cumulative_reward) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            step_rows,
+        )
+    conn.close()
+
+    analyzer = TrainingAnalyzer(str(db_path))
+    try:
+        diagnosis = analyzer.diagnose(window=2, num_bins=2)
+    finally:
+        analyzer.close()
+
+    assert diagnosis["action_semantics"] == "legacy_v0"
+    assert diagnosis["action_labels"][2] == "no-op"
+    assert diagnosis["noop_action_id"] == 2
+    assert any("late-training steps are no-op" in flag[1] for flag in diagnosis["flags"])
 
 
 def test_checkpoint_helpers_surface_metadata_extractor_state_and_time_constants():

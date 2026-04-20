@@ -176,6 +176,14 @@ Inspection flags that write JSONL diagnostics:
 - `--actions_every <N>`
   log every `N` env steps for action-space diagnostics
 
+Trace flags that write per-episode `.pt` sidecar artifacts:
+- `--trace_episodes <N>`
+  save the first `N` eval episodes as replayable trace files for later
+  activation / checkpoint inspection
+- `--trace_output_dir <path>`
+  directory for those episode trace files; defaults to
+  `analysis_results/<run_name>/episode_traces/`
+
 One useful combined command:
 
 ```bash

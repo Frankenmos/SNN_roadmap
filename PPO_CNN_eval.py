@@ -8,6 +8,7 @@ from absl import app, flags
 
 from PPO_CNN_agent import DefeatRoaches
 from Utility.config import cfg
+from Utility.eval_trace import EpisodeTraceRecorder
 from envs.setup_env import create_env
 from obs_space.obs_space_2 import ObservationExtractor
 
@@ -80,6 +81,18 @@ flags.DEFINE_integer(
     1,
     "Log every N env steps when --inspect_actions is enabled.",
 )
+flags.DEFINE_integer(
+    "trace_episodes",
+    0,
+    "Number of eval episodes to save as per-step trace files. 0 disables tracing.",
+)
+flags.DEFINE_string(
+    "trace_output_dir",
+    None,
+    "Directory for per-episode eval trace .pt files. Defaults to "
+    "analysis_results/<run_name>/episode_traces when --run_name is known, "
+    "otherwise analysis_results/episode_traces.",
+)
 
 
 def _locate_checkpoint(explicit_path, run_name, prefer_best):
@@ -102,6 +115,18 @@ def _locate_checkpoint(explicit_path, run_name, prefer_best):
     return os.path.join(models_dir, name, filename)
 
 
+def _load_checkpoint_state(checkpoint_path, device):
+    return torch.load(checkpoint_path, map_location=device)
+
+
+def _default_trace_output_dir(run_name):
+    analysis_dir = getattr(cfg.environment, "analysis_dir", "analysis_results")
+    name = run_name or getattr(cfg.environment, "run_name", "")
+    if name:
+        return os.path.join(analysis_dir, name, "episode_traces")
+    return os.path.join(analysis_dir, "episode_traces")
+
+
 def play(
     checkpoint_path,
     episodes,
@@ -115,6 +140,9 @@ def play(
     inspect_actions=False,
     actions_output_path=None,
     actions_every=1,
+    trace_episodes=0,
+    trace_output_dir=None,
+    run_name=None,
 ):
     env = create_env(
         map_name=cfg.environment.map_name,
@@ -167,7 +195,7 @@ def play(
             action_dim=cfg.model.action_dim,
         )
 
-        state = torch.load(checkpoint_path, map_location=agent.policy.device)
+        state = _load_checkpoint_state(checkpoint_path, agent.policy.device)
         agent.policy.load_state_dict(state["agent_state"])
         agent.extractor.load_state_dict(state.get("extractor_state", {}))
         agent.policy.eval()
@@ -180,20 +208,70 @@ def play(
 
         steps_cap = cfg.environment.steps_per_episode
         rewards = []
+        traced_episode_count = max(0, min(int(trace_episodes), int(episodes)))
+        if traced_episode_count > 0 and trace_output_dir is None:
+            trace_output_dir = _default_trace_output_dir(run_name)
         for ep in range(episodes):
             obs = env.reset()[0]
             agent.reset()
             ep_reward = 0.0
             steps = 0
+            trace_recorder = None
+            if ep < traced_episode_count:
+                trace_recorder = EpisodeTraceRecorder(
+                    output_dir=trace_output_dir,
+                    run_name=run_name,
+                    checkpoint_path=checkpoint_path,
+                    checkpoint_episode=ckpt_ep,
+                    deterministic=deterministic,
+                )
             while True:
-                action_func = agent.step(obs, deterministic=deterministic)[0]
+                (
+                    action_func,
+                    action,
+                    move_x,
+                    move_y,
+                    _pre_step_state,
+                    log_prob,
+                    value,
+                    policy_input,
+                    learnable,
+                ) = agent.step(obs, deterministic=deterministic)
                 next_obs = env.step([action_func])[0]
                 steps += 1
                 ep_reward += float(next_obs.reward)
+                reached_cap = steps >= steps_cap
+                done = bool(next_obs.last() or reached_cap)
+                if trace_recorder is not None:
+                    trace_recorder.add_step(
+                        step_index=steps - 1,
+                        action_func=action_func,
+                        action=action,
+                        move_x=move_x,
+                        move_y=move_y,
+                        log_prob=log_prob,
+                        value=value,
+                        reward=float(next_obs.reward),
+                        cumulative_reward=ep_reward,
+                        done=done,
+                        learnable=learnable,
+                        policy_input=policy_input,
+                    )
                 obs = next_obs
-                if next_obs.last() or steps >= steps_cap:
+                if done:
                     break
             rewards.append(ep_reward)
+            if trace_recorder is not None:
+                saved_trace = trace_recorder.save(
+                    episode_index=ep + 1,
+                    total_reward=ep_reward,
+                    steps=steps,
+                )
+                logger.info(
+                    "Saved eval trace for episode %s to %s",
+                    ep + 1,
+                    saved_trace,
+                )
             logger.info(
                 "Episode %s/%s: reward=%.2f, steps=%s",
                 ep + 1,
@@ -264,6 +342,12 @@ def main(argv):
                 analysis_dir, "available_actions_diagnostics.jsonl",
             )
 
+    trace_output_dir = FLAGS.trace_output_dir
+    if FLAGS.trace_episodes > 0 and trace_output_dir is None:
+        trace_output_dir = _default_trace_output_dir(
+            FLAGS.run_name or getattr(cfg.environment, "run_name", ""),
+        )
+
     play(
         checkpoint_path=checkpoint_path,
         episodes=FLAGS.episodes,
@@ -277,6 +361,9 @@ def main(argv):
         inspect_actions=FLAGS.inspect_actions,
         actions_output_path=actions_output_path,
         actions_every=FLAGS.actions_every,
+        trace_episodes=FLAGS.trace_episodes,
+        trace_output_dir=trace_output_dir,
+        run_name=FLAGS.run_name or getattr(cfg.environment, "run_name", ""),
     )
 
 

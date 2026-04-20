@@ -28,6 +28,14 @@ Verbose pre-compression snapshot:
 - kept rollout storage stable while making replay condition spatial logits on stored action IDs
 - fixed a real PySC2 runtime mismatch where `FunctionCall` does not reliably expose `.name`
 - aligned fake test action IDs with the real DefeatRoaches IDs
+- fixed analysis-side action decoding for post-refactor runs:
+  the analyzer now detects current action semantics from sibling run config and no longer mislabels `action=2` as no-op for `BPTT-1`
+- regenerated `analysis_results/BPTT-1/instability_report.txt` after the analysis fix
+- added optional eval-side episode trace artifacts:
+  `PPO_CNN_eval.py` can now save per-step `.pt` traces with extracted `PolicyInputBatch` tensors and dispatched action metadata via `--trace_episodes` / `--trace_output_dir`, without touching the training DB
+- verification for the eval trace path:
+  `pytest tests\test_eval_trace.py tests\test_analysis_tools.py -q`
+  `6 passed`
 - verification after the refactor:
   `pytest tests -q`
   `47 passed`

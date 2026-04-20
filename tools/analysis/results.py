@@ -16,6 +16,7 @@ rule-based instability report. Extends the older TrainingAnalyzer with:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import sqlite3
@@ -36,7 +37,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-ACTION_LABELS = {0: "attack", 1: "move", 2: "no-op"}
+LEGACY_ACTION_LABELS = {0: "attack", 1: "move", 2: "no-op"}
+CONDITIONED_ACTION_LABELS = {0: "no-op", 1: "move", 2: "attack"}
+ACTION_LABELS = CONDITIONED_ACTION_LABELS.copy()
 PHASE_LABELS = ("early", "mid", "late")
 
 
@@ -45,6 +48,13 @@ class TrainingAnalyzer:
         self.db_path = db_path
         self.conn: Optional[sqlite3.Connection] = None
         self._connect()
+        self.action_semantics = self._infer_action_semantics()
+        if self.action_semantics == "conditioned_spatial_v1":
+            self.action_labels = CONDITIONED_ACTION_LABELS.copy()
+            self.noop_action_id = 0
+        else:
+            self.action_labels = LEGACY_ACTION_LABELS.copy()
+            self.noop_action_id = 2
         # Cached DataFrames — loaded lazily.
         self._episodes: Optional[pd.DataFrame] = None
         self._steps: Optional[pd.DataFrame] = None
@@ -65,6 +75,29 @@ class TrainingAnalyzer:
         if self.conn:
             self.conn.close()
             logger.info("Database connection closed")
+
+    def _load_effective_config(self) -> Optional[dict]:
+        config_path = Path(self.db_path).with_name("effective_config.json")
+        if not config_path.exists():
+            return None
+        try:
+            return json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    def _infer_action_semantics(self) -> str:
+        config = self._load_effective_config()
+        if isinstance(config, dict):
+            model_cfg = config.get("model", {})
+            if isinstance(model_cfg, dict):
+                for field_name in ("vector_input_dim", "meta_input_dim"):
+                    value = model_cfg.get(field_name)
+                    try:
+                        if int(value) >= 32:
+                            return "conditioned_spatial_v1"
+                    except (TypeError, ValueError):
+                        continue
+        return "legacy_v0"
 
     def _table_columns(self, table_name: str) -> set[str]:
         try:
@@ -511,12 +544,14 @@ class TrainingAnalyzer:
 
         # No-op spam
         if not mix.empty:
-            noop = mix[mix["action"] == 2].groupby("bin")["prob"].mean()
-            if not noop.empty and noop.tail(max(1, len(noop) // 4)).mean() > 0.5:
+            noop = mix[mix["action"] == self.noop_action_id].groupby("bin")["prob"].mean()
+            late_noop = noop.tail(max(1, len(noop) // 4)).mean() if not noop.empty else None
+            if late_noop is not None and late_noop > 0.5:
                 flags.append((
                     "MED",
-                    f"No-op dominates: {noop.tail(len(noop)//4).mean():.1%} "
-                    f"of late-training steps are no-op.",
+                    f"{self.action_labels[self.noop_action_id].title()} dominates: "
+                    f"{late_noop:.1%} of late-training steps "
+                    f"are {self.action_labels[self.noop_action_id]}.",
                     "add step-level penalty; verify reward function",
                 ))
 
@@ -566,6 +601,9 @@ class TrainingAnalyzer:
             "evals": evals,
             "flags": flags,
             "summary": self.calculate_summary_statistics(),
+            "action_semantics": self.action_semantics,
+            "action_labels": self.action_labels.copy(),
+            "noop_action_id": self.noop_action_id,
             "config": {"window": window, "num_bins": num_bins, "win_threshold": win_threshold},
         }
 
@@ -585,6 +623,14 @@ class TrainingAnalyzer:
         lines.append(f"  max total reward:      {s['max_total_reward']:.2f}")
         lines.append(f"  reward std (full run): {s['reward_std']:.2f}")
         lines.append(f"  final 100-ep avg:      {s['final_100_avg_reward']:.2f}")
+        lines.append(f"  action semantics:      {diagnosis.get('action_semantics', self.action_semantics)}")
+        action_labels = diagnosis.get("action_labels", self.action_labels)
+        lines.append(
+            "  action labels:         "
+            f"0={action_labels.get(0, '0')}, "
+            f"1={action_labels.get(1, '1')}, "
+            f"2={action_labels.get(2, '2')}"
+        )
         lines.append("")
 
         plateau = diagnosis["plateau_episode"]
@@ -792,7 +838,11 @@ class TrainingAnalyzer:
             ax.stackplot(
                 pivot.index,
                 [pivot[0].values, pivot[1].values, pivot[2].values],
-                labels=[ACTION_LABELS[0], ACTION_LABELS[1], ACTION_LABELS[2]],
+                labels=[
+                    self.action_labels[0],
+                    self.action_labels[1],
+                    self.action_labels[2],
+                ],
                 alpha=0.7,
             )
         ax.set_title("Action mix over time")
@@ -1013,7 +1063,11 @@ class TrainingAnalyzer:
             ax.stackplot(
                 pivot.index,
                 [pivot[0].values, pivot[1].values, pivot[2].values],
-                labels=[ACTION_LABELS[0], ACTION_LABELS[1], ACTION_LABELS[2]],
+                labels=[
+                    self.action_labels[0],
+                    self.action_labels[1],
+                    self.action_labels[2],
+                ],
                 alpha=0.75,
             )
             ax.set_title("Action mix over time")
@@ -1036,7 +1090,11 @@ class TrainingAnalyzer:
                 ax.stackplot(
                     pivot.index,
                     [pivot[0].values, pivot[1].values, pivot[2].values],
-                    labels=[ACTION_LABELS[0], ACTION_LABELS[1], ACTION_LABELS[2]],
+                    labels=[
+                        self.action_labels[0],
+                        self.action_labels[1],
+                        self.action_labels[2],
+                    ],
                     alpha=0.75,
                 )
                 ax.set_title(f"{phase.title()}-phase action mix")
@@ -1219,6 +1277,11 @@ class TrainingAnalyzer:
             "AI-friendly export bundle",
             f"window={window}",
             f"num_bins={num_bins}",
+            f"action_semantics={self.action_semantics}",
+            "action_labels="
+            f"0:{self.action_labels[0]},"
+            f"1:{self.action_labels[1]},"
+            f"2:{self.action_labels[2]}",
             "",
             "files:",
         ] + [f"- {name}" for name in exported]
