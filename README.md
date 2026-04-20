@@ -22,13 +22,13 @@ The repository is structured into several logical components:
 - `setup_env.py`: Encapsulates the PySC2 environment initialization, ensuring the correct map (`DefeatRoaches`), step multipliers, and observation dimensions are loaded.
 
 ### 2. Observation & Action Space (`obs_space/`, `action_space/`)
-- `ObservationExtractor`: Converts the raw PySC2 observations (spatial screen features and tabular unit features) into stable, normalized tensors (a 3D spatial tensor and a 1D vector history).
-- `ActionSpace`: Maps the network's continuous and discrete outputs (e.g., move coordinates, attack targets) into PySC2's specific `FunctionCall` formats.
+- `ObservationExtractor`: Converts raw PySC2 observations into the current hybrid policy input: spatial screen tensor, padded entity tokens, padded selection tokens, and meta features.
+- `ActionSpace`: Maps the policy's current compact action heads into PySC2 `FunctionCall`s. The tokenized action-space redesign is still future work.
 
 ### 3. The Agent & Policy (`PPO_CNN/`)
 - **`DefeatRoaches` (Agent):** The orchestrator that binds the observation extractor, the reward function, and the PPO update logic.
-- **`PolicyNetwork`:** A custom neural network combining CNNs (for spatial features), Linear layers (for vector features), and `snntorch` Leaky Integrate-and-Fire (LIF) neurons for temporal processing. It utilizes a Spiking Self-Attention mechanism to process the multi-modal inputs.
-- **`PPO`:** The core implementation of Proximal Policy Optimization, adapted to handle the unique constraints of SNNs (like maintaining membrane potential state across rollouts) and multi-head discrete/continuous action spaces.
+- **`PolicyNetwork`:** A hybrid CNN + token encoder policy with spiking attention and a token-temporal SNN. Spatial features become pooled spatial tokens; unit, selection, and meta context become additional token groups before attention and recurrence.
+- **`PPO`:** The current PPO path includes Stage-1 TBPTT with ordered chunk replay, helper-step masking, packed replay, and the SDPA attention fast path.
 
 ### 4. Utilities & Analysis (`Utility/`, `tools/analysis/`, Root)
 - `tools/analysis/`: Home for the actual analysis implementations.
@@ -76,11 +76,32 @@ python resume_from_best.py
 ```
 
 ### 3. Monitoring Training
-To generate a comprehensive markdown report and static plots of the training progress:
+To generate the static analysis bundle for a run:
 
 ```bash
 python results.py --run-name <your_run_name> --report
 ```
+
+To also export the high-signal panels as separate PNGs for easy sharing
+back into text-only workflows:
+
+```bash
+python results.py --run-name <your_run_name> --report --aismart
+```
+
+This writes the usual files under `analysis_results/<run_name>/`, including:
+- `training_progress.png`
+- `reward_components.png`
+- `win_rate.png`
+- `training_metrics.csv`
+- `instability_report.txt`
+
+When `--aismart` is enabled it also writes:
+- `analysis_results/<run_name>/ai_friendly_results/`
+  focused dashboard-style PNG panels such as reward trajectory, reward
+  efficiency, action entropy, action mix, phase-of-episode action mix,
+  TBPTT/speed, eval split, and other high-signal views depending on the
+  data available in the DB
 
 To launch the interactive Streamlit dashboard:
 
@@ -88,7 +109,19 @@ To launch the interactive Streamlit dashboard:
 streamlit run dashboard.py
 ```
 
-The root launchers stay in place for convenience, but the real implementations now live in `tools/analysis/`. The dashboard can inspect either an uploaded SQLite log or a local run directly from `models/<run_name>/`.
+The root launchers stay in place for convenience, but the real implementations now live in `tools/analysis/`.
+
+The dashboard can inspect either:
+- a local run directly from `models/<run_name>/training_logs.db`
+- an uploaded `training_logs.db`
+- an optional uploaded or local `.pth` checkpoint alongside the DB
+
+The current dashboard is worth using for this branch because it now exposes:
+- **Overview:** reward trajectory, episode length, oscillation score, and reward-per-step efficiency
+- **Policy:** whole-run action mix, early/mid/late episode action mix, action entropy, action heatmap, and move-target heatmap
+- **PPO / Eval:** PPO metrics, TBPTT/speed metrics, deterministic vs stochastic eval curves, and eval reward gap
+- **Reward Shaping:** reward-component trends and distributions
+- **Checkpoint:** tensor inspection plus checkpoint metadata, extractor normalizer stats, and learned SNN `alpha` / `beta` parameters
 
 For quick summaries and checkpoint inspection:
 
@@ -96,6 +129,66 @@ For quick summaries and checkpoint inspection:
 python analyze_run.py --mode db --db models/<run_name>/training_logs.db
 python analyze_pth.py models/<run_name>/checkpoint.pth --no-map
 ```
+
+Useful variants:
+
+```bash
+python analyze_run.py --mode db --run-name <your_run_name>
+python analyze_pth.py --run-name <your_run_name> --which best --no-map
+python analyze_pth.py --run-name <your_run_name> --which best --max-points 2000
+```
+
+### 4. Evaluation & Diagnostics
+Basic eval from the latest or best checkpoint:
+
+```bash
+python PPO_CNN_eval.py --run_name <your_run_name> --best --episodes 10 --nodeterministic
+python PPO_CNN_eval.py --run_name <your_run_name> --best --episodes 10
+```
+
+High-signal eval flags:
+- `--best`
+  prefer `best_checkpoint.pth` over `checkpoint.pth`
+- `--checkpoint <path>`
+  explicit checkpoint path; overrides `--run_name`
+- `--episodes <N>`
+  how many eval episodes to play
+- `--deterministic` / `--nodeterministic`
+  argmax vs sampled evaluation
+- `--visualize` / `--novisualize`
+  toggle the SC2 renderer
+
+Inspection flags that write JSONL diagnostics:
+- `--inspect`
+  raw observation schema/stats via `ObservationInspectorWrapper`
+- `--inspect_output <path>`
+  output path for the observation inspector
+- `--inspect_policy_input`
+  raw obs plus extracted hybrid batch summaries via `PolicyInputDiagnosticsWrapper`
+- `--policy_input_output <path>`
+  output path for policy-input diagnostics
+- `--policy_input_every <N>`
+  log every `N` env steps for policy-input diagnostics
+- `--inspect_actions`
+  available-action and dispatched-call logging via `AvailableActionsDiagnosticsWrapper`
+- `--actions_output <path>`
+  output path for action-space diagnostics
+- `--actions_every <N>`
+  log every `N` env steps for action-space diagnostics
+
+One useful combined command:
+
+```bash
+python PPO_CNN_eval.py --run_name <your_run_name> --best --episodes 5 --inspect --inspect_policy_input --inspect_actions --inspect_output analysis_results/<your_run_name>/eval_observation_space.jsonl --policy_input_output analysis_results/<your_run_name>/policy_input_diagnostics.jsonl --actions_output analysis_results/<your_run_name>/available_actions_diagnostics.jsonl
+```
+
+Training-side defaults for these diagnostics can also be centralized in `config.yaml`:
+- `use_observation_inspector`
+- `observation_inspector_*`
+- `use_policy_input_diagnostics`
+- `policy_input_diagnostics_*`
+- `use_available_actions_diagnostics`
+- `available_actions_diagnostics_*`
 
 ---
 
@@ -111,7 +204,12 @@ pytest -v tests/
 
 ## 📝 Planning & Future Work
 
-We actively maintain our development roadmap and architectural debugging logs in the repository:
-- `NEXT_FIXES_PLAN.md`: Detailed Socratic reasoning for upcoming architectural fixes (e.g., SNN state mismatch, Entropy asymmetry).
-- `plan.md`: High-level roadmap for reward redesign, observation space cleanup, and loop reliability.
-- `logs/PROJECT_LOGS.md` / `logs/SESSION_LOG_*.md`: Historical context on the project's evolution.
+The repo root is intentionally lighter now. Planning notes and
+historical docs live under [`docs/`](docs/README.md).
+
+Recommended starting points:
+- [`docs/current/REPO_STATE.md`](docs/current/REPO_STATE.md): current repo state and open questions
+- [`docs/current/THE_BPTT.md`](docs/current/THE_BPTT.md): current BPTT/TBPTT reasoning note
+- [`docs/current/working_log.md`](docs/current/working_log.md): living implementation log
+- [`docs/README.md`](docs/README.md): full doc index
+- `logs/PROJECT_LOGS.md` / `logs/SESSION_LOG_*.md`: longer historical narrative

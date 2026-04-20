@@ -73,8 +73,12 @@ DEFEAT_ROACHES_ACTION_IDS: Final[tuple[int, ...]] = (
 )
 META_AVAILABLE_ACTION_DIM: Final[int] = len(DEFEAT_ROACHES_ACTION_IDS)
 META_LAST_ACTION_INDEX_DIM: Final[int] = 1
+
+# NEW: agent's own last action token [type, x_norm, y_norm, extra]
+AGENT_LAST_ACTION_DIM: Final[int] = 4
+
 META_VECTOR_DIM: Final[int] = (
-    META_PLAYER_FEATURE_DIM + META_AVAILABLE_ACTION_DIM + META_LAST_ACTION_INDEX_DIM
+    META_PLAYER_FEATURE_DIM + META_AVAILABLE_ACTION_DIM + META_LAST_ACTION_INDEX_DIM + AGENT_LAST_ACTION_DIM
 )
 NO_ACTION_SENTINEL_INDEX: Final[int] = 0
 UNKNOWN_LAST_ACTION_INDEX: Final[int] = len(DEFEAT_ROACHES_ACTION_IDS) + 1
@@ -87,13 +91,13 @@ class PolicyInputBatch:
     """
     Frozen observation protocol for Fix 3 hybrid tokenization.
 
-    Shapes follow docs/archive/NEXT_FIXES_PLAN_3.md §3.5 exactly:
+    Shapes follow docs/archive/NEXT_FIXES_PLAN_3.md §3.5 exactly, plus 4 dims for agent last action:
       spatial_obs:        [B, 27, 84, 84]
       entity_features:    [B, 24, F_unit]
       entity_mask:        [B, 24]
       selection_features: [B, 20, 7]
       selection_mask:     [B, 20]
-      meta_vec:           [B, F_meta]
+      meta_vec:           [B, F_meta] where F_meta = 11 + 16 + 1 + 4 = 32
       state_in:           optional SNN state tuple
     """
 

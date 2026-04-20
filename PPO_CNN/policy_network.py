@@ -258,13 +258,18 @@ class SpikingSelfAttention(nn.Module):
             spike_k = spike_k * query_mask
             spike_v = spike_v * query_mask
 
-        attn_logits = torch.bmm(spike_q, spike_k.transpose(1, 2)) * self.scale
-        attn_logits = attn_logits.float()
         if token_mask is not None:
-            key_mask = token_mask.unsqueeze(1)
-            attn_logits = attn_logits.masked_fill(~key_mask, -1.0e4)
-        attn = torch.softmax(attn_logits, dim=-1).to(dtype=tokens.dtype)
-        out = torch.bmm(attn, spike_v)
+            attn_mask = token_mask[:, None, None, :]
+        else:
+            attn_mask = None
+        out = F.scaled_dot_product_attention(
+            spike_q.unsqueeze(1),
+            spike_k.unsqueeze(1),
+            spike_v.unsqueeze(1),
+            attn_mask=attn_mask,
+            dropout_p=0.0,
+            scale=self.scale,
+        ).squeeze(1)
         if query_mask is not None:
             out = out * query_mask
         return out + residual
@@ -346,6 +351,7 @@ class PolicyNetwork(nn.Module):
             self._spatial_tokens + MAX_ENTITY_TOKENS + MAX_SELECTION_TOKENS + 1
         )
         self._carry_entity_state = False
+        self._carry_selection_state = False
         self._meta_input_dim = int(vector_input_dim)
         self._config = {
             "num_steps": self.num_steps,
@@ -357,6 +363,7 @@ class PolicyNetwork(nn.Module):
             "attention_beta": float(attention_beta),
             "meta_input_dim": self._meta_input_dim,
             "carry_entity_state": bool(self._carry_entity_state),
+            "carry_selection_state": bool(self._carry_selection_state),
         }
         spike_grad = surrogate.fast_sigmoid()
 
@@ -398,9 +405,9 @@ class PolicyNetwork(nn.Module):
             spike_grad=spike_grad,
         )
 
-        fc_input_dim = self._num_tokens * self._embed_dim
-        self.combined_norm = nn.LayerNorm(fc_input_dim)
-        self.shared_fc1 = nn.Linear(fc_input_dim, 128)
+        pooled_dim = TOKEN_TYPE_GROUPS * self._embed_dim
+        self.combined_norm = nn.LayerNorm(pooled_dim)
+        self.shared_fc1 = nn.Linear(pooled_dim, 128)
         self.shared_fc2 = nn.Linear(128, 64)
 
         self.actor_fc = nn.Linear(64, action_dim)
@@ -429,13 +436,43 @@ class PolicyNetwork(nn.Module):
         syn_tok: torch.Tensor,
         mem_tok: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self._carry_entity_state:
+        # Zero recurrent state for token groups whose slot-to-identity
+        # mapping is unstable across env steps (entity + selection).
+        if self._carry_entity_state and self._carry_selection_state:
             return syn_tok, mem_tok
         syn_tok = syn_tok.clone()
         mem_tok = mem_tok.clone()
-        syn_tok[:, self._entity_start : self._entity_end, :] = 0.0
-        mem_tok[:, self._entity_start : self._entity_end, :] = 0.0
+        if not self._carry_entity_state:
+            syn_tok[:, self._entity_start : self._entity_end, :] = 0.0
+            mem_tok[:, self._entity_start : self._entity_end, :] = 0.0
+        if not self._carry_selection_state:
+            syn_tok[:, self._selection_start : self._selection_end, :] = 0.0
+            mem_tok[:, self._selection_start : self._selection_end, :] = 0.0
         return syn_tok, mem_tok
+
+    def reset_state_rows(
+        self,
+        state: tuple[torch.Tensor, torch.Tensor] | None,
+        reset_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        if state is None or reset_mask is None:
+            return state
+        if reset_mask.ndim != 1:
+            raise ValueError(
+                f"reset_mask must be 1D over batch rows, got {tuple(reset_mask.shape)}",
+            )
+        if state[0].size(0) != int(reset_mask.numel()):
+            raise ValueError(
+                "reset_mask batch dimension must match recurrent state rows",
+            )
+        if not bool(reset_mask.any().item()):
+            return state
+
+        keep_mask = (~reset_mask).to(
+            device=state[0].device,
+            dtype=state[0].dtype,
+        ).view(-1, 1, 1)
+        return state[0] * keep_mask, state[1] * keep_mask
 
     def init_concrete_state(self, batch_size=1, device=None, dtype=None):
         if device is None:
@@ -458,14 +495,42 @@ class PolicyNetwork(nn.Module):
             typed = typed * token_mask.unsqueeze(-1).to(dtype=tokens.dtype)
         return typed
 
-    def forward(self, batch: PolicyInputBatch):
-        if not isinstance(batch, PolicyInputBatch):
-            raise TypeError(
-                f"PolicyNetwork.forward expects PolicyInputBatch, got {type(batch)!r}",
-            )
+    def _group_masked_mean(
+        self,
+        tokens: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+        # Masked-mean-pool per semantic group then concat. Permutation-
+        # invariant within entity/selection groups whose slot-to-identity
+        # mapping is unstable. Token-type embedding already injected
+        # group identity upstream; concat preserves it here.
+        group_slices = (
+            (0, self._spatial_tokens),
+            (self._entity_start, self._entity_end),
+            (self._selection_start, self._selection_end),
+            (self._meta_start, self._meta_start + 1),
+        )
+        summaries = []
+        for start, end in group_slices:
+            token_slice = tokens[:, start:end, :]
+            mask_slice = mask[:, start:end].unsqueeze(-1).to(dtype=token_slice.dtype)
+            summed = (token_slice * mask_slice).sum(dim=1)
+            count = mask_slice.sum(dim=1).clamp_min(1.0)
+            summaries.append(summed / count)
+        return torch.cat(summaries, dim=-1)
 
-        spatial_input = batch.spatial_obs
-        token_state = batch.state_in
+    def forward_step_tensors(
+        self,
+        spatial_obs: torch.Tensor,
+        entity_features: torch.Tensor,
+        entity_mask: torch.Tensor,
+        selection_features: torch.Tensor,
+        selection_mask: torch.Tensor,
+        meta_vec: torch.Tensor,
+        state_in: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ):
+        spatial_input = spatial_obs
+        token_state = state_in
         if token_state is None:
             syn_tok, mem_tok = self.init_concrete_state(
                 batch_size=spatial_input.size(0),
@@ -493,21 +558,21 @@ class PolicyNetwork(nn.Module):
             device=device,
         )
         entity_tokens = self.entity_encoder(
-            batch.entity_features,
-            batch.entity_mask,
+            entity_features,
+            entity_mask,
         )
         selection_tokens = self.selection_encoder(
-            batch.selection_features,
-            batch.selection_mask,
+            selection_features,
+            selection_mask,
         )
-        meta_tokens = self.meta_encoder(batch.meta_vec)
+        meta_tokens = self.meta_encoder(meta_vec)
         meta_mask = torch.ones(batch_size, 1, dtype=torch.bool, device=device)
 
         tokens = torch.cat(
             (
                 self._add_token_type(spatial_tokens, 0, spatial_mask),
-                self._add_token_type(entity_tokens, 1, batch.entity_mask),
-                self._add_token_type(selection_tokens, 2, batch.selection_mask),
+                self._add_token_type(entity_tokens, 1, entity_mask),
+                self._add_token_type(selection_tokens, 2, selection_mask),
                 self._add_token_type(meta_tokens, 3, meta_mask),
             ),
             dim=1,
@@ -515,8 +580,8 @@ class PolicyNetwork(nn.Module):
         token_mask = torch.cat(
             (
                 spatial_mask,
-                batch.entity_mask,
-                batch.selection_mask,
+                entity_mask,
+                selection_mask,
                 meta_mask,
             ),
             dim=1,
@@ -536,7 +601,8 @@ class PolicyNetwork(nn.Module):
         syn_tok, mem_tok = self._zero_entity_state(syn_tok, mem_tok)
 
         aggregated = torch.stack(spike_rec, dim=0).sum(dim=0)
-        combined = self.combined_norm(aggregated.flatten(start_dim=1))
+        pooled = self._group_masked_mean(aggregated, token_mask)
+        combined = self.combined_norm(pooled)
 
         x = F.relu(self.shared_fc1(combined))
         x = F.relu(self.shared_fc2(x))
@@ -547,3 +613,18 @@ class PolicyNetwork(nn.Module):
         state_value = self.critic_fc(x).squeeze(-1)
         next_state = (syn_tok, mem_tok)
         return action_logits, move_x_logits, move_y_logits, state_value, next_state
+
+    def forward(self, batch: PolicyInputBatch):
+        if not isinstance(batch, PolicyInputBatch):
+            raise TypeError(
+                f"PolicyNetwork.forward expects PolicyInputBatch, got {type(batch)!r}",
+            )
+        return self.forward_step_tensors(
+            spatial_obs=batch.spatial_obs,
+            entity_features=batch.entity_features,
+            entity_mask=batch.entity_mask,
+            selection_features=batch.selection_features,
+            selection_mask=batch.selection_mask,
+            meta_vec=batch.meta_vec,
+            state_in=batch.state_in,
+        )

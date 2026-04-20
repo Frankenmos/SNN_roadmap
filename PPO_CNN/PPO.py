@@ -1,4 +1,5 @@
 import math
+import time
 
 import numpy as np
 import torch
@@ -162,6 +163,7 @@ class PPO:
     def update_policy(self, batch_size: int = 64, epochs: int = 10):
         if not self.memory:
             return [], None
+        update_started = time.perf_counter()
 
         actions = torch.stack(
             [transition["action"].to(self.device) for transition in self.memory],
@@ -232,6 +234,7 @@ class PPO:
             dones=dones,
             policy_masks=policy_masks,
         )
+        tbptt_chunks = int(len(chunks))
 
         rollout_size = len(self.memory)
         losses = []
@@ -244,6 +247,11 @@ class PPO:
         nonfinite_grad_steps = 0
         skipped_optimizer_steps = 0
         epochs_ran = 0
+        tbptt_chunk_groups = 0
+        tbptt_group_max_steps = 0
+        tbptt_forward_calls = 0
+        active_chunk_sum = 0.0
+        active_chunk_steps = 0
 
         params = [
             param for param in self.policy_net.parameters() if param.requires_grad
@@ -261,48 +269,67 @@ class PPO:
                 diag_clip_num = 0.0
                 diag_entropy_num = 0.0
                 diag_policy_count = 0.0
+                tbptt_chunk_groups += 1
 
                 with torch.amp.autocast(
                     "cuda",
                     dtype=self.policy_net.amp_dtype,
                     enabled=self.policy_net.use_amp,
                 ):
-                    for chunk in chunk_group:
-                        (
+                    replayed_group = self._replay_packed_chunk_group(
+                        self._pack_chunk_group(chunk_group),
+                    )
+                    tbptt_group_max_steps = max(
+                        tbptt_group_max_steps,
+                        int(replayed_group["max_steps"]),
+                    )
+                    tbptt_forward_calls += int(replayed_group["forward_calls"])
+                    active_chunk_sum += float(replayed_group["active_chunks_sum"])
+                    active_chunk_steps += int(replayed_group["active_steps"])
+
+                    active_mask = replayed_group["alive_mask"].reshape(-1)
+                    action_logits = replayed_group["action_logits"].reshape(
+                        -1,
+                        replayed_group["action_logits"].size(-1),
+                    )[active_mask]
+                    move_x_logits = replayed_group["move_x_logits"].reshape(
+                        -1,
+                        replayed_group["move_x_logits"].size(-1),
+                    )[active_mask]
+                    move_y_logits = replayed_group["move_y_logits"].reshape(
+                        -1,
+                        replayed_group["move_y_logits"].size(-1),
+                    )[active_mask]
+                    state_values = replayed_group["state_values"].reshape(-1)[
+                        active_mask
+                    ]
+                    policy_loss, value_loss, entropy_loss, diag = (
+                        self._calculate_losses(
                             action_logits,
                             move_x_logits,
                             move_y_logits,
                             state_values,
-                        ) = self._replay_chunk(chunk)
-                        policy_loss, value_loss, entropy_loss, diag = (
-                            self._calculate_losses(
-                                action_logits,
-                                move_x_logits,
-                                move_y_logits,
-                                state_values,
-                                chunk["actions"],
-                                chunk["move_x"],
-                                chunk["move_y"],
-                                chunk["old_log_prob"],
-                                chunk["advantages"],
-                                chunk["returns"],
-                                chunk["policy_mask"],
-                            )
+                            replayed_group["actions"].reshape(-1)[active_mask],
+                            replayed_group["move_x"].reshape(-1)[active_mask],
+                            replayed_group["move_y"].reshape(-1)[active_mask],
+                            replayed_group["old_log_prob"].reshape(-1)[active_mask],
+                            replayed_group["advantages"].reshape(-1)[active_mask],
+                            replayed_group["returns"].reshape(-1)[active_mask],
+                            replayed_group["policy_mask"].reshape(-1)[active_mask],
                         )
-                        policy_num = policy_num + policy_loss * diag["policy_count"]
-                        policy_den = policy_den + diag["policy_count"]
-                        value_num = value_num + value_loss * diag["value_count"]
-                        value_den = value_den + diag["value_count"]
-                        entropy_num = entropy_num + entropy_loss * diag["policy_count"]
-                        policy_weight = float(diag["policy_count"].item())
-                        diag_kl_num += float(diag["approx_kl"].item()) * policy_weight
-                        diag_clip_num += (
-                            float(diag["clip_frac"].item()) * policy_weight
-                        )
-                        diag_entropy_num += (
-                            float(diag["entropy_mean"].item()) * policy_weight
-                        )
-                        diag_policy_count += policy_weight
+                    )
+                    policy_num = policy_num + policy_loss * diag["policy_count"]
+                    policy_den = policy_den + diag["policy_count"]
+                    value_num = value_num + value_loss * diag["value_count"]
+                    value_den = value_den + diag["value_count"]
+                    entropy_num = entropy_num + entropy_loss * diag["policy_count"]
+                    policy_weight = float(diag["policy_count"].item())
+                    diag_kl_num += float(diag["approx_kl"].item()) * policy_weight
+                    diag_clip_num += float(diag["clip_frac"].item()) * policy_weight
+                    diag_entropy_num += (
+                        float(diag["entropy_mean"].item()) * policy_weight
+                    )
+                    diag_policy_count += policy_weight
 
                     policy_loss = policy_num / policy_den.clamp_min(1.0)
                     value_loss = value_num / value_den.clamp_min(1.0)
@@ -370,6 +397,7 @@ class PPO:
             )
 
         returns_cpu = returns.detach().to("cpu").float()
+        update_wall_seconds = time.perf_counter() - update_started
         entity_counts = torch.tensor(
             [
                 float(
@@ -414,6 +442,19 @@ class PPO:
                 (selection_counts / MAX_SELECTION_TOKENS).mean().item(),
             ),
             "epochs_ran": int(epochs_ran),
+            "update_wall_seconds": float(update_wall_seconds),
+            "tbptt_chunks": int(tbptt_chunks),
+            "tbptt_chunk_groups": int(tbptt_chunk_groups),
+            "tbptt_window": (
+                None if self.tbptt_window is None else int(self.tbptt_window)
+            ),
+            "tbptt_group_max_steps": int(tbptt_group_max_steps),
+            "tbptt_group_mean_active_chunks": float(
+                0.0
+                if active_chunk_steps <= 0
+                else active_chunk_sum / float(active_chunk_steps)
+            ),
+            "tbptt_forward_calls": int(tbptt_forward_calls),
         }
 
         if self.scheduler is not None:
@@ -487,47 +528,479 @@ class PPO:
         if group:
             yield group
 
-    def _replay_chunk(self, chunk):
-        state = chunk["initial_state"]
-        if state is not None:
-            state = (
-                state[0].to(device=self.device, dtype=torch.float32).detach(),
-                state[1].to(device=self.device, dtype=torch.float32).detach(),
+    def _forward_replay_step_tensors(
+        self,
+        spatial_obs: torch.Tensor,
+        entity_features: torch.Tensor,
+        entity_mask: torch.Tensor,
+        selection_features: torch.Tensor,
+        selection_mask: torch.Tensor,
+        meta_vec: torch.Tensor,
+        state_in: tuple[torch.Tensor, torch.Tensor] | None,
+    ):
+        if hasattr(self.policy_net, "forward_step_tensors"):
+            return self.policy_net.forward_step_tensors(
+                spatial_obs=spatial_obs,
+                entity_features=entity_features,
+                entity_mask=entity_mask,
+                selection_features=selection_features,
+                selection_mask=selection_mask,
+                meta_vec=meta_vec,
+                state_in=state_in,
             )
+        return self.policy_net(
+            PolicyInputBatch(
+                spatial_obs=spatial_obs,
+                entity_features=entity_features,
+                entity_mask=entity_mask,
+                selection_features=selection_features,
+                selection_mask=selection_mask,
+                meta_vec=meta_vec,
+                state_in=state_in,
+            ),
+        )
 
-        action_logits_seq = []
-        move_x_logits_seq = []
-        move_y_logits_seq = []
-        state_values_seq = []
+    def _reset_replay_state_rows(
+        self,
+        state: tuple[torch.Tensor, torch.Tensor] | None,
+        reset_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        if state is None or reset_mask is None:
+            return state
+        if hasattr(self.policy_net, "reset_state_rows"):
+            return self.policy_net.reset_state_rows(state, reset_mask)
+        if not bool(reset_mask.any().item()):
+            return state
+        keep_mask = (~reset_mask).to(
+            device=state[0].device,
+            dtype=state[0].dtype,
+        ).view(-1, 1, 1)
+        return state[0] * keep_mask, state[1] * keep_mask
 
-        for t in range(int(chunk["length"])):
-            step_observation = chunk["observations"].index_select([t]).to(
-                device=self.device,
-                dtype=torch.float32,
-            ).with_state(state)
-            action_logits, move_x_logits, move_y_logits, state_values, state = (
-                self.policy_net(step_observation)
+    def _pack_chunk_group(self, chunk_group):
+        max_len = max(int(chunk["length"]) for chunk in chunk_group)
+        group_size = len(chunk_group)
+        sample_obs = chunk_group[0]["observations"]
+
+        spatial_obs = torch.zeros(
+            (max_len, group_size, *sample_obs.spatial_obs.shape[1:]),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        entity_features = torch.zeros(
+            (max_len, group_size, *sample_obs.entity_features.shape[1:]),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        entity_mask = torch.zeros(
+            (max_len, group_size, sample_obs.entity_mask.shape[-1]),
+            device=self.device,
+            dtype=torch.bool,
+        )
+        selection_features = torch.zeros(
+            (max_len, group_size, *sample_obs.selection_features.shape[1:]),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        selection_mask = torch.zeros(
+            (max_len, group_size, sample_obs.selection_mask.shape[-1]),
+            device=self.device,
+            dtype=torch.bool,
+        )
+        meta_vec = torch.zeros(
+            (max_len, group_size, sample_obs.meta_vec.shape[-1]),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        actions = torch.zeros(
+            (max_len, group_size),
+            device=self.device,
+            dtype=chunk_group[0]["actions"].dtype,
+        )
+        move_x = torch.zeros(
+            (max_len, group_size),
+            device=self.device,
+            dtype=chunk_group[0]["move_x"].dtype,
+        )
+        move_y = torch.zeros(
+            (max_len, group_size),
+            device=self.device,
+            dtype=chunk_group[0]["move_y"].dtype,
+        )
+        old_log_prob = torch.zeros(
+            (max_len, group_size),
+            device=self.device,
+            dtype=chunk_group[0]["old_log_prob"].dtype,
+        )
+        advantages = torch.zeros(
+            (max_len, group_size),
+            device=self.device,
+            dtype=chunk_group[0]["advantages"].dtype,
+        )
+        returns = torch.zeros(
+            (max_len, group_size),
+            device=self.device,
+            dtype=chunk_group[0]["returns"].dtype,
+        )
+        policy_mask = torch.zeros(
+            (max_len, group_size),
+            device=self.device,
+            dtype=chunk_group[0]["policy_mask"].dtype,
+        )
+        done = torch.zeros(
+            (max_len, group_size),
+            device=self.device,
+            dtype=torch.bool,
+        )
+        alive_mask = torch.zeros(
+            (max_len, group_size),
+            device=self.device,
+            dtype=torch.bool,
+        )
+        lengths = []
+
+        states = [chunk["initial_state"] for chunk in chunk_group]
+        if all(state is None for state in states):
+            initial_state = None
+        elif any(state is None for state in states):
+            raise ValueError(
+                "Either every chunk must have an initial_state, or none may",
             )
-            action_logits_seq.append(action_logits)
-            move_x_logits_seq.append(move_x_logits)
-            move_y_logits_seq.append(move_y_logits)
-            state_values_seq.append(state_values)
-
-            if (
-                bool(chunk["dones"][t].item() > 0.5)
-                and t + 1 < int(chunk["length"])
-            ):
-                state = self.policy_net.init_concrete_state(
-                    batch_size=step_observation.batch_size,
+        else:
+            initial_state = (
+                torch.cat([state[0] for state in states], dim=0).to(
                     device=self.device,
-                    dtype=step_observation.spatial_obs.dtype,
+                    dtype=torch.float32,
+                ).detach(),
+                torch.cat([state[1] for state in states], dim=0).to(
+                    device=self.device,
+                    dtype=torch.float32,
+                ).detach(),
+            )
+
+        for column, chunk in enumerate(chunk_group):
+            length = int(chunk["length"])
+            lengths.append(length)
+            obs = chunk["observations"].to(device=self.device, dtype=torch.float32)
+            spatial_obs[:length, column] = obs.spatial_obs
+            entity_features[:length, column] = obs.entity_features
+            entity_mask[:length, column] = obs.entity_mask
+            selection_features[:length, column] = obs.selection_features
+            selection_mask[:length, column] = obs.selection_mask
+            meta_vec[:length, column] = obs.meta_vec
+            actions[:length, column] = chunk["actions"]
+            move_x[:length, column] = chunk["move_x"]
+            move_y[:length, column] = chunk["move_y"]
+            old_log_prob[:length, column] = chunk["old_log_prob"]
+            advantages[:length, column] = chunk["advantages"]
+            returns[:length, column] = chunk["returns"]
+            policy_mask[:length, column] = chunk["policy_mask"]
+            done[:length, column] = chunk["dones"] > 0.5
+            alive_mask[:length, column] = True
+
+        return {
+            "spatial_obs": spatial_obs,
+            "entity_features": entity_features,
+            "entity_mask": entity_mask,
+            "selection_features": selection_features,
+            "selection_mask": selection_mask,
+            "meta_vec": meta_vec,
+            "actions": actions,
+            "move_x": move_x,
+            "move_y": move_y,
+            "old_log_prob": old_log_prob,
+            "advantages": advantages,
+            "returns": returns,
+            "policy_mask": policy_mask,
+            "done": done,
+            "alive_mask": alive_mask,
+            "initial_state": initial_state,
+            "lengths": lengths,
+            "max_steps": int(max_len),
+        }
+
+    def _replay_packed_chunk_group(self, packed_group):
+        alive_mask = packed_group["alive_mask"]
+        max_len = int(packed_group["max_steps"])
+        state = packed_group["initial_state"]
+        action_logits_buf = None
+        move_x_logits_buf = None
+        move_y_logits_buf = None
+        state_values_buf = None
+        forward_calls = 0
+        active_chunks_sum = 0.0
+        active_steps = 0
+
+        for step_index in range(max_len):
+            active_indices = torch.nonzero(
+                alive_mask[step_index],
+                as_tuple=False,
+            ).flatten()
+            if int(active_indices.numel()) == 0:
+                continue
+
+            if state is not None and int(state[0].size(0)) != int(active_indices.numel()):
+                raise ValueError(
+                    "Packed replay state rows must match the active chunk count",
                 )
 
-        return (
-            torch.cat(action_logits_seq, dim=0),
-            torch.cat(move_x_logits_seq, dim=0),
-            torch.cat(move_y_logits_seq, dim=0),
-            torch.cat(state_values_seq, dim=0),
+            action_logits, move_x_logits, move_y_logits, state_values, next_state = (
+                self._forward_replay_step_tensors(
+                    spatial_obs=packed_group["spatial_obs"][step_index].index_select(
+                        0,
+                        active_indices,
+                    ),
+                    entity_features=packed_group["entity_features"][
+                        step_index
+                    ].index_select(0, active_indices),
+                    entity_mask=packed_group["entity_mask"][step_index].index_select(
+                        0,
+                        active_indices,
+                    ),
+                    selection_features=packed_group["selection_features"][
+                        step_index
+                    ].index_select(0, active_indices),
+                    selection_mask=packed_group["selection_mask"][
+                        step_index
+                    ].index_select(0, active_indices),
+                    meta_vec=packed_group["meta_vec"][step_index].index_select(
+                        0,
+                        active_indices,
+                    ),
+                    state_in=state,
+                )
+            )
+
+            if action_logits_buf is None:
+                group_size = alive_mask.size(1)
+                action_logits_buf = torch.zeros(
+                    max_len,
+                    group_size,
+                    action_logits.size(-1),
+                    device=self.device,
+                    dtype=action_logits.dtype,
+                )
+                move_x_logits_buf = torch.zeros(
+                    max_len,
+                    group_size,
+                    move_x_logits.size(-1),
+                    device=self.device,
+                    dtype=move_x_logits.dtype,
+                )
+                move_y_logits_buf = torch.zeros(
+                    max_len,
+                    group_size,
+                    move_y_logits.size(-1),
+                    device=self.device,
+                    dtype=move_y_logits.dtype,
+                )
+                state_values_buf = torch.zeros(
+                    max_len,
+                    group_size,
+                    device=self.device,
+                    dtype=state_values.dtype,
+                )
+
+            action_logits_buf[step_index].index_copy_(
+                0,
+                active_indices,
+                action_logits,
+            )
+            move_x_logits_buf[step_index].index_copy_(
+                0,
+                active_indices,
+                move_x_logits,
+            )
+            move_y_logits_buf[step_index].index_copy_(
+                0,
+                active_indices,
+                move_y_logits,
+            )
+            state_values_buf[step_index].index_copy_(
+                0,
+                active_indices,
+                state_values,
+            )
+
+            forward_calls += 1
+            active_chunks_sum += float(active_indices.numel())
+            active_steps += 1
+
+            if next_state is None:
+                state = None
+            else:
+                done_active = packed_group["done"][step_index].index_select(
+                    0,
+                    active_indices,
+                )
+                state = self._reset_replay_state_rows(next_state, done_active)
+
+            if step_index + 1 < max_len and state is not None:
+                keep_mask = alive_mask[step_index + 1].index_select(
+                    0,
+                    active_indices,
+                )
+                if bool(keep_mask.any().item()):
+                    state = (
+                        state[0][keep_mask],
+                        state[1][keep_mask],
+                    )
+                else:
+                    state = None
+
+        if action_logits_buf is None:
+            raise RuntimeError("Packed replay produced no active timesteps")
+
+        return {
+            **packed_group,
+            "action_logits": action_logits_buf,
+            "move_x_logits": move_x_logits_buf,
+            "move_y_logits": move_y_logits_buf,
+            "state_values": state_values_buf,
+            "forward_calls": int(forward_calls),
+            "active_chunks_sum": float(active_chunks_sum),
+            "active_steps": int(active_steps),
+        }
+
+    def _replay_chunk_group_reference(self, chunk_group):
+        prepared_chunks = []
+        for chunk in chunk_group:
+            state = chunk["initial_state"]
+            if state is not None:
+                state = (
+                    state[0].to(device=self.device, dtype=torch.float32).detach(),
+                    state[1].to(device=self.device, dtype=torch.float32).detach(),
+                )
+            prepared_chunks.append(
+                {
+                    "observations": chunk["observations"].to(
+                        device=self.device,
+                        dtype=torch.float32,
+                    ),
+                    "state": state,
+                    "dones": chunk["dones"],
+                    "length": int(chunk["length"]),
+                    "action_logits": [],
+                    "move_x_logits": [],
+                    "move_y_logits": [],
+                    "state_values": [],
+                }
+            )
+
+        max_len = max(chunk["length"] for chunk in prepared_chunks)
+        for t in range(max_len):
+            active_indices = [
+                idx
+                for idx, chunk in enumerate(prepared_chunks)
+                if t < chunk["length"]
+            ]
+            if not active_indices:
+                continue
+
+            step_batch = self._stack_active_step(
+                [prepared_chunks[idx] for idx in active_indices],
+                t,
+            )
+            action_logits, move_x_logits, move_y_logits, state_values, next_state = (
+                self.policy_net(step_batch)
+            )
+
+            for offset, chunk_idx in enumerate(active_indices):
+                chunk = prepared_chunks[chunk_idx]
+                chunk["action_logits"].append(action_logits[offset : offset + 1])
+                chunk["move_x_logits"].append(move_x_logits[offset : offset + 1])
+                chunk["move_y_logits"].append(move_y_logits[offset : offset + 1])
+                chunk["state_values"].append(state_values[offset : offset + 1])
+
+                if next_state is None:
+                    chunk["state"] = None
+                else:
+                    chunk["state"] = (
+                        next_state[0][offset : offset + 1],
+                        next_state[1][offset : offset + 1],
+                    )
+
+                if (
+                    bool(chunk["dones"][t].item() > 0.5)
+                    and t + 1 < chunk["length"]
+                ):
+                    chunk["state"] = self.policy_net.init_concrete_state(
+                        batch_size=1,
+                        device=self.device,
+                        dtype=step_batch.spatial_obs.dtype,
+                    )
+
+        replayed = []
+        for chunk in prepared_chunks:
+            replayed.append(
+                (
+                    torch.cat(chunk["action_logits"], dim=0),
+                    torch.cat(chunk["move_x_logits"], dim=0),
+                    torch.cat(chunk["move_y_logits"], dim=0),
+                    torch.cat(chunk["state_values"], dim=0),
+                )
+            )
+        return replayed
+
+    def _stack_active_step(self, active_chunks, step_index: int) -> PolicyInputBatch:
+        observations = [chunk["observations"] for chunk in active_chunks]
+        states = [chunk["state"] for chunk in active_chunks]
+        if all(state is None for state in states):
+            state_in = None
+        elif any(state is None for state in states):
+            raise ValueError(
+                "Mixed recurrent state presence inside TBPTT replay group",
+            )
+        else:
+            state_in = (
+                torch.cat([state[0] for state in states], dim=0),
+                torch.cat([state[1] for state in states], dim=0),
+            )
+
+        return PolicyInputBatch(
+            spatial_obs=torch.cat(
+                [
+                    obs.spatial_obs[step_index : step_index + 1]
+                    for obs in observations
+                ],
+                dim=0,
+            ),
+            entity_features=torch.cat(
+                [
+                    obs.entity_features[step_index : step_index + 1]
+                    for obs in observations
+                ],
+                dim=0,
+            ),
+            entity_mask=torch.cat(
+                [
+                    obs.entity_mask[step_index : step_index + 1]
+                    for obs in observations
+                ],
+                dim=0,
+            ),
+            selection_features=torch.cat(
+                [
+                    obs.selection_features[step_index : step_index + 1]
+                    for obs in observations
+                ],
+                dim=0,
+            ),
+            selection_mask=torch.cat(
+                [
+                    obs.selection_mask[step_index : step_index + 1]
+                    for obs in observations
+                ],
+                dim=0,
+            ),
+            meta_vec=torch.cat(
+                [
+                    obs.meta_vec[step_index : step_index + 1]
+                    for obs in observations
+                ],
+                dim=0,
+            ),
+            state_in=state_in,
         )
 
     def _compute_advantages(

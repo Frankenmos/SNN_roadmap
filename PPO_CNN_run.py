@@ -49,6 +49,17 @@ def reset_environment():
             map_name=cfg.environment.map_name,
             visualize=cfg.environment.visualize,
             use_action_printer=cfg.environment.use_action_printer,
+            use_available_actions_diagnostics=getattr(
+                cfg.environment, "use_available_actions_diagnostics", False,
+            ),
+            available_actions_diagnostics_output_path=getattr(
+                cfg.environment,
+                "available_actions_diagnostics_output_path",
+                "analysis_results/available_actions_diagnostics.jsonl",
+            ),
+            available_actions_diagnostics_every_n_steps=getattr(
+                cfg.environment, "available_actions_diagnostics_every_n_steps", 1,
+            ),
             use_observation_inspector=getattr(
                 cfg.environment, "use_observation_inspector", False,
             ),
@@ -62,6 +73,27 @@ def reset_environment():
             ),
             observation_inspector_max_unit_samples=getattr(
                 cfg.environment, "observation_inspector_max_unit_samples", 5,
+            ),
+            use_policy_input_diagnostics=getattr(
+                cfg.environment, "use_policy_input_diagnostics", False,
+            ),
+            policy_input_diagnostics_output_path=getattr(
+                cfg.environment,
+                "policy_input_diagnostics_output_path",
+                "analysis_results/policy_input_diagnostics.jsonl",
+            ),
+            policy_input_diagnostics_every_n_steps=getattr(
+                cfg.environment, "policy_input_diagnostics_every_n_steps", 1,
+            ),
+            policy_input_diagnostics_max_entity_samples=getattr(
+                cfg.environment,
+                "policy_input_diagnostics_max_entity_samples",
+                3,
+            ),
+            policy_input_diagnostics_max_selection_samples=getattr(
+                cfg.environment,
+                "policy_input_diagnostics_max_selection_samples",
+                3,
             ),
         )
     except Exception as exc:
@@ -494,6 +526,17 @@ def main(argv):
             map_name=cfg.environment.map_name,
             visualize=False,
             use_action_printer=cfg.environment.use_action_printer,
+            use_available_actions_diagnostics=getattr(
+                cfg.environment, "use_available_actions_diagnostics", False,
+            ),
+            available_actions_diagnostics_output_path=getattr(
+                cfg.environment,
+                "available_actions_diagnostics_output_path",
+                "analysis_results/available_actions_diagnostics.jsonl",
+            ),
+            available_actions_diagnostics_every_n_steps=getattr(
+                cfg.environment, "available_actions_diagnostics_every_n_steps", 1,
+            ),
             use_observation_inspector=getattr(
                 cfg.environment, "use_observation_inspector", False,
             ),
@@ -507,6 +550,27 @@ def main(argv):
             ),
             observation_inspector_max_unit_samples=getattr(
                 cfg.environment, "observation_inspector_max_unit_samples", 5,
+            ),
+            use_policy_input_diagnostics=getattr(
+                cfg.environment, "use_policy_input_diagnostics", False,
+            ),
+            policy_input_diagnostics_output_path=getattr(
+                cfg.environment,
+                "policy_input_diagnostics_output_path",
+                "analysis_results/policy_input_diagnostics.jsonl",
+            ),
+            policy_input_diagnostics_every_n_steps=getattr(
+                cfg.environment, "policy_input_diagnostics_every_n_steps", 1,
+            ),
+            policy_input_diagnostics_max_entity_samples=getattr(
+                cfg.environment,
+                "policy_input_diagnostics_max_entity_samples",
+                3,
+            ),
+            policy_input_diagnostics_max_selection_samples=getattr(
+                cfg.environment,
+                "policy_input_diagnostics_max_selection_samples",
+                3,
             ),
         )
     except Exception as exc:

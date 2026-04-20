@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 ACTION_LABELS = {0: "attack", 1: "move", 2: "no-op"}
+PHASE_LABELS = ("early", "mid", "late")
 
 
 class TrainingAnalyzer:
@@ -85,9 +86,20 @@ class TrainingAnalyzer:
 
     def get_step_metrics(self) -> pd.DataFrame:
         if self._steps is None:
+            cols = self._table_columns("steps")
+            wanted = [
+                "episode_id",
+                "step_number",
+                "action",
+                "move_x",
+                "move_y",
+                "reward",
+                "cumulative_reward",
+            ]
+            present = [name for name in wanted if name in cols]
             self._steps = pd.read_sql_query(
-                "SELECT episode_id, step_number, action, reward, cumulative_reward "
-                "FROM steps ORDER BY episode_id, step_number",
+                f"SELECT {', '.join(present)} FROM steps "
+                "ORDER BY episode_id, step_number",
                 self.conn,
             )
         return self._steps
@@ -134,6 +146,13 @@ class TrainingAnalyzer:
             "entity_count_p50",
             "entity_count_p99",
             "selection_mask_utilization",
+            "update_wall_seconds",
+            "tbptt_chunks",
+            "tbptt_chunk_groups",
+            "tbptt_window",
+            "tbptt_group_max_steps",
+            "tbptt_group_mean_active_chunks",
+            "tbptt_forward_calls",
         ]
         present = [name for name in wanted if name in cols]
         if not present:
@@ -264,6 +283,63 @@ class TrainingAnalyzer:
         mix = counts.merge(totals, on="bin")
         mix["prob"] = mix["count"] / mix["total"]
         return mix[["bin", "action", "prob"]]
+
+    def action_mix_by_episode_phase(self, num_bins: int = 50) -> pd.DataFrame:
+        """Probability of each action by phase-of-episode and episode-bin.
+
+        Phase is derived from normalized step progress:
+        - early: first third
+        - mid: middle third
+        - late: final third
+        """
+        steps = self.get_step_metrics()
+        episodes = self.get_episode_metrics()[["episode_id", "steps"]].rename(
+            columns={"steps": "episode_steps"},
+        )
+        if steps.empty or episodes.empty:
+            return pd.DataFrame(columns=["phase", "bin", "action", "prob"])
+
+        merged = steps.merge(episodes, on="episode_id", how="left")
+        merged["episode_steps"] = merged["episode_steps"].fillna(1).clip(lower=1)
+        rel_pos = (merged["step_number"].astype(float) + 1.0) / merged[
+            "episode_steps"
+        ].astype(float)
+        merged["phase"] = np.select(
+            [
+                rel_pos <= (1.0 / 3.0),
+                rel_pos <= (2.0 / 3.0),
+            ],
+            [
+                "early",
+                "mid",
+            ],
+            default="late",
+        )
+
+        max_ep = int(merged["episode_id"].max())
+        bin_size = max(1, max_ep // max(1, num_bins))
+        merged["bin"] = (merged["episode_id"] // bin_size) * bin_size
+
+        counts = (
+            merged.groupby(["phase", "bin", "action"])
+            .size()
+            .reset_index(name="count")
+        )
+        totals = (
+            merged.groupby(["phase", "bin"])
+            .size()
+            .reset_index(name="total")
+        )
+        mix = counts.merge(totals, on=["phase", "bin"])
+        mix["prob"] = mix["count"] / mix["total"]
+        mix["phase"] = pd.Categorical(
+            mix["phase"],
+            categories=list(PHASE_LABELS),
+            ordered=True,
+        )
+        return mix[["phase", "bin", "action", "prob"]].sort_values(
+            ["phase", "bin", "action"],
+        )
 
     def win_rate(self, threshold: float, window: int = 100) -> pd.Series:
         """Proxy win rate: fraction of episodes in rolling window with
@@ -793,6 +869,367 @@ class TrainingAnalyzer:
             plt.show()
         plt.close(fig)
 
+    def export_ai_friendly_panels(
+        self,
+        out_dir: str,
+        window: int = 100,
+        num_bins: int = 50,
+        plateau_ep: Optional[int] = None,
+    ) -> list[str]:
+        """Export a small bundle of high-signal static panels intended to
+        be easy to share back into text-only workflows.
+
+        The output is a set of focused PNGs rather than one giant dashboard
+        screenshot. Missing-data panels are skipped instead of failing.
+        """
+        output_root = Path(out_dir)
+        output_root.mkdir(parents=True, exist_ok=True)
+
+        exported: list[str] = []
+
+        def _save(fig, filename: str):
+            path = output_root / filename
+            fig.tight_layout()
+            fig.savefig(path, dpi=120)
+            plt.close(fig)
+            exported.append(filename)
+            logger.info(f"AI-friendly panel saved to {path}")
+
+        ep = self.get_episode_metrics()
+        stats = self.rolling_reward_stats(window=window)
+        cov = self.oscillation_score(window=50)
+        entropy = self.empirical_action_entropy(num_bins=num_bins)
+        mix = self.action_mix_over_time(num_bins=num_bins)
+        phase_mix = self.action_mix_by_episode_phase(num_bins=num_bins)
+        steps = self.get_step_metrics()
+        updates = self.get_update_metrics()
+        evals = self.get_eval_metrics()
+        reward_components = self.get_reward_components()
+
+        # 1. Reward trajectory
+        fig, ax = plt.subplots(figsize=(11, 4.5))
+        ax.plot(
+            ep["episode_id"], ep["total_reward"],
+            color="tab:blue", alpha=0.25, label="raw reward",
+        )
+        ax.plot(
+            stats["episode_id"], stats["mean"],
+            color="tab:red", label=f"rolling mean (w={window})",
+        )
+        ax.fill_between(
+            stats["episode_id"],
+            stats["mean"] - stats["std"],
+            stats["mean"] + stats["std"],
+            color="tab:red", alpha=0.15, label="+/- 1 std",
+        )
+        if plateau_ep is not None:
+            ax.axvline(
+                plateau_ep,
+                ls="--",
+                color="k",
+                alpha=0.5,
+                label=f"plateau (ep {plateau_ep})",
+            )
+        ax.set_title("Reward trajectory")
+        ax.set_xlabel("episode")
+        ax.set_ylabel("total reward")
+        ax.legend()
+        ax.grid(True)
+        _save(fig, "01_reward_trajectory.png")
+
+        # 2. Episode length
+        fig, ax = plt.subplots(figsize=(11, 4.5))
+        ep_rolling = ep["steps"].rolling(window, min_periods=1).mean()
+        ax.plot(ep["episode_id"], ep["steps"], color="tab:green", alpha=0.25, label="raw")
+        ax.plot(
+            ep["episode_id"], ep_rolling,
+            color="tab:red", label=f"rolling mean (w={window})",
+        )
+        ax.set_title("Episode length")
+        ax.set_xlabel("episode")
+        ax.set_ylabel("steps")
+        ax.legend()
+        ax.grid(True)
+        _save(fig, "02_episode_length.png")
+
+        # 3. Reward efficiency
+        fig, ax = plt.subplots(figsize=(11, 4.5))
+        efficiency = (
+            ep["total_reward"] / ep["steps"].clip(lower=1)
+        ).replace([np.inf, -np.inf], np.nan)
+        ax.plot(
+            ep["episode_id"], efficiency,
+            color="tab:purple", alpha=0.25, label="reward / step",
+        )
+        ax.plot(
+            ep["episode_id"],
+            efficiency.rolling(window, min_periods=1).mean(),
+            color="tab:red",
+            label=f"rolling mean (w={window})",
+        )
+        ax.set_title("Reward efficiency")
+        ax.set_xlabel("episode")
+        ax.set_ylabel("reward / step")
+        ax.legend()
+        ax.grid(True)
+        _save(fig, "03_reward_efficiency.png")
+
+        # 4. Oscillation score
+        fig, ax = plt.subplots(figsize=(11, 4.5))
+        ax.plot(cov.index, cov.values, color="tab:purple")
+        ax.axhline(0.5, ls=":", color="k", alpha=0.4, label="0.5 threshold")
+        if plateau_ep is not None:
+            ax.axvline(plateau_ep, ls="--", color="k", alpha=0.5)
+        ax.set_title("Rolling oscillation score")
+        ax.set_xlabel("episode")
+        ax.set_ylabel("CoV")
+        ax.legend()
+        ax.grid(True)
+        _save(fig, "04_oscillation_score.png")
+
+        # 5. Action entropy
+        if not entropy.empty:
+            fig, ax = plt.subplots(figsize=(11, 4.5))
+            ax.plot(
+                entropy["bin"], entropy["entropy"],
+                color="tab:orange", marker="o", markersize=3,
+            )
+            ax.axhline(np.log(3), ls=":", color="k", alpha=0.4, label="log(3)")
+            ax.axhline(0.1, ls=":", color="r", alpha=0.4, label="0.1 threshold")
+            if plateau_ep is not None:
+                ax.axvline(plateau_ep, ls="--", color="k", alpha=0.5)
+            ax.set_title("Empirical action entropy")
+            ax.set_xlabel("episode (binned)")
+            ax.set_ylabel("H(action)")
+            ax.legend()
+            ax.grid(True)
+            _save(fig, "05_action_entropy.png")
+
+        # 6. Whole-run action mix
+        if not mix.empty:
+            fig, ax = plt.subplots(figsize=(11, 4.5))
+            pivot = mix.pivot(index="bin", columns="action", values="prob").fillna(0)
+            pivot = pivot.reindex(columns=[0, 1, 2], fill_value=0)
+            ax.stackplot(
+                pivot.index,
+                [pivot[0].values, pivot[1].values, pivot[2].values],
+                labels=[ACTION_LABELS[0], ACTION_LABELS[1], ACTION_LABELS[2]],
+                alpha=0.75,
+            )
+            ax.set_title("Action mix over time")
+            ax.set_xlabel("episode (binned)")
+            ax.set_ylabel("share")
+            ax.set_ylim(0, 1)
+            ax.legend(loc="upper right")
+            ax.grid(True)
+            _save(fig, "06_action_mix.png")
+
+        # 7. Early / mid / late action mix
+        if not phase_mix.empty:
+            fig, axes = plt.subplots(3, 1, figsize=(11, 11), sharex=True)
+            for ax, phase in zip(axes, PHASE_LABELS):
+                phase_df = phase_mix[phase_mix["phase"] == phase]
+                if phase_df.empty:
+                    continue
+                pivot = phase_df.pivot(index="bin", columns="action", values="prob").fillna(0)
+                pivot = pivot.reindex(columns=[0, 1, 2], fill_value=0)
+                ax.stackplot(
+                    pivot.index,
+                    [pivot[0].values, pivot[1].values, pivot[2].values],
+                    labels=[ACTION_LABELS[0], ACTION_LABELS[1], ACTION_LABELS[2]],
+                    alpha=0.75,
+                )
+                ax.set_title(f"{phase.title()}-phase action mix")
+                ax.set_ylabel("share")
+                ax.set_ylim(0, 1)
+                ax.grid(True)
+            axes[0].legend(loc="upper right")
+            axes[-1].set_xlabel("episode (binned)")
+            _save(fig, "07_phase_action_mix.png")
+
+        # 8. Move target heatmap
+        if {"action", "move_x", "move_y"}.issubset(set(steps.columns)):
+            moves = steps[
+                (steps["action"] == 1)
+                & steps["move_x"].notna()
+                & steps["move_y"].notna()
+            ]
+            if not moves.empty:
+                fig, ax = plt.subplots(figsize=(7, 6))
+                heatmap, xedges, yedges = np.histogram2d(
+                    moves["move_x"],
+                    moves["move_y"],
+                    bins=32,
+                )
+                image = ax.imshow(
+                    heatmap.T,
+                    origin="lower",
+                    aspect="auto",
+                    cmap="viridis",
+                )
+                ax.set_title("Move target heatmap")
+                ax.set_xlabel("move_x bin")
+                ax.set_ylabel("move_y bin")
+                fig.colorbar(image, ax=ax, label="count")
+                _save(fig, "08_move_target_heatmap.png")
+
+        # 9. TBPTT / speed
+        speed_fields = {
+            "update_wall_seconds",
+            "tbptt_forward_calls",
+            "tbptt_chunk_groups",
+            "tbptt_group_mean_active_chunks",
+            "transitions_in_update",
+        }
+        if not updates.empty and speed_fields.intersection(set(updates.columns)):
+            fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+            x = updates["update_id"] if "update_id" in updates.columns else np.arange(len(updates))
+
+            if "update_wall_seconds" in updates.columns:
+                axes[0, 0].plot(x, updates["update_wall_seconds"], color="tab:blue")
+                axes[0, 0].set_title("Update wall seconds")
+                axes[0, 0].set_ylabel("seconds")
+                axes[0, 0].grid(True)
+
+            if "tbptt_forward_calls" in updates.columns:
+                axes[0, 1].plot(x, updates["tbptt_forward_calls"], color="tab:orange")
+                axes[0, 1].set_title("TBPTT forward calls")
+                axes[0, 1].grid(True)
+
+            if "tbptt_chunk_groups" in updates.columns:
+                axes[1, 0].plot(x, updates["tbptt_chunk_groups"], color="tab:green")
+                axes[1, 0].set_title("TBPTT chunk groups")
+                axes[1, 0].set_xlabel("ppo update")
+                axes[1, 0].grid(True)
+
+            if {
+                "transitions_in_update",
+                "update_wall_seconds",
+            }.issubset(set(updates.columns)):
+                throughput = (
+                    updates["transitions_in_update"] /
+                    updates["update_wall_seconds"].clip(lower=1.0e-6)
+                )
+                axes[1, 1].plot(x, throughput, color="tab:red")
+                axes[1, 1].set_title("Transitions per second")
+                axes[1, 1].set_xlabel("ppo update")
+                axes[1, 1].grid(True)
+            elif "tbptt_group_mean_active_chunks" in updates.columns:
+                axes[1, 1].plot(
+                    x,
+                    updates["tbptt_group_mean_active_chunks"],
+                    color="tab:red",
+                )
+                axes[1, 1].set_title("Mean active chunks")
+                axes[1, 1].set_xlabel("ppo update")
+                axes[1, 1].grid(True)
+
+            _save(fig, "09_tbptt_speed.png")
+
+        # 10. Eval split
+        if not evals.empty and {"episode_index", "mean_reward"}.issubset(set(evals.columns)):
+            fig, ax = plt.subplots(figsize=(11, 4.5))
+            if "deterministic" in evals.columns:
+                for label, det_value, color in [
+                    ("stochastic", 0, "tab:blue"),
+                    ("deterministic", 1, "tab:red"),
+                ]:
+                    subset = evals[evals["deterministic"].fillna(0).astype(int) == det_value]
+                    if subset.empty:
+                        continue
+                    ax.plot(
+                        subset["episode_index"],
+                        subset["mean_reward"],
+                        marker="o",
+                        color=color,
+                        label=label,
+                    )
+                    if {"min_reward", "max_reward"}.issubset(set(subset.columns)):
+                        ax.fill_between(
+                            subset["episode_index"],
+                            subset["min_reward"],
+                            subset["max_reward"],
+                            color=color,
+                            alpha=0.10,
+                        )
+            else:
+                ax.plot(
+                    evals["episode_index"],
+                    evals["mean_reward"],
+                    marker="o",
+                    color="tab:blue",
+                    label="eval mean",
+                )
+            ax.set_title("Evaluation reward")
+            ax.set_xlabel("episode")
+            ax.set_ylabel("mean reward")
+            ax.legend()
+            ax.grid(True)
+            _save(fig, "10_eval_split.png")
+
+        # 11. Eval gap
+        if (
+            not evals.empty
+            and {"episode_index", "mean_reward", "deterministic"}.issubset(set(evals.columns))
+        ):
+            pivot = evals.copy()
+            pivot["mode"] = np.where(
+                pivot["deterministic"].fillna(0).astype(int) == 1,
+                "deterministic",
+                "stochastic",
+            )
+            pivot = pivot.pivot_table(
+                index="episode_index",
+                columns="mode",
+                values="mean_reward",
+                aggfunc="last",
+            )
+            if {"deterministic", "stochastic"}.issubset(set(pivot.columns)):
+                gap = pivot["stochastic"] - pivot["deterministic"]
+                fig, ax = plt.subplots(figsize=(11, 4.5))
+                ax.plot(gap.index, gap.values, color="tab:brown", marker="o")
+                ax.axhline(0.0, ls=":", color="k", alpha=0.4)
+                ax.set_title("Eval reward gap (stochastic - deterministic)")
+                ax.set_xlabel("episode")
+                ax.set_ylabel("reward gap")
+                ax.grid(True)
+                _save(fig, "11_eval_gap.png")
+
+        # 12. Reward component trends
+        if not reward_components.empty:
+            reward_cols = [
+                column
+                for column in reward_components.columns
+                if "reward" in column and column not in {"total_reward", "episode_id"}
+            ]
+            if reward_cols:
+                fig, ax = plt.subplots(figsize=(12, 5))
+                for col in reward_cols:
+                    per_ep = reward_components.groupby("episode_id")[col].mean()
+                    rolling = per_ep.rolling(window=50, min_periods=1).mean()
+                    ax.plot(rolling.index, rolling.values, label=col)
+                ax.set_title("Reward component trends")
+                ax.set_xlabel("episode")
+                ax.set_ylabel("rolling mean value")
+                ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left")
+                ax.grid(True)
+                _save(fig, "12_reward_component_trends.png")
+
+        manifest_lines = [
+            "AI-friendly export bundle",
+            f"window={window}",
+            f"num_bins={num_bins}",
+            "",
+            "files:",
+        ] + [f"- {name}" for name in exported]
+        (output_root / "manifest.txt").write_text(
+            "\n".join(manifest_lines),
+            encoding="utf-8",
+        )
+        logger.info(f"AI-friendly manifest saved to {output_root / 'manifest.txt'}")
+
+        return exported
+
     def export_metrics(self, path: str):
         summary = self.calculate_summary_statistics()
         pd.DataFrame(list(summary.items()),
@@ -879,6 +1316,12 @@ def main():
                         help="Reward threshold for win-rate proxy")
     parser.add_argument("--report", action="store_true",
                         help="Write instability_report.txt in --out")
+    parser.add_argument(
+        "--aismart",
+        action="store_true",
+        help="Export focused dashboard-style PNG panels into "
+             "<out>/ai_friendly_results/ for easy sharing back into text workflows.",
+    )
     args = parser.parse_args()
 
     # Resolve paths per the per-run layout. Explicit --db/--out win.
@@ -951,6 +1394,14 @@ def main():
             analyzer.write_report(
                 diagnosis,
                 str(out_dir / "instability_report.txt"),
+            )
+
+        if args.aismart:
+            analyzer.export_ai_friendly_panels(
+                out_dir=str(out_dir / "ai_friendly_results"),
+                window=args.window,
+                num_bins=args.num_bins,
+                plateau_ep=diagnosis["plateau_episode"],
             )
 
         # Console summary

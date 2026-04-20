@@ -1,8 +1,8 @@
 # Plan: Post-Baseline Execution Order
 
 This file is the short tactical roadmap for the next coding sessions.
-It intentionally stays shorter than [RAYPLAN.md](RAYPLAN.md) and
-[WHY_YOLO_BAD.md](WHY_YOLO_BAD.md), which hold the long-form reasoning.
+It intentionally stays shorter than [RAYPLAN.md](../ideas/RAYPLAN.md) and
+[WHY_YOLO_BAD.md](../ideas/WHY_YOLO_BAD.md), which hold the long-form reasoning.
 
 If there is any conflict between "what feels exciting" and this file,
 follow this file.
@@ -275,7 +275,7 @@ Distribute the now-stable protocol, not the old local assumptions.
 
 ### Companion doc
 
-Read [RAYPLAN.md](RAYPLAN.md) before touching this phase.
+Read [RAYPLAN.md](../ideas/RAYPLAN.md) before touching this phase.
 
 ---
 
@@ -346,13 +346,13 @@ Once the current run gives us data, answer these before Phase 1 starts:
 
 ## Companion Docs
 
-- [WHY_YOLO_BAD.md](WHY_YOLO_BAD.md):
+- [WHY_YOLO_BAD.md](../ideas/WHY_YOLO_BAD.md):
   why we should not change everything at once
-- [RAYPLAN.md](RAYPLAN.md):
+- [RAYPLAN.md](../ideas/RAYPLAN.md):
   distributed actor-learner roadmap
 - [NEXT_FIXES_PLAN.md](NEXT_FIXES_PLAN.md):
   historical reasoning log for earlier PPO/SNN fixes
-- [action_space/action_plan.md](action_space/action_plan.md):
+- [action_space/action_plan.md](../../action_space/action_plan.md):
   action-space redesign sketch
 
 ---
