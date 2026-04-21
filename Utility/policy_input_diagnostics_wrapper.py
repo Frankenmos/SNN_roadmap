@@ -7,7 +7,7 @@ from collections.abc import Mapping
 import numpy as np
 from pysc2.env import base_env_wrapper
 
-from PPO_CNN.policy_input import (
+from agent_core.policy_protocol import (
     AGENT_LAST_ACTION_OFFSET,
     CURATED_FEATURE_UNIT_FIELDS,
     DEFEAT_ROACHES_ACTION_IDS,

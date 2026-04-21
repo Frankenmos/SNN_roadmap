@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 from MockedEnv.policy_batch import make_policy_batch
-from PPO_CNN.policy_input import (
+from agent_core.policy_protocol import (
     AGENT_LAST_ACTION_OFFSET,
     BRIDGE_ACTION_BOOTSTRAP_SELECT,
     META_VECTOR_DIM,
@@ -11,14 +11,14 @@ from PPO_CNN.policy_input import (
     PolicyInputBatch,
     SPATIAL_OBS_SHAPE,
 )
-from PPO_CNN.policy_network import (
+from agent_core.spiking_policy import (
     EntityEncoder,
     MetaEncoder,
     PolicyNetwork,
     SelectionEncoder,
     SpikingSelfAttention,
 )
-from PPO_CNN_agent import DefeatRoaches
+from agent import DefeatRoaches
 
 
 def _small_policy():
@@ -51,6 +51,7 @@ def _policy_batch(
         with_state=True,
         state_shape=(
             batch_size,
+            2,
             4 * 4 + 24 + 20 + 1,
             32,
         ),
@@ -271,10 +272,10 @@ def test_policy_zeroes_entity_recurrent_state_between_env_steps():
     )
 
     assert torch.count_nonzero(
-        next_state[0][:, net._entity_start : net._entity_end, :],
+        next_state[0][:, :, net._entity_start : net._entity_end, :],
     ) == 0
     assert torch.count_nonzero(
-        next_state[1][:, net._entity_start : net._entity_end, :],
+        next_state[1][:, :, net._entity_start : net._entity_end, :],
     ) == 0
 
 
@@ -298,12 +299,49 @@ def test_learnable_time_constants_receive_gradients():
     for name, param in [
         ("token_snn.snn.alpha", net.token_snn.snn.alpha),
         ("token_snn.snn.beta", net.token_snn.snn.beta),
+        ("slow_token_snn.snn.alpha", net.slow_token_snn.snn.alpha),
+        ("slow_token_snn.snn.beta", net.slow_token_snn.snn.beta),
         ("attention.lif_q.beta", net.attention.lif_q.beta),
         ("attention.lif_k.beta", net.attention.lif_k.beta),
         ("attention.lif_v.beta", net.attention.lif_v.beta),
     ]:
         assert param.grad is not None, f"{name} is missing gradients"
         assert torch.isfinite(param.grad).all(), f"{name} has non-finite gradients"
+
+
+def test_policy_accepts_legacy_single_timescale_state():
+    net = _small_policy()
+    batch = make_policy_batch(
+        batch_size=1,
+        spatial_shape=SPATIAL_OBS_SHAPE,
+        meta_dim=META_VECTOR_DIM,
+        with_state=True,
+        state_shape=(1, 4 * 4 + 24 + 20 + 1, 32),
+        zeros=True,
+    )
+
+    action_logits, move_x_logits, move_y_logits, state_value, next_state = net(batch)
+
+    assert action_logits.shape == (1, 3)
+    assert move_x_logits.shape == (1, 16)
+    assert move_y_logits.shape == (1, 16)
+    assert state_value.shape == (1,)
+    assert next_state[0].shape == (1, 2, 4 * 4 + 24 + 20 + 1, 32)
+    assert next_state[1].shape == next_state[0].shape
+
+
+def test_policy_forward_handles_batch_size_not_equal_temporal_pathways():
+    net = _small_policy()
+    batch = _policy_batch(batch_size=4, spatial_shape=SPATIAL_OBS_SHAPE)
+
+    action_logits, move_x_logits, move_y_logits, state_value, next_state = net(batch)
+
+    assert action_logits.shape == (4, 3)
+    assert move_x_logits.shape == (4, 16)
+    assert move_y_logits.shape == (4, 16)
+    assert state_value.shape == (4,)
+    assert next_state[0].shape == (4, 2, 4 * 4 + 24 + 20 + 1, 32)
+    assert next_state[1].shape == next_state[0].shape
 
 
 def test_spiking_self_attention_sdpa_respects_padding_mask():

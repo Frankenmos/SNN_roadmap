@@ -3,12 +3,12 @@ import torch
 import torch.nn as nn
 
 from MockedEnv.policy_batch import make_policy_batch
-from PPO_CNN.PPO import PPO
-from PPO_CNN.policy_input import (
+from agent_core.policy_protocol import (
     META_VECTOR_DIM,
     SPATIAL_OBS_SHAPE,
 )
-from PPO_CNN.policy_network import PolicyNetwork
+from agent_core.ppo_trainer import PPO
+from agent_core.spiking_policy import PolicyNetwork
 
 
 class FakeNet(nn.Module):

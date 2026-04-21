@@ -14,7 +14,7 @@ The real SC2 checks still belong to the live environment, not the fake one.
 Use the `Utility/policy_input_diagnostics_wrapper.py` wrapper via:
 
 ```powershell
-python PPO_CNN_eval.py --run_name <run_name> --best --episodes 5 --inspect_policy_input --policy_input_output analysis_results\<run_name>\policy_input_diagnostics.jsonl
+python eval.py --run_name <run_name> --best --episodes 5 --inspect_policy_input --policy_input_output analysis_results\<run_name>\policy_input_diagnostics.jsonl
 ```
 
 That log is meant to answer the questions the local sandbox cannot:

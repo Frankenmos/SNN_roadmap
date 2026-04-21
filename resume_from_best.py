@@ -45,7 +45,7 @@ def main():
     print(f"Copy {best} -> {ckpt}")
     if not args.dry_run:
         shutil.copy2(best, ckpt)
-    print("Done. Next `python PPO_CNN_run.py` will resume from the best policy.")
+    print("Done. Next `python train.py` will resume from the best policy.")
 
 
 if __name__ == "__main__":

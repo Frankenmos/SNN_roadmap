@@ -32,19 +32,55 @@ Verbose pre-compression snapshot:
   the analyzer now detects current action semantics from sibling run config and no longer mislabels `action=2` as no-op for `BPTT-1`
 - regenerated `analysis_results/BPTT-1/instability_report.txt` after the analysis fix
 - added optional eval-side episode trace artifacts:
-  `PPO_CNN_eval.py` can now save per-step `.pt` traces with extracted `PolicyInputBatch` tensors and dispatched action metadata via `--trace_episodes` / `--trace_output_dir`, without touching the training DB
+  `eval.py` can now save per-step `.pt` traces with extracted `PolicyInputBatch` tensors and dispatched action metadata via `--trace_episodes` / `--trace_output_dir`, without touching the training DB
+- added a separate eval-trace analysis entrypoint:
+  `analyze_eval_trace.py` now turns those `.pt` sidecars into a compact image/report bundle without bloating `dashboard.py`, and it can optionally export `conv1` / `conv2` / `conv3` activation maps for a selected step
 - verification for the eval trace path:
-  `pytest tests\test_eval_trace.py tests\test_analysis_tools.py -q`
-  `6 passed`
+  `pytest tests\test_eval_trace.py tests\test_eval_trace_analysis.py tests\test_analysis_tools.py -q`
+  `7 passed`
 - verification after the refactor:
   `pytest tests -q`
   `47 passed`
 
+## 2026-04-21
+
+- renamed the live entrypoints and package surface to match what the repo actually is now:
+  `train.py`, `eval.py`, `agent.py`, and `agent_core/`
+- kept the older `PPO_CNN*` files and package modules as thin compatibility shims so old commands/imports still resolve during the transition
+- inspected `BPTT-1` against the live DB, eval JSONLs, and saved eval traces instead of relying only on the older static report
+- confirmed the current run is ahead of the saved report:
+  `checkpoint.pth` is at episode ~5260, while `best_checkpoint.pth` is stale at episode 200 because deterministic eval has stayed flat
+- confirmed the post-bootstrap action mask is not the main culprit:
+  `Move_screen` and `Attack_screen` are available on >99% of logged eval steps
+- confirmed the learned late-run action mix is the real concern:
+  mostly `NO_OP` plus `ATTACK`, with `MOVE` nearly absent
+- found that the current reward path is still the older proxy:
+  `positioning_reward` is dead, and terminal win/loss still keys off `obs.reward > 0`
+- re-ranked the immediate backlog:
+  reward refactor / rebalance now sits ahead of Stage-2 action-history and selection-action work
+- refreshed the current docs so the active source-of-truth files reflect the live run state instead of the older post-implementation snapshot
+- landed a bounded architecture experiment:
+  the policy now has dual-timescale token memory via fast + slow token-temporal SNN pathways combined before the shared latent readout
+- kept the dual-timescale patch repo-native:
+  the recurrent state stayed a plain `(syn, mem)` tuple, but each tensor now carries an internal pathway axis
+- fixed an early post-landing bug in the dual-timescale patch:
+  one recurrent-state mask multiply still used the old `[B, tokens, 1]` broadcast pattern and broke when `batch_size != 2`
+- added a regression test for non-2 batch sizes so the pathway axis cannot silently alias the batch axis again
+- fixed a real runtime bug in `defeat_roaches_v3.py` where `feature_units` could be a NumPy-like array and crash on truthiness checks
+- explicitly deferred the riskier "grok" follow-ups for a later branch:
+  reward neuromodulation, ALIF swaps, and attention-side temporal state were discussed but not implemented
+- verification for the temporal-pathway patch:
+  `pytest tests/test_agent.py tests/test_PPO.py tests/test_training_loop.py -q`
+  `36 passed`
+  `python -m compileall agent.py agent_core tests`
+
 ## Next Checks
 
-- let the current training run long enough to inspect deterministic and stochastic eval behavior
-- use the action / policy-input diagnostics wrappers during eval to confirm the new semantics stay honest in live SC2 traces
-- decide whether the next action-space step is:
+- refactor / rebalance the reward function using the newer wrapper-driven env understanding
+- fix terminal win/loss detection in `RewardFunctionV2`
+- regenerate the main `BPTT-1` report bundle against the live DB/checkpoint state
+- re-run deterministic and stochastic eval after the reward pass
+- only then decide whether the next action-space step is:
   action-history token group,
   learnable selection actions,
   or both

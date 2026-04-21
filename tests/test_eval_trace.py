@@ -1,9 +1,9 @@
 import torch
 
-import PPO_CNN_eval as eval_mod
+import eval as eval_mod
 
 from MockedEnv.policy_batch import make_policy_batch
-from PPO_CNN.policy_input import META_VECTOR_DIM, SPATIAL_OBS_SHAPE
+from agent_core.policy_protocol import META_VECTOR_DIM, SPATIAL_OBS_SHAPE
 
 
 class _DummyPolicy:

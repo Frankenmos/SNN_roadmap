@@ -1,6 +1,6 @@
 # Action Refactor Status
 
-Updated: 2026-04-20
+Updated: 2026-04-21
 
 This file is now a status note, not a speculative plan. Stage 1 of the
 action refactor has landed.
@@ -29,7 +29,7 @@ action refactor has landed.
 - `meta_vec` grew from `28` to `32`
 - the extra 4 floats are an agent-owned executed-action bridge token:
   `[type_id, x_norm, y_norm, extra]`
-- named offsets now define the bridge-token slice in `PPO_CNN/policy_input.py`
+- named offsets now define the bridge-token slice in `agent_core/policy_protocol.py`
 - the bridge token records the executed action, not the policy's intent
 - a reserved helper token type is used for the reset bootstrap selection
 - the original PySC2 `last_actions` function ID is still kept separately in `meta_vec`
@@ -57,6 +57,30 @@ action refactor has landed.
   `47 passed`
 - live runtime training now starts successfully after the `FunctionCall` compatibility fix
 
+## Post-Run Read
+
+The first real training pass after landing Stage 1 suggests the refactor
+itself is mostly wired correctly, but it did **not** by itself solve
+deterministic behavior.
+
+What the diagnostics say:
+
+- after the reset bootstrap, `Move_screen` and `Attack_screen` are
+  available on >99% of logged eval steps
+- deterministic traces are heavily `NO_OP` + `ATTACK` and almost never
+  `MOVE`
+- stochastic traces do use all three policy actions, including
+  `MOVE`
+
+Current interpretation:
+
+- the Stage-1 action path is not mainly failing because the env is
+  starving the policy of `MOVE` / `ATTACK`
+- the bigger immediate problem looks like reward shaping and policy
+  preference, not missing Stage-2 action vocabulary
+- action-space expansion should stay deferred until reward refactor has
+  had a chance to change the learned behavior
+
 ## Current Invariants
 
 - learned policy vocab stays exactly 3-way:
@@ -68,6 +92,8 @@ action refactor has landed.
 
 ## What Remains For Stage 2+
 
+- immediate next work is **not** automatically Stage 2:
+  reward refactor now looks more urgent than broader action-space work
 - replace the 4-float bridge token with a dedicated action-history token group
 - add learnable selection actions such as `SELECT_POINT` / `SELECT_RECT`
 - decide whether broader action vocab items should stay explicit or move toward richer token-conditioned interaction semantics
