@@ -1,7 +1,7 @@
 import torch
 import pytest
 
-from PPO_CNN.policy_input import (
+from agent_core.policy_protocol import (
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
     PolicyInputBatch,

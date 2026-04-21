@@ -7,7 +7,7 @@ from typing import Any
 import torch
 from pysc2.lib import actions as sc2_actions
 
-from PPO_CNN.policy_input import PolicyInputBatch
+from agent_core.policy_protocol import PolicyInputBatch
 
 
 TRACE_FORMAT_VERSION = 1

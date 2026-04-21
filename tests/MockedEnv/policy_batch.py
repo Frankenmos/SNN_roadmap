@@ -1,6 +1,6 @@
 import torch
 
-from PPO_CNN.policy_input import (
+from agent_core.policy_protocol import (
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
     META_AVAILABLE_ACTION_DIM,
@@ -28,6 +28,13 @@ def make_dummy_state(batch_size=1, token_count=1, embed_dim=1, fill_value=0.0):
     )
 
 
+def make_dummy_state_from_shape(state_shape, fill_value=0.0):
+    return (
+        torch.full(state_shape, fill_value, dtype=torch.float32),
+        torch.full(state_shape, fill_value, dtype=torch.float32),
+    )
+
+
 def make_policy_batch(
     batch_size=1,
     spatial_shape=SPATIAL_OBS_SHAPE,
@@ -52,12 +59,19 @@ def make_policy_batch(
     if with_state:
         if state_shape is None:
             state_shape = (batch_size, 94, 64)
-        state_in = make_dummy_state(
-            batch_size=state_shape[0],
-            token_count=state_shape[1],
-            embed_dim=state_shape[2],
-            fill_value=0.0 if zeros else 1.0,
-        )
+        fill_value = 0.0 if zeros else 1.0
+        if len(state_shape) == 3:
+            state_in = make_dummy_state(
+                batch_size=state_shape[0],
+                token_count=state_shape[1],
+                embed_dim=state_shape[2],
+                fill_value=fill_value,
+            )
+        else:
+            state_in = make_dummy_state_from_shape(
+                state_shape=state_shape,
+                fill_value=fill_value,
+            )
 
     return PolicyInputBatch(
         spatial_obs=tensor_factory(batch_size, *spatial_shape),

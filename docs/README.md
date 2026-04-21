@@ -16,6 +16,10 @@ plans.
   now runs Stage-1 TBPTT and we still need to evaluate the verdict
 - [current/working_log.md](current/working_log.md)
   compressed implementation log; the verbose snapshot is archived
+- [current/Claude_rapport.md](current/Claude_rapport.md)
+  independent 2026-04-20 review snapshot; still useful for reward/eval
+  reasoning, but no longer the primary source of truth after the
+  2026-04-21 repo-state refresh
 
 ## Tooling
 

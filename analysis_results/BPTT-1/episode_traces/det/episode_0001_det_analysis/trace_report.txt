@@ -1,0 +1,25 @@
+======================================================================
+Eval Trace Report
+======================================================================
+
+trace_path:           analysis_results\BPTT-1\episode_traces\det\episode_0001_det.pt
+run_name:             BPTT-1
+episode_index:        1
+deterministic:        True
+total_reward:         11.00
+steps:                137
+policy_steps:         136
+bootstrap_steps:      1
+learnable_steps:      136
+step_reward_mean:     0.080
+step_reward_min/max:  -1.000 / 10.000
+
+Action counts:
+  - no-op: 98
+  - move: 0
+  - attack: 38
+
+Dispatched action counts:
+  - Attack_screen: 38
+  - no_op: 98
+  - select_army: 1

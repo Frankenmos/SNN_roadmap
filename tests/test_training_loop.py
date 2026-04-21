@@ -4,13 +4,15 @@ from unittest.mock import patch
 
 import torch
 
-import PPO_CNN_run as run_mod
+import train as run_mod
 
 from MockedEnv.policy_batch import make_dummy_state, make_policy_batch
-from PPO_CNN.policy_input import (
+from agent_core.policy_protocol import (
     META_VECTOR_DIM,
 )
-from PPO_CNN.reward_function_2 import RewardFunctionV2
+from agent_core.rewards import build_reward_function
+from agent_core.rewards.defeat_roaches_v2 import RewardFunctionV2
+from agent_core.rewards.defeat_roaches_v3 import RewardFunctionV3
 from obs_space.obs_space_2 import get_friendly_health
 
 
@@ -197,6 +199,102 @@ def test_reward_health_penalty_fires_on_health_drop():
     assert total_reward == -4.0
     assert components["health_reward"] == -4.0
     assert components["engagement_reward"] == 0.0
+
+
+def test_reward_v3_uses_enemy_count_for_terminal_win_detection():
+    reward_fn = RewardFunctionV3(
+        damage_dealt_coef=0.0,
+        damage_taken_coef=0.0,
+        kill_reward_coef=0.0,
+        win_reward=60.0,
+        loss_penalty=30.0,
+        step_penalty=0.0,
+        distance_reward_coef=0.0,
+        distance_hold_bonus=0.0,
+    )
+
+    win_obs = SimpleNamespace(
+        observation=SimpleNamespace(
+            player=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            feature_units=[
+                SimpleNamespace(
+                    alliance=1,
+                    health=100,
+                    x=0,
+                    y=0,
+                    unit_type=48,
+                    attack_range=5,
+                ),
+            ],
+            score_cumulative=[0] * 13,
+        ),
+        reward=0,
+        last=lambda: True,
+    )
+
+    total_reward = reward_fn.calculate_reward(win_obs, None)
+    components = reward_fn.get_last_reward_components()
+
+    assert total_reward == 60.0
+    assert components["end_of_episode_reward"] == 60.0
+
+
+def test_reward_v3_positioning_reward_is_positive_when_entering_band():
+    reward_fn = RewardFunctionV3(
+        damage_dealt_coef=0.0,
+        damage_taken_coef=0.0,
+        kill_reward_coef=0.0,
+        win_reward=0.0,
+        loss_penalty=0.0,
+        step_penalty=0.0,
+        target_distance=9.0,
+        distance_band_low=7.0,
+        distance_band_high=11.0,
+        distance_reward_coef=0.5,
+        distance_reward_clip=2.0,
+        distance_hold_bonus=0.1,
+        distance_gate=18.0,
+    )
+
+    far_obs = _make_reward_obs(100, enemy_health=100, enemy_count=1, last=False)
+    close_obs = SimpleNamespace(
+        observation=SimpleNamespace(
+            player=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            feature_units=[
+                SimpleNamespace(
+                    alliance=1,
+                    health=100,
+                    x=0,
+                    y=0,
+                    unit_type=48,
+                    attack_range=5,
+                ),
+                SimpleNamespace(
+                    alliance=4,
+                    health=100,
+                    x=9,
+                    y=0,
+                    unit_type=110,
+                    attack_range=5,
+                ),
+            ],
+            score_cumulative=[0] * 13,
+        ),
+        reward=0,
+        last=lambda: False,
+    )
+
+    reward_fn.calculate_reward(far_obs, None)
+    total_reward = reward_fn.calculate_reward(close_obs, None)
+    components = reward_fn.get_last_reward_components()
+
+    assert components["positioning_reward"] > 0.0
+    assert total_reward > 0.0
+
+
+def test_reward_factory_builds_v3():
+    reward_fn = build_reward_function("defeat_roaches_v3", step_penalty=0.0)
+    assert isinstance(reward_fn, RewardFunctionV3)
 
 
 def test_rollout_budget_triggers_update_on_transition_count(monkeypatch):

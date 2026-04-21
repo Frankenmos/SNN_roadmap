@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from PPO_CNN.policy_input import (
+from agent_core.policy_protocol import (
     AGENT_LAST_ACTION_OFFSET,
     BRIDGE_ACTION_ATTACK,
     META_LAST_ACTION_INDEX_OFFSET,

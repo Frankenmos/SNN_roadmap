@@ -25,15 +25,20 @@ The repository is structured into several logical components:
 - `ObservationExtractor`: Converts raw PySC2 observations into the current hybrid policy input: spatial screen tensor, padded entity tokens, padded selection tokens, and a 32-dim meta vector that now includes the executed-action bridge token.
 - `ActionSpace`: Maps the current 3-way conditioned policy (`NO_OP`, `MOVE`, `ATTACK`) into explicit PySC2 `FunctionCall`s (`no_op`, `Move_screen`, `Attack_screen`). Broader action-space expansion is still future work.
 
-### 3. The Agent & Policy (`PPO_CNN/`)
+### 3. The Agent & Policy (`agent_core/`)
 - **`DefeatRoaches` (Agent):** The orchestrator that binds the observation extractor, the reward function, and the PPO update logic.
-- **`PolicyNetwork`:** A hybrid CNN + token encoder policy with spiking attention and a token-temporal SNN. Spatial features become pooled spatial tokens; unit, selection, and meta context become additional token groups before attention and recurrence.
+- **`PolicyNetwork`:** A hybrid CNN + token encoder policy with spiking attention and dual-timescale token memory. Spatial features become pooled spatial tokens; unit, selection, and meta context become additional token groups before attention and the fast/slow temporal SNN pathways.
 - **`PPO`:** The current PPO path includes Stage-1 TBPTT with ordered chunk replay, helper-step masking, packed replay, and the SDPA attention fast path.
+
+Canonical entrypoints are now `train.py`, `eval.py`, `agent.py`, and
+the `agent_core/` package. The older `PPO_CNN*` file/package names are
+kept as thin compatibility shims for now.
 
 ### 4. Utilities & Analysis (`Utility/`, `tools/analysis/`, Root)
 - `tools/analysis/`: Home for the actual analysis implementations.
 - Root launchers like `results.py`, `dashboard.py`, `analyze_run.py`, and `analyze_pth.py` remain as thin wrappers so the old commands still work.
 - `results.py` / `dashboard.py`: Tools to parse `training_logs.db`, inspect `ppo_updates` / `eval_runs`, detect plateaus, and visualize training metrics like KL divergence, clip fraction, and action entropy.
+- `analyze_eval_trace.py`: Sidecar eval-trace analyzer for `.pt` episode traces, with per-step summaries, spatial panels, and optional conv activation maps from a chosen checkpoint.
 - `config.yaml`: Centralized configuration for hyperparameters, network dimensions, and training settings.
 
 ---
@@ -65,7 +70,7 @@ pip install -r requirements.txt
 To start training the agent from scratch (or resume from the latest checkpoint if configured):
 
 ```bash
-python PPO_CNN_run.py
+python train.py
 ```
 
 ### 2. Resuming from the Best Checkpoint
@@ -142,8 +147,8 @@ python analyze_pth.py --run-name <your_run_name> --which best --max-points 2000
 Basic eval from the latest or best checkpoint:
 
 ```bash
-python PPO_CNN_eval.py --run_name <your_run_name> --best --episodes 10 --nodeterministic
-python PPO_CNN_eval.py --run_name <your_run_name> --best --episodes 10
+python eval.py --run_name <your_run_name> --best --episodes 10 --nodeterministic
+python eval.py --run_name <your_run_name> --best --episodes 10
 ```
 
 High-signal eval flags:
@@ -184,10 +189,25 @@ Trace flags that write per-episode `.pt` sidecar artifacts:
   directory for those episode trace files; defaults to
   `analysis_results/<run_name>/episode_traces/`
 
+To analyze one of those saved traces as a separate bundle:
+
+```bash
+python analyze_eval_trace.py --run-name <your_run_name> --mode det
+python analyze_eval_trace.py --trace analysis_results/<your_run_name>/episode_traces/det/episode_0001_det.pt --activations
+```
+
+This writes a small analysis bundle next to the trace by default, including:
+- `trace_report.txt`
+- reward and action timelines
+- dispatched action counts
+- spatial target scatter
+- spatial input planes for one selected policy step
+- optional `conv1` / `conv2` / `conv3` activation grids when `--activations` is enabled
+
 One useful combined command:
 
 ```bash
-python PPO_CNN_eval.py --run_name <your_run_name> --best --episodes 5 --inspect --inspect_policy_input --inspect_actions --inspect_output analysis_results/<your_run_name>/eval_observation_space.jsonl --policy_input_output analysis_results/<your_run_name>/policy_input_diagnostics.jsonl --actions_output analysis_results/<your_run_name>/available_actions_diagnostics.jsonl
+python eval.py --run_name <your_run_name> --best --episodes 5 --inspect --inspect_policy_input --inspect_actions --inspect_output analysis_results/<your_run_name>/eval_observation_space.jsonl --policy_input_output analysis_results/<your_run_name>/policy_input_diagnostics.jsonl --actions_output analysis_results/<your_run_name>/available_actions_diagnostics.jsonl
 ```
 
 Training-side defaults for these diagnostics can also be centralized in `config.yaml`:

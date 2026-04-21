@@ -25,7 +25,7 @@ class FakeNet(nn.Module):
         self.amp_dtype = torch.float32
         self.scaler = torch.amp.GradScaler('cuda', enabled=False)
 
-from PPO_CNN.PPO import PPO
+from agent_core.ppo_trainer import PPO
 n = FakeNet()
 p = PPO(n, lr=1e-4, total_updates=1000, lr_min=1e-5)
 
@@ -61,7 +61,7 @@ class FakeNet(nn.Module):
         self.amp_dtype = torch.float32
         self.scaler = torch.amp.GradScaler('cuda', enabled=False)
 
-from PPO_CNN.PPO import PPO
+from agent_core.ppo_trainer import PPO
 p = PPO(FakeNet(), lr=1e-4)
 
 B = 128
@@ -101,8 +101,8 @@ actually moved, (c) memory is cleared.
 
 ```python
 import torch
-from PPO_CNN.policy_network import PolicyNetwork
-from PPO_CNN.PPO import PPO
+from agent_core.ppo_trainer import PPO
+from agent_core.spiking_policy import PolicyNetwork
 
 torch.manual_seed(0)
 net = PolicyNetwork((3, 16, 16), vector_input_dim=8, action_dim=3,
@@ -157,7 +157,7 @@ now actually fires.
 ```python
 from types import SimpleNamespace
 from obs_space.obs_space_2 import get_friendly_health
-from PPO_CNN.reward_function_2 import RewardFunctionV2
+from agent_core.rewards.defeat_roaches_v2 import RewardFunctionV2
 
 def make_obs(friendly_health, enemy_health=100, enemy_count=1, last=False):
     friendly = SimpleNamespace(alliance=1, health=friendly_health,
@@ -206,7 +206,7 @@ from collections import deque
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import PPO_CNN_run as run_mod
+import train as run_mod
 
 
 class DummyReward:

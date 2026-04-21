@@ -2,7 +2,7 @@
 
 Reusable one-shot Python probes for
 `analysis_results/<run_name>/eval_observation_space.jsonl` dumps produced
-by `PPO_CNN_eval.py --inspect`. Each snippet is self-contained; just
+by `eval.py --inspect`. Each snippet is self-contained; just
 update the path and run via `python - <<'PY' ... PY`.
 
 Keep this file as gifts to future sessions — when the obs schema

@@ -62,8 +62,8 @@ Current rollout collection:
 
 Relevant code:
 
-- `PPO_CNN_agent.py`
-- `PPO_CNN/PPO.py`
+- `agent.py`
+- `agent_core/ppo_trainer.py`
 
 That means the rollout stores:
 
@@ -565,7 +565,7 @@ Needed tests:
 
 ## 8. File-by-file impact
 
-### `PPO_CNN/PPO.py`
+### `agent_core/ppo_trainer.py`
 
 This is the main rewrite.
 
@@ -578,7 +578,7 @@ Needed work:
 - reset state on done inside replay
 - mask actor/entropy losses where needed
 
-### `PPO_CNN_run.py`
+### `train.py`
 
 Needed work:
 
@@ -587,7 +587,7 @@ Needed work:
 - ensure `final_next` / bootstrap logic matches the new all-step
   rollout semantics
 
-### `PPO_CNN_agent.py`
+### `agent.py`
 
 Probably small changes only.
 
@@ -597,7 +597,7 @@ Needed work:
 - possibly rename or clarify `learnable` into something more explicit
   like `policy_trainable_step`
 
-### `PPO_CNN/policy_network.py`
+### `agent_core/spiking_policy.py`
 
 Probably no architecture rewrite needed, but replay helpers would help.
 
@@ -609,7 +609,7 @@ Potential additions:
 - optional `forward_sequence(...)` helper, though a PPO-side loop is
   enough for the first implementation
 
-### `PPO_CNN/policy_input.py`
+### `agent_core/policy_protocol.py`
 
 Likely no fundamental protocol change needed.
 

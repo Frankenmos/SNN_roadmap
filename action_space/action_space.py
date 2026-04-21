@@ -1,7 +1,7 @@
 import numpy as np
 from pysc2.lib import actions
 
-from PPO_CNN.policy_input import (
+from agent_core.policy_protocol import (
     BRIDGE_ACTION_ATTACK,
     BRIDGE_ACTION_BOOTSTRAP_SELECT,
     BRIDGE_ACTION_MOVE,

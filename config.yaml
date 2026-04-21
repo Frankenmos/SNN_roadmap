@@ -12,6 +12,22 @@ hyperparameters:
   target_kl: 0.03
   reward_scale: 0.1
 
+reward:
+  name: "defeat_roaches_v3"
+  damage_dealt_coef: 0.10
+  damage_taken_coef: 0.15
+  kill_reward_coef: 30.0
+  win_reward: 60.0
+  loss_penalty: 30.0
+  step_penalty: 0.02
+  target_distance: 9.0
+  distance_band_low: 7.0
+  distance_band_high: 11.0
+  distance_reward_coef: 0.20
+  distance_reward_clip: 1.0
+  distance_hold_bonus: 0.05
+  distance_gate: 18.0
+
 environment:
   map_name: "DefeatRoaches"
   visualize: false
@@ -49,8 +65,11 @@ model:
   action_dim: 3
   screen_size: 84
   num_steps: 1
-  token_snn_alpha: 0.8
-  token_snn_beta: 0.9
+  fast_token_snn_alpha: 0.55
+  fast_token_snn_beta: 0.65
+  slow_token_snn_alpha: 0.92
+  slow_token_snn_beta: 0.97
+  temporal_combine_mode: "mean"
   attention_embed_dim: 64
   attention_pool_size: 7
   attention_beta: 0.5

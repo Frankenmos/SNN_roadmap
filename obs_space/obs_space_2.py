@@ -3,7 +3,7 @@ import random
 import numpy as np
 
 # ---- PySC2 colors.py fix for Python 3.11+ (random.shuffle signature) ----
-# The same monkey-patch lives at PPO_CNN_agent.py:8-15. We replicate it
+# The same monkey-patch lives at agent.py:8-15. We replicate it
 # here so that any path that imports obs_space_2 WITHOUT going through
 # the training entrypoint (e.g. unit tests, smoke scripts) is still safe
 # — otherwise the `from pysc2.lib import features` below triggers
@@ -25,7 +25,7 @@ _colors.shuffled_hue = _shuffled_hue_fixed
 from pysc2.lib import features  # noqa: E402,F401  (kept for downstream consumers)
 import torch  # noqa: E402
 
-from PPO_CNN.policy_input import (
+from agent_core.policy_protocol import (
     AGENT_LAST_ACTION_DIM,
     AGENT_LAST_ACTION_OFFSET,
     BRIDGE_ACTION_NO_OP,
