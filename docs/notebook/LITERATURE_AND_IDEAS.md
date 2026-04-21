@@ -1,0 +1,73 @@
+# Literature and Ideas
+
+**Last Updated:** 2026-04-21
+
+This document maps broader machine learning and architectural concepts to the concrete reality of this codebase. It categorizes ideas based on their implementation status to prevent future agents from reinventing or re-proposing concepts that have already been settled or explicitly deferred.
+
+---
+
+## 1. Already Implemented (Core Mechanics)
+
+### Spiking Neural Networks (SNN) as Policy Backbone
+*   **Concept:** Using biologically inspired SNNs (via `snntorch`) instead of standard LSTMs/GRUs for sequence modeling in RL.
+*   **Repo Interpretation:** We use Leaky Integrate-and-Fire (LIF) neurons to maintain a recurrent state across time steps. This is a core research bet of the project to see if spiking dynamics offer advantages in credit assignment or temporal abstraction.
+
+### Hybrid Observation Tokenization
+*   **Concept:** Instead of dense feature flattening, processing diverse inputs as a unified token stream, similar to a Perceiver or Vision Transformer.
+*   **Repo Interpretation:** The "Fix 3" architecture parses CNN outputs (`feature_screen`), tabular data (`feature_units`), and scalar metadata (`meta_vec`) into distinct tokens, embedded with type IDs, and processed via self-attention (currently `torch.nn.functional.scaled_dot_product_attention`).
+
+### Truncated Backpropagation Through Time (TBPTT) for Sequence Replay
+*   **Concept:** Training recurrent networks on long sequences by unrolling them for a fixed window (e.g., 32 steps) rather than the entire episode, saving memory and mitigating vanishing gradients.
+*   **Repo Interpretation:** Stage-1 TBPTT is implemented with "packed replay." The SNN state is passed forward across chunk boundaries but detached from the computation graph. Terminations (`done=True`) dynamically zero-out the state differentiably using `torch.where`.
+
+### Action-Conditioned Spatial Heads
+*   **Concept:** Factorizing the action space sequentially: decide *what* to do, then decide *where* to do it based on the first decision.
+*   **Repo Interpretation:** The policy samples `action_type` (e.g., `MOVE`), then reuses the same latent representation, conditioned on that `action_type`, to sample `move_x` and `move_y`.
+
+### Multi-Timescale Token Memory
+*   **Concept:** Maintaining multiple memory pathways with different decay rates to capture both immediate tactical shifts and long-term strategic context.
+*   **Repo Interpretation:** The SNN processes tokens through two parallel LIF pathways: a "fast" path (`alpha=0.55`, `beta=0.65`) and a "slow" path (`alpha=0.92`, `beta=0.97`).
+
+### The Bridge Token
+*   **Concept:** Auto-regressive action feedback. The agent needs to know what it just did.
+*   **Repo Interpretation:** A 4-float vector inside `meta_vec` that records the agent's executed action from the previous step.
+
+---
+
+## 2. Plausible Future Branches (On the Roadmap)
+
+### Dedicated Action-History Token Group (Stage-2 Action Refactor)
+*   **Concept:** Expanding the "Bridge Token" into a full sequence of past actions processed through the attention layer, rather than a single vector appended to `meta_vec`.
+*   **Repo Interpretation:** Likely to be implemented once the immediate reward shaping / deterministic flatline issues are resolved. Will allow the agent to reason about its trajectory, not just its immediate last action.
+
+### Tag-Pinned Entity Identity
+*   **Concept:** Stable tracking of individual units across time steps.
+*   **Repo Interpretation:** PySC2's `feature_units` array changes index ordering arbitrarily. We need to use `raw_units.tag` to pin identity, allowing the attention mechanism and SNN to maintain consistent representations of specific enemies over time.
+
+---
+
+## 3. Discussed but Intentionally Deferred
+
+### Reward-Driven Neuromodulation
+*   **Concept:** Feeding the reward signal directly back into the SNN's recurrent state (e.g., altering membrane decay rates or synaptic weights dynamically based on success/failure).
+*   **Repo Interpretation:** Deferred. While theoretically interesting, it significantly alters objective and state semantics. It makes PPO/TBPTT replay harder to trust. Wait until the baseline SNN architecture is proven.
+
+### ALIF Neurons (Adaptive Thresholds)
+*   **Concept:** Using Adaptive Leaky Integrate-and-Fire neurons, where the firing threshold increases after a spike, enforcing sparsity and more complex temporal dynamics.
+*   **Repo Interpretation:** Deferred. Same reasoning as neuromodulation: we want to limit the number of moving, high-risk parts while stabilizing the basic PPO+SNN training loop.
+
+### Temporal State inside the Attention Block
+*   **Concept:** Making the attention mechanism itself recurrent (e.g., maintaining a KV cache across time steps) rather than just relying on the SNN downstream.
+*   **Repo Interpretation:** Deferred. Current implementation relies on the downstream SNN to handle *all* temporal memory. Adding recurrence to the attention block adds massive complexity to the TBPTT implementation.
+
+---
+
+## 4. Likely Bad / Risky / Not Worth It Yet
+
+### Large-Scale Action Space Expansion (e.g., Spells, Full Minimap movement)
+*   **Concept:** Giving the agent access to the entire StarCraft II action vocabulary.
+*   **Repo Interpretation:** Premature. The agent is currently stuck in an argmax-trap trying to choose between `NO_OP`, `MOVE`, and `ATTACK`. Expanding the action space before it masters basic movement will result in catastrophic exploration collapse.
+
+### Scaling Model Parameters (e.g., deeper CNNs, massive embedding dims)
+*   **Concept:** "More parameters = better performance."
+*   **Repo Interpretation:** Incorrect for the current bottleneck. The argmax-trap is a policy-shape and reward-shaping problem, not a capacity problem. Throwing more parameters at it will just make training slower without solving the root cause.

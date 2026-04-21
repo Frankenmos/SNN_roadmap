@@ -3,7 +3,11 @@
 Start here when you want repo context without spelunking through old
 plans.
 
-## Current
+## Repo Notebook (Durable Memory)
+- [notebook/INDEX.md](notebook/INDEX.md)
+  Start here if you are onboarding, need architectural context, want to read the chronological history of decisions, or need to understand the experiments (like `BPTT-1`). The notebook sits one layer above the operational docs and serves as the living technical memory of the project.
+
+## Current (Operational Truth)
 
 - [current/REPO_STATE.md](current/REPO_STATE.md)
   short description of what the code does today, what is stable, and
