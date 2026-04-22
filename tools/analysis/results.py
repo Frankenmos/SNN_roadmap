@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 LEGACY_ACTION_LABELS = {0: "attack", 1: "move", 2: "no-op"}
 CONDITIONED_ACTION_LABELS = {0: "no-op", 1: "move", 2: "attack"}
+SMART_SCREEN_ACTION_LABELS = {0: "no-op", 1: "smart"}
 ACTION_LABELS = CONDITIONED_ACTION_LABELS.copy()
 PHASE_LABELS = ("early", "mid", "late")
 
@@ -49,12 +50,16 @@ class TrainingAnalyzer:
         self.conn: Optional[sqlite3.Connection] = None
         self._connect()
         self.action_semantics = self._infer_action_semantics()
-        if self.action_semantics == "conditioned_spatial_v1":
+        if self.action_semantics == "smart_screen_v2":
+            self.action_labels = SMART_SCREEN_ACTION_LABELS.copy()
+            self.noop_action_id = 0
+        elif self.action_semantics == "conditioned_spatial_v1":
             self.action_labels = CONDITIONED_ACTION_LABELS.copy()
             self.noop_action_id = 0
         else:
             self.action_labels = LEGACY_ACTION_LABELS.copy()
             self.noop_action_id = 2
+        self.action_ids = sorted(self.action_labels)
         # Cached DataFrames — loaded lazily.
         self._episodes: Optional[pd.DataFrame] = None
         self._steps: Optional[pd.DataFrame] = None
@@ -90,6 +95,12 @@ class TrainingAnalyzer:
         if isinstance(config, dict):
             model_cfg = config.get("model", {})
             if isinstance(model_cfg, dict):
+                value = model_cfg.get("action_dim")
+                try:
+                    if int(value) == 2:
+                        return "smart_screen_v2"
+                except (TypeError, ValueError):
+                    pass
                 for field_name in ("vector_input_dim", "meta_input_dim"):
                     value = model_cfg.get(field_name)
                     try:
@@ -286,7 +297,7 @@ class TrainingAnalyzer:
         current logging schema (no true policy entropy stored)."""
         steps = self.get_step_metrics()
         if steps.empty:
-            return pd.DataFrame(columns=["bin", "entropy"])
+            return pd.DataFrame(columns=["bin", "entropy", "action_count"])
 
         max_ep = steps["episode_id"].max()
         bin_size = max(1, max_ep // num_bins)
@@ -298,6 +309,7 @@ class TrainingAnalyzer:
         counts["prob"] = counts["count"] / counts["total"]
         counts["term"] = -counts["prob"] * np.log(counts["prob"] + 1e-12)
         entropy = counts.groupby("bin")["term"].sum().reset_index(name="entropy")
+        entropy["action_count"] = len(self.action_ids)
         return entropy
 
     def action_mix_over_time(self, num_bins: int = 50) -> pd.DataFrame:
@@ -423,6 +435,20 @@ class TrainingAnalyzer:
         except Exception as e:
             logger.warning(f"Could not calculate reward component statistics: {e}")
         return summary
+
+    def _spatial_target_steps(self, steps: pd.DataFrame) -> pd.DataFrame:
+        required = {"action", "move_x", "move_y"}
+        if steps.empty or not required.issubset(set(steps.columns)):
+            return pd.DataFrame()
+        if self.action_semantics == "smart_screen_v2":
+            action_mask = steps["action"] != self.noop_action_id
+        else:
+            action_mask = steps["action"] == 1
+        return steps[
+            action_mask
+            & steps["move_x"].notna()
+            & steps["move_y"].notna()
+        ]
 
     # ------------------------------------------------------------------
     # Rule-based diagnosis
@@ -822,7 +848,13 @@ class TrainingAnalyzer:
         if not entropy.empty:
             ax.plot(entropy["bin"], entropy["entropy"], color="tab:orange",
                     marker="o", markersize=3)
-        ax.axhline(np.log(3), ls=":", color="k", alpha=0.4, label="log(3) (uniform)")
+        ax.axhline(
+            np.log(len(self.action_ids)),
+            ls=":",
+            color="k",
+            alpha=0.4,
+            label=f"log({len(self.action_ids)}) (uniform)",
+        )
         ax.axhline(0.1, ls=":", color="r", alpha=0.4, label="0.1 (collapse threshold)")
         if plateau_ep is not None:
             ax.axvline(plateau_ep, ls="--", color="k", alpha=0.5)
@@ -834,15 +866,11 @@ class TrainingAnalyzer:
         ax = axes[4]
         if not mix.empty:
             pivot = mix.pivot(index="bin", columns="action", values="prob").fillna(0)
-            pivot = pivot.reindex(columns=[0, 1, 2], fill_value=0)
+            pivot = pivot.reindex(columns=self.action_ids, fill_value=0)
             ax.stackplot(
                 pivot.index,
-                [pivot[0].values, pivot[1].values, pivot[2].values],
-                labels=[
-                    self.action_labels[0],
-                    self.action_labels[1],
-                    self.action_labels[2],
-                ],
+                [pivot[action_id].values for action_id in self.action_ids],
+                labels=[self.action_labels[action_id] for action_id in self.action_ids],
                 alpha=0.7,
             )
         ax.set_title("Action mix over time")
@@ -1044,7 +1072,13 @@ class TrainingAnalyzer:
                 entropy["bin"], entropy["entropy"],
                 color="tab:orange", marker="o", markersize=3,
             )
-            ax.axhline(np.log(3), ls=":", color="k", alpha=0.4, label="log(3)")
+            ax.axhline(
+                np.log(len(self.action_ids)),
+                ls=":",
+                color="k",
+                alpha=0.4,
+                label=f"log({len(self.action_ids)})",
+            )
             ax.axhline(0.1, ls=":", color="r", alpha=0.4, label="0.1 threshold")
             if plateau_ep is not None:
                 ax.axvline(plateau_ep, ls="--", color="k", alpha=0.5)
@@ -1059,15 +1093,11 @@ class TrainingAnalyzer:
         if not mix.empty:
             fig, ax = plt.subplots(figsize=(11, 4.5))
             pivot = mix.pivot(index="bin", columns="action", values="prob").fillna(0)
-            pivot = pivot.reindex(columns=[0, 1, 2], fill_value=0)
+            pivot = pivot.reindex(columns=self.action_ids, fill_value=0)
             ax.stackplot(
                 pivot.index,
-                [pivot[0].values, pivot[1].values, pivot[2].values],
-                labels=[
-                    self.action_labels[0],
-                    self.action_labels[1],
-                    self.action_labels[2],
-                ],
+                [pivot[action_id].values for action_id in self.action_ids],
+                labels=[self.action_labels[action_id] for action_id in self.action_ids],
                 alpha=0.75,
             )
             ax.set_title("Action mix over time")
@@ -1086,15 +1116,11 @@ class TrainingAnalyzer:
                 if phase_df.empty:
                     continue
                 pivot = phase_df.pivot(index="bin", columns="action", values="prob").fillna(0)
-                pivot = pivot.reindex(columns=[0, 1, 2], fill_value=0)
+                pivot = pivot.reindex(columns=self.action_ids, fill_value=0)
                 ax.stackplot(
                     pivot.index,
-                    [pivot[0].values, pivot[1].values, pivot[2].values],
-                    labels=[
-                        self.action_labels[0],
-                        self.action_labels[1],
-                        self.action_labels[2],
-                    ],
+                    [pivot[action_id].values for action_id in self.action_ids],
+                    labels=[self.action_labels[action_id] for action_id in self.action_ids],
                     alpha=0.75,
                 )
                 ax.set_title(f"{phase.title()}-phase action mix")
@@ -1105,18 +1131,13 @@ class TrainingAnalyzer:
             axes[-1].set_xlabel("episode (binned)")
             _save(fig, "07_phase_action_mix.png")
 
-        # 8. Move target heatmap
-        if {"action", "move_x", "move_y"}.issubset(set(steps.columns)):
-            moves = steps[
-                (steps["action"] == 1)
-                & steps["move_x"].notna()
-                & steps["move_y"].notna()
-            ]
-            if not moves.empty:
+        # 8. Spatial target heatmap
+        spatial_steps = self._spatial_target_steps(steps)
+        if not spatial_steps.empty:
                 fig, ax = plt.subplots(figsize=(7, 6))
                 heatmap, xedges, yedges = np.histogram2d(
-                    moves["move_x"],
-                    moves["move_y"],
+                    spatial_steps["move_x"],
+                    spatial_steps["move_y"],
                     bins=32,
                 )
                 image = ax.imshow(
@@ -1125,7 +1146,7 @@ class TrainingAnalyzer:
                     aspect="auto",
                     cmap="viridis",
                 )
-                ax.set_title("Move target heatmap")
+                ax.set_title("Spatial target heatmap")
                 ax.set_xlabel("move_x bin")
                 ax.set_ylabel("move_y bin")
                 fig.colorbar(image, ax=ax, label="count")
@@ -1279,9 +1300,10 @@ class TrainingAnalyzer:
             f"num_bins={num_bins}",
             f"action_semantics={self.action_semantics}",
             "action_labels="
-            f"0:{self.action_labels[0]},"
-            f"1:{self.action_labels[1]},"
-            f"2:{self.action_labels[2]}",
+            + ",".join(
+                f"{action_id}:{self.action_labels[action_id]}"
+                for action_id in self.action_ids
+            ),
             "",
             "files:",
         ] + [f"- {name}" for name in exported]

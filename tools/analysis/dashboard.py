@@ -256,10 +256,11 @@ def _oscillation_figure(cov: pd.Series) -> go.Figure:
 
 
 def _action_mix_figure(mix_df: pd.DataFrame, action_labels: dict[int, str]) -> go.Figure:
+    action_ids = sorted(action_labels)
     pivot = mix_df.pivot(index="bin", columns="action", values="prob").fillna(0.0)
-    pivot = pivot.reindex(columns=[0, 1, 2], fill_value=0.0)
+    pivot = pivot.reindex(columns=action_ids, fill_value=0.0)
     fig = go.Figure()
-    for action_id in [0, 1, 2]:
+    for action_id in action_ids:
         fig.add_trace(
             go.Scatter(
                 x=pivot.index,
@@ -289,10 +290,11 @@ def _phase_action_mix_figure(
         fig = go.Figure()
         fig.update_layout(title=title)
         return fig
+    action_ids = sorted(action_labels)
     pivot = phase_df.pivot(index="bin", columns="action", values="prob").fillna(0.0)
-    pivot = pivot.reindex(columns=[0, 1, 2], fill_value=0.0)
+    pivot = pivot.reindex(columns=action_ids, fill_value=0.0)
     fig = go.Figure()
-    for action_id in [0, 1, 2]:
+    for action_id in action_ids:
         fig.add_trace(
             go.Scatter(
                 x=pivot.index,
@@ -355,26 +357,39 @@ def _action_heatmap_figure(
     return fig
 
 
-def _move_target_heatmap_figure(steps_df: pd.DataFrame) -> go.Figure:
+def _move_target_heatmap_figure(
+    steps_df: pd.DataFrame,
+    action_semantics: str,
+    noop_action_id: int,
+) -> go.Figure:
     required = {"action", "move_x", "move_y"}
     if steps_df.empty or not required.issubset(set(steps_df.columns)):
         return go.Figure()
-    moves = steps_df[
-        (steps_df["action"] == 1)
-        & steps_df["move_x"].notna()
-        & steps_df["move_y"].notna()
-    ]
-    if moves.empty:
+    if action_semantics == "smart_screen_v2":
+        spatial_steps = steps_df[
+            (steps_df["action"] != noop_action_id)
+            & steps_df["move_x"].notna()
+            & steps_df["move_y"].notna()
+        ]
+        title = "Smart target heatmap"
+    else:
+        spatial_steps = steps_df[
+            (steps_df["action"] == 1)
+            & steps_df["move_x"].notna()
+            & steps_df["move_y"].notna()
+        ]
+        title = "Move target heatmap"
+    if spatial_steps.empty:
         fig = go.Figure()
-        fig.update_layout(title="Move target heatmap")
+        fig.update_layout(title=title)
         return fig
     fig = px.density_heatmap(
-        moves,
+        spatial_steps,
         x="move_x",
         y="move_y",
         nbinsx=32,
         nbinsy=32,
-        title="Move target heatmap",
+        title=title,
         color_continuous_scale="Viridis",
     )
     fig.update_layout(xaxis_title="move_x", yaxis_title="move_y")
@@ -382,13 +397,17 @@ def _move_target_heatmap_figure(steps_df: pd.DataFrame) -> go.Figure:
 
 
 def _entropy_figure(entropy_df: pd.DataFrame) -> go.Figure:
+    action_count = 0
+    if not entropy_df.empty and "action_count" in entropy_df.columns:
+        action_count = int(entropy_df["action_count"].iloc[0])
+    action_count = max(2, action_count)
     fig = px.line(
         entropy_df,
         x="bin",
         y="entropy",
         title="Empirical action entropy",
     )
-    fig.add_hline(y=float(np.log(3)), line_dash="dot", line_color="gray")
+    fig.add_hline(y=float(np.log(action_count)), line_dash="dot", line_color="gray")
     fig.add_hline(y=0.1, line_dash="dot", line_color="red")
     fig.update_layout(xaxis_title="Episode bin", yaxis_title="Entropy")
     return fig
@@ -787,7 +806,12 @@ def render_dashboard() -> None:
 
     st.caption(
         f"Source DB: `{db_path}` | action semantics: `{action_semantics}` "
-        f"(0={action_labels[0]}, 1={action_labels[1]}, 2={action_labels[2]})"
+        f"("
+        + ", ".join(
+            f"{action_id}={action_labels[action_id]}"
+            for action_id in sorted(action_labels)
+        )
+        + ")"
     )
 
     with st.expander("Results-style diagnosis", expanded=True):
@@ -877,7 +901,11 @@ def render_dashboard() -> None:
                     use_container_width=True,
                 )
             st.plotly_chart(
-                _move_target_heatmap_figure(steps_df),
+                _move_target_heatmap_figure(
+                    steps_df,
+                    action_semantics=action_semantics,
+                    noop_action_id=diagnosis["noop_action_id"],
+                ),
                 use_container_width=True,
             )
 

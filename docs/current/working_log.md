@@ -73,6 +73,32 @@ Verbose pre-compression snapshot:
   `pytest tests/test_agent.py tests/test_PPO.py tests/test_training_loop.py -q`
   `36 passed`
   `python -m compileall agent.py agent_core tests`
+- simplified the learned action space from `NO_OP / MOVE / ATTACK` to `NO_OP / SMART`
+- reason for that simplification:
+  `Attack_screen` was semantically cheating by behaving too much like attack-move on empty ground, which made the old split cleaner on paper than in-game
+- rewired the protocol, PPO masking, agent dispatch, bridge token semantics, and config around `Smart_screen`
+- kept analysis/backfill compatibility for older runs:
+  analysis tools now infer action semantics from each run config so the older 3-way runs remain readable
+- updated eval-trace analysis and dashboard paths so they can understand both old `MOVE/ATTACK` runs and new `SMART` runs
+- verification after the Smart-screen redesign:
+  `pytest tests -q`
+  `55 passed`
+
+## 2026-04-22
+
+- captured several post-`SMART` action-space training ideas as future branch candidates rather than immediate reward-function edits
+- offline pretraining idea:
+  relabel stronger old `MOVE` / `ATTACK` trajectories into the new `SMART` action space and use them as a behavior-cloning warm start before PPO
+- dataset-cleanup idea for that branch:
+  classify old or future `SMART` clicks by effect using short-horizon observation deltas
+  such as enemy health drop, friendly displacement, weapon-cooldown change, or null-effect clicks
+- curriculum idea:
+  split the meaning of `SMART` across easier tasks before returning to full DefeatRoaches
+- concrete curriculum sketches worth remembering:
+  `move-to-beacon` style map for purposeful locomotion
+  a custom DefeatRoaches-like map with enemies placed so they cannot threaten much, to teach clicking near enemies / attack intent more directly
+- explicit caution logged:
+  these curriculum / offline-pretrain ideas should stay separate branch work and not be silently folded into the reward refactor just because they are tempting
 
 ## Next Checks
 
@@ -84,5 +110,9 @@ Verbose pre-compression snapshot:
   action-history token group,
   learnable selection actions,
   or both
+- keep the future branch ideas visible but separate:
+  offline `SMART` pretraining,
+  effect-labeled click datasets,
+  and curriculum maps for locomotion / attack semantics
 - keep the larger branch questions open:
   entity identity, long-term SNN/TBPTT verdict, and whether this remains the mainline or the research branch

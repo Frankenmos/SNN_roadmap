@@ -239,8 +239,7 @@ def build_mock_obs(
         enemy_positions = [(20, 20)]
     if available_actions is None:
         available_actions = {
-            fake_actions.Attack_screen.id,
-            fake_actions.Move_screen.id,
+            fake_actions.Smart_screen.id,
             fake_actions.select_army.id,
         }
     if multi_select is None:

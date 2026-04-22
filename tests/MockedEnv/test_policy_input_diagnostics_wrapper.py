@@ -43,7 +43,7 @@ def test_policy_input_diagnostics_wrapper_logs_raw_and_batch_fields(
             ],
             dtype=np.int32,
         ),
-        last_actions=np.asarray([fake_actions.Move_screen.id], dtype=np.int32),
+        last_actions=np.asarray([fake_actions.Smart_screen.id], dtype=np.int32),
     )
     env = DummyEnv([_to_timestep(reset_obs), _to_timestep(step_obs)])
     output_path = tmp_path / "policy_input_diagnostics.jsonl"
@@ -67,8 +67,7 @@ def test_policy_input_diagnostics_wrapper_logs_raw_and_batch_fields(
     second = records[1]
 
     assert set(first["raw"]["available_action_ids"]) == {
-        fake_actions.Attack_screen.id,
-        fake_actions.Move_screen.id,
+        fake_actions.Smart_screen.id,
         fake_actions.select_army.id,
     }
     assert first["raw"]["last_action_ids"] == [fake_actions.select_army.id]
@@ -77,5 +76,5 @@ def test_policy_input_diagnostics_wrapper_logs_raw_and_batch_fields(
     assert first["batch"]["selection_count"] == 1
     assert first["batch"]["meta_last_action_index"] > 0
     assert second["batch"]["selection_count"] == 2
-    assert second["batch"]["meta_available_action_mask_active"] == 3
+    assert second["batch"]["meta_available_action_mask_active"] == 2
     assert second["batch"]["meta_dim"] == 32

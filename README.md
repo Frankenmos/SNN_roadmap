@@ -23,7 +23,7 @@ The repository is structured into several logical components:
 
 ### 2. Observation & Action Space (`obs_space/`, `action_space/`)
 - `ObservationExtractor`: Converts raw PySC2 observations into the current hybrid policy input: spatial screen tensor, padded entity tokens, padded selection tokens, and a 32-dim meta vector that now includes the executed-action bridge token.
-- `ActionSpace`: Maps the current 3-way conditioned policy (`NO_OP`, `MOVE`, `ATTACK`) into explicit PySC2 `FunctionCall`s (`no_op`, `Move_screen`, `Attack_screen`). Broader action-space expansion is still future work.
+- `ActionSpace`: Maps the current 2-way policy (`NO_OP`, `SMART`) into explicit PySC2 `FunctionCall`s (`no_op`, `Smart_screen`). This keeps the learned click primitive honest to in-game right-click semantics instead of pretending `MOVE` and `ATTACK` are cleanly separated when `Attack_screen` can still behave like attack-move on empty ground.
 
 ### 3. The Agent & Policy (`agent_core/`)
 - **`DefeatRoaches` (Agent):** The orchestrator that binds the observation extractor, the reward function, and the PPO update logic.

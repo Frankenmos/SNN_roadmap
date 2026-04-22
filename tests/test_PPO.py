@@ -61,7 +61,7 @@ class FakeNet(nn.Module):
         base = latent.sum(dim=-1)
         action_logits = self._repeat_logits(self._action_logits, batch_size)
         if action_logits is None:
-            action_logits = torch.randn(batch_size, 3, device=self.device)
+            action_logits = torch.randn(batch_size, 2, device=self.device)
         action_logits = action_logits.to(self.device) + base.unsqueeze(-1) * 0
 
         return action_logits
@@ -180,7 +180,7 @@ class SequenceCarryNet(nn.Module):
 
     def action_head(self, latent):
         base = latent[:, 0]
-        return torch.stack((base, base + 0.1, base - 0.1), dim=-1)
+        return torch.stack((base, base + 0.1), dim=-1)
 
     def conditioned_spatial_head(self, latent, action_ids):
         base = latent[:, 0]
@@ -302,7 +302,7 @@ class RowResetNet(nn.Module):
 
     def action_head(self, latent):
         base = latent[:, 0]
-        return torch.stack((base, base + 0.1, base - 0.1), dim=-1)
+        return torch.stack((base, base + 0.1), dim=-1)
 
     def conditioned_spatial_head(self, latent, action_ids):
         base = latent[:, 0]
@@ -406,7 +406,7 @@ def test_scheduler_decays_lr():
 
 
 def test_select_action_deterministic_uses_argmax_for_move_heads():
-    action_logits = torch.tensor([[-2.0, 3.0, 0.5]])
+    action_logits = torch.tensor([[-2.0, 3.0]])
     move_x_logits = torch.tensor([[0.1, -0.1, 0.0, 0.2, 0.3, 1.4, 0.5, -0.7]])
     move_y_logits = torch.tensor([[-0.8, 0.0, 0.2, -0.4, 0.1, 0.3, 0.9, 1.7]])
     ppo = PPO(FakeNet(action_logits, move_x_logits, move_y_logits), lr=1e-4)
@@ -430,32 +430,8 @@ def test_select_action_deterministic_uses_argmax_for_move_heads():
     assert next_state is None
 
 
-def test_select_action_deterministic_attack_also_uses_spatial_log_prob():
-    action_logits = torch.tensor([[-2.0, 0.5, 3.0]])
-    move_x_logits = torch.tensor([[0.4, -0.1, 1.2, 0.0, -0.6, 0.7, 0.5, -0.2]])
-    move_y_logits = torch.tensor([[-0.3, 0.0, 0.1, 0.2, 1.8, -0.5, 0.6, 0.7]])
-    ppo = PPO(FakeNet(action_logits, move_x_logits, move_y_logits), lr=1e-4)
-
-    batch = make_policy_batch(batch_size=1, meta_dim=8)
-    action, move_x, move_y, log_prob, *_rest = ppo.select_action(
-        batch,
-        deterministic=True,
-    )
-
-    expected_log_prob = (
-        torch.log_softmax(action_logits, dim=-1)[0, 2]
-        + torch.log_softmax(move_x_logits, dim=-1)[0, 2]
-        + torch.log_softmax(move_y_logits, dim=-1)[0, 4]
-    )
-
-    assert action == 2
-    assert move_x == 2
-    assert move_y == 4
-    assert log_prob == pytest.approx(float(expected_log_prob.item()), abs=1e-6)
-
-
 def test_select_action_no_op_ignores_spatial_log_prob():
-    action_logits = torch.tensor([[3.0, -1.0, -2.0]])
+    action_logits = torch.tensor([[3.0, -1.0]])
     move_x_logits = torch.tensor([[0.4, -0.1, 1.2, 0.0, -0.6, 0.7, 0.5, -0.2]])
     move_y_logits = torch.tensor([[-0.3, 0.0, 0.1, 0.2, 1.8, -0.5, 0.6, 0.7]])
     ppo = PPO(FakeNet(action_logits, move_x_logits, move_y_logits), lr=1e-4)
@@ -507,7 +483,7 @@ def test_calculate_losses_reports_normalized_entropy():
     batch_size = 128
 
     policy_loss, value_loss, entropy_loss, diag = ppo._calculate_losses(
-        torch.randn(batch_size, 3),
+        torch.randn(batch_size, 2),
         torch.randn(batch_size, 84),
         torch.randn(batch_size, 84),
         torch.randn(batch_size),
@@ -529,7 +505,7 @@ def test_calculate_losses_reports_normalized_entropy():
 
 def test_calculate_losses_no_op_samples_do_not_backprop_spatial_heads():
     ppo = PPO(FakeNet(), lr=1e-4)
-    action_logits = torch.randn(8, 3, requires_grad=True)
+    action_logits = torch.randn(8, 2, requires_grad=True)
     move_x_logits = torch.randn(8, 84, requires_grad=True)
     move_y_logits = torch.randn(8, 84, requires_grad=True)
     state_values = torch.randn(8, requires_grad=True)
@@ -560,7 +536,7 @@ def test_update_policy_replays_state_and_clears_memory():
     net = PolicyNetwork(
         SPATIAL_OBS_SHAPE,
         vector_input_dim=META_VECTOR_DIM,
-        action_dim=3,
+        action_dim=2,
         num_steps=2,
         screen_size=16,
         attention_embed_dim=32,

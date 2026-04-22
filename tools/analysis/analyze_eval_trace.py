@@ -23,10 +23,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-ACTION_LABELS = {
+DEFAULT_ACTION_LABELS = {
     0: "no-op",
     1: "move",
     2: "attack",
+}
+SMART_ACTION_LABELS = {
+    0: "no-op",
+    1: "smart",
 }
 
 
@@ -163,6 +167,31 @@ class EvalTraceAnalyzer:
             weights_only=False,
         )
         self.records: list[dict[str, Any]] = list(self.payload.get("records", []))
+        self.action_labels = self._resolve_action_labels()
+
+    def _resolve_action_labels(self) -> dict[int, str]:
+        checkpoint_path = self._resolve_checkpoint_path()
+        config = (
+            None
+            if checkpoint_path is None
+            else _load_json(checkpoint_path.with_name("effective_config.json"))
+        )
+        if isinstance(config, dict):
+            model_cfg = config.get("model", {})
+            if isinstance(model_cfg, dict):
+                try:
+                    if int(model_cfg.get("action_dim")) == 2:
+                        return SMART_ACTION_LABELS.copy()
+                except (TypeError, ValueError):
+                    pass
+        actions = {
+            int(record["action"])
+            for record in self.records
+            if record.get("action") is not None
+        }
+        if actions and max(actions) <= 1:
+            return SMART_ACTION_LABELS.copy()
+        return DEFAULT_ACTION_LABELS.copy()
 
     @property
     def policy_records(self) -> list[dict[str, Any]]:
@@ -186,7 +215,7 @@ class EvalTraceAnalyzer:
         raise KeyError(f"Step index {step_index} not found in trace")
 
     def summarize(self) -> dict[str, Any]:
-        action_counts = {label: 0 for label in ACTION_LABELS.values()}
+        action_counts = {label: 0 for label in self.action_labels.values()}
         dispatch_counts: dict[str, int] = {}
         learnable_steps = 0
         bootstrap_steps = 0
@@ -195,8 +224,8 @@ class EvalTraceAnalyzer:
 
         for record in self.records:
             action = record.get("action")
-            if action in ACTION_LABELS:
-                action_counts[ACTION_LABELS[int(action)]] += 1
+            if action in self.action_labels:
+                action_counts[self.action_labels[int(action)]] += 1
             if record.get("learnable"):
                 learnable_steps += 1
             if not record.get("policy_step", False):
@@ -296,9 +325,10 @@ class EvalTraceAnalyzer:
             return
         steps = [int(record.get("step_index", 0)) for record in policy_records]
         actions = [int(record.get("action", 0)) for record in policy_records]
+        action_ids = sorted(self.action_labels)
         fig, ax = plt.subplots(figsize=(11, 4.5))
         ax.scatter(steps, actions, c=actions, cmap="viridis", s=18)
-        ax.set_yticks([0, 1, 2], labels=[ACTION_LABELS[i] for i in [0, 1, 2]])
+        ax.set_yticks(action_ids, labels=[self.action_labels[i] for i in action_ids])
         ax.set_xlabel("step")
         ax.set_ylabel("policy action")
         ax.set_title("Policy action timeline")
@@ -324,19 +354,26 @@ class EvalTraceAnalyzer:
         plt.close(fig)
 
     def _plot_target_scatter(self, output_path: Path) -> None:
+        smart_x = []
+        smart_y = []
         move_x = []
         move_y = []
         attack_x = []
         attack_y = []
         for record in self.policy_records:
             dispatched = (record.get("dispatched_action", {}) or {}).get("function_name")
-            if dispatched == "Move_screen":
+            if dispatched == "Smart_screen":
+                smart_x.append(int(record.get("move_x", 0)))
+                smart_y.append(int(record.get("move_y", 0)))
+            elif dispatched == "Move_screen":
                 move_x.append(int(record.get("move_x", 0)))
                 move_y.append(int(record.get("move_y", 0)))
             elif dispatched == "Attack_screen":
                 attack_x.append(int(record.get("move_x", 0)))
                 attack_y.append(int(record.get("move_y", 0)))
         fig, ax = plt.subplots(figsize=(7, 7))
+        if smart_x:
+            ax.scatter(smart_x, smart_y, label="smart", alpha=0.7, s=18)
         if move_x:
             ax.scatter(move_x, move_y, label="move", alpha=0.7, s=18)
         if attack_x:
@@ -346,7 +383,7 @@ class EvalTraceAnalyzer:
         ax.set_xlabel("x")
         ax.set_ylabel("y")
         ax.set_title("Dispatched spatial targets")
-        if move_x or attack_x:
+        if smart_x or move_x or attack_x:
             ax.legend()
         ax.grid(True, alpha=0.25)
         fig.tight_layout()
@@ -411,15 +448,29 @@ class EvalTraceAnalyzer:
 
         effective_config = _load_json(checkpoint_path.with_name("effective_config.json")) or {}
         model_cfg = effective_config.get("model", {}) if isinstance(effective_config, dict) else {}
+        action_dim = int(model_cfg.get("action_dim", max(self.action_labels) + 1))
 
         policy = PolicyNetwork(
             spatial_input_shape=spatial_shape,
             vector_input_dim=vector_dim,
-            action_dim=3,
+            action_dim=action_dim,
             num_steps=int(model_cfg.get("num_steps", 1)),
             screen_size=int(model_cfg.get("screen_size", spatial_shape[-1])),
-            token_snn_alpha=float(model_cfg.get("token_snn_alpha", 0.8)),
-            token_snn_beta=float(model_cfg.get("token_snn_beta", 0.9)),
+            fast_token_snn_alpha=float(
+                model_cfg.get(
+                    "fast_token_snn_alpha",
+                    model_cfg.get("token_snn_alpha", 0.8),
+                ),
+            ),
+            fast_token_snn_beta=float(
+                model_cfg.get(
+                    "fast_token_snn_beta",
+                    model_cfg.get("token_snn_beta", 0.9),
+                ),
+            ),
+            slow_token_snn_alpha=float(model_cfg.get("slow_token_snn_alpha", 0.92)),
+            slow_token_snn_beta=float(model_cfg.get("slow_token_snn_beta", 0.97)),
+            temporal_combine_mode=str(model_cfg.get("temporal_combine_mode", "mean")),
             attention_embed_dim=int(model_cfg.get("attention_embed_dim", 64)),
             attention_pool_size=int(model_cfg.get("attention_pool_size", 7)),
             attention_beta=float(model_cfg.get("attention_beta", 0.5)),

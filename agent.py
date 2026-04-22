@@ -8,9 +8,8 @@ from pysc2.lib import actions
 from pysc2.lib import colors as _colors
 
 from agent_core.policy_protocol import (
-    POLICY_ACTION_ATTACK,
-    POLICY_ACTION_MOVE,
     POLICY_ACTION_NO_OP,
+    POLICY_ACTION_SMART,
 )
 from agent_core.ppo_trainer import PPO
 from agent_core.rewards import build_reward_function
@@ -191,16 +190,13 @@ class DefeatRoaches(base_agent.BaseAgent):
         )
 
         can_attack = (
-            actions.FUNCTIONS.Attack_screen.id in obs.observation.available_actions
-        )
-        can_move = (
-            actions.FUNCTIONS.Move_screen.id in obs.observation.available_actions
+            actions.FUNCTIONS.Smart_screen.id in obs.observation.available_actions
         )
         can_select_army = (
             actions.FUNCTIONS.select_army.id in obs.observation.available_actions
         )
 
-        if self.bootstrap_pending and can_select_army and not (can_move or can_attack):
+        if self.bootstrap_pending and can_select_army and not can_attack:
             self.bootstrap_pending = False
             self.action_space.reset()
             action_func = self.action_space.bootstrap_select_army(obs)
@@ -230,17 +226,11 @@ class DefeatRoaches(base_agent.BaseAgent):
         action_func = self.action_space.no_op()
         learnable = True
 
-        if action == POLICY_ACTION_ATTACK:
-            action_func = self.action_space.attack(obs, (move_x, move_y))
+        if action == POLICY_ACTION_SMART:
+            action_func = self.action_space.smart(obs, move_x, move_y)
             learnable = _matches_function_call(
                 action_func,
-                actions.FUNCTIONS.Attack_screen,
-            )
-        elif action == POLICY_ACTION_MOVE:
-            action_func = self.action_space.move(obs, move_x, move_y)
-            learnable = _matches_function_call(
-                action_func,
-                actions.FUNCTIONS.Move_screen,
+                actions.FUNCTIONS.Smart_screen,
             )
         elif action == POLICY_ACTION_NO_OP:
             action_func = self.action_space.no_op()
