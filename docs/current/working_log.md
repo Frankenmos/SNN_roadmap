@@ -95,6 +95,25 @@ Verbose pre-compression snapshot:
 - current repo contract after that cleanup:
   `agent_core/` is the canonical runtime package, while `PPO_CNN/` is now
   honest legacy code instead of a disguised alias layer
+- repaired the main architecture bottleneck called out by the BPTT review:
+  the click head no longer has to recover screen coordinates only from a pooled
+  global latent
+- added explicit 2D positional encoding to the pooled spatial token grid before
+  attention
+- kept a structured spatial branch alive through the policy and rewired the
+  `SMART` click head to consume that retained spatial context plus latent/action
+  conditioning
+- kept the value and high-level action path global, but made localization
+  genuinely spatial
+- resolved the `policy_mask` ambiguity by treating it as a true training mask:
+  critic loss is now masked too, not only actor and entropy terms
+- moved PPO updates ahead of deterministic eval / best-checkpoint selection so
+  eval reflects the freshest trained parameters
+- added explicit recurrent-state contract assertions in PPO rollout storage and
+  bootstrap-tail handling
+- verification after the spatial-head repair:
+  `pytest tests -q`
+  `61 passed`
 - captured several post-`SMART` action-space training ideas as future branch candidates rather than immediate reward-function edits
 - offline pretraining idea:
   relabel stronger old `MOVE` / `ATTACK` trajectories into the new `SMART` action space and use them as a behavior-cloning warm start before PPO
@@ -109,11 +128,26 @@ Verbose pre-compression snapshot:
 - explicit caution logged:
   these curriculum / offline-pretrain ideas should stay separate branch work and not be silently folded into the reward refactor just because they are tempting
 
+## 2026-04-22 (compatibility and continuity pass)
+
+- reconciled the `policy_mask` vs `sample_mask` transition:
+  - kept `sample_mask` as the canonical name in runtime code paths
+  - added compatibility aliases so legacy callers using `policy_mask` still read/write correctly
+  - made `_build_tbptt_chunks()` accept `policy_masks=...` as a backward-compatible kwarg
+  - made packed chunk output emit both `sample_mask` and `policy_mask` keys
+- added rollout-continuity protection in `train.py` checkpointing:
+  `save_checkpoint()` now skips persistence while PPO in-flight rollout memory is non-empty
+  so resume behavior does not silently break exact on-policy continuity
+- verified reward version entrypoint still keeps legacy path:
+  `RewardFunctionV2` remains available through `agent_core.rewards.__init__`, while `v3` remains current default
+- updated docs index text to mark `docs/current/urgent.md` as an active historical review source rather than an empty scratchpad
+
 ## Next Checks
 
 - refactor / rebalance the reward function using the newer wrapper-driven env understanding
 - fix terminal win/loss detection in `RewardFunctionV2`
-- regenerate the main `BPTT-1` report bundle against the live DB/checkpoint state
+- regenerate the main `Zero` report bundle against the live DB/checkpoint state
+- keep `analysis_results/BPTT-1` as historical context only (same obs function shape, but older action-space version)
 - re-run deterministic and stochastic eval after the reward pass
 - only then decide whether the next action-space step is:
   action-history token group,

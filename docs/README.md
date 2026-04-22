@@ -5,21 +5,37 @@ plans.
 
 ## Current
 
+- Active verification state: `Zero` is the live run (analysis not yet complete on final checkpoints).
+
 - [current/REPO_STATE.md](current/REPO_STATE.md)
-  short description of what the code does today, what is stable, and
-  what is still open
+  primary source of truth for what the code does today, what is stable,
+  and what is still open; now reflects the `NO_OP + SMART` action space,
+  the structured spatial click head, the masked-critic semantics, and
+  the update-before-eval trainer ordering
 - [current/action_refactor.md](current/action_refactor.md)
-  status note for the landed Stage-1 action refactor and the remaining
-  Stage-2 action-space work
+  status note for the landed action-space work; now covers both the old
+  `MOVE/ATTACK` stage and the later simplification to `SMART`, plus what
+  broader action-space work is still deferred
 - [current/THE_BPTT.md](current/THE_BPTT.md)
   current staged BPTT/TBPTT reasoning; still relevant because the repo
-  now runs Stage-1 TBPTT and we still need to evaluate the verdict
+  now runs Stage-1 TBPTT and we still need to evaluate the verdict; use
+  this for the historical "why TBPTT was needed" context
 - [current/working_log.md](current/working_log.md)
-  compressed implementation log; the verbose snapshot is archived
+  compressed implementation log; now includes the rename-boundary
+  cleanup, Smart-screen redesign, spatial-head repair, masked-critic
+  decision, and the latest future-branch notes
+- [current/BPTT_test_review_report (1).md](<current/BPTT_test_review_report%20(1).md>)
+  independent review focused on the live branch after TBPTT and SMART;
+  especially useful for understanding why the structured spatial click
+  head and positional encoding were worth landing
 - [current/Claude_rapport.md](current/Claude_rapport.md)
   independent 2026-04-20 review snapshot; still useful for reward/eval
   reasoning, but no longer the primary source of truth after the
   2026-04-21 repo-state refresh
+- [current/urgent.md](current/urgent.md)
+  contains the active BPTT review baseline and the naming/continuity repair
+  checklist; still useful for comparing recommendations against current
+  implementation status
 
 ## Tooling
 

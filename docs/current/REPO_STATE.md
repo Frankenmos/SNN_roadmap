@@ -14,6 +14,10 @@ This is currently an SNN + PPO DefeatRoaches project with:
 - eval-side trace capture plus per-trace analysis bundles for real-step inspection
 - dual-timescale token memory:
   fast + slow token-temporal SNN pathways feeding one shared control latent
+- explicit 2D positional encoding on the spatial token grid
+- a structured spatial click head:
+  the `SMART` coordinate logits now read a retained spatial map rather than
+  only a pooled global latent
 
 The current policy input path is:
 
@@ -24,7 +28,8 @@ The current policy input path is:
 - token-type embeddings
 - spiking self-attention
 - fast + slow token-temporal SNN pathways, combined into one latent readout
-- PPO action / spatial / value readout
+- PPO action / spatial / value readout, with the click head reading a retained
+  spatial context map
 
 The current action path is:
 
@@ -42,23 +47,16 @@ Why the repo moved there:
 
 ## Current Training Read
 
-`BPTT-1` is the main post-refactor evidence run so far.
+The active verification run is now `Zero` (not yet ready for full post-run analysis).
 
-- current training checkpoint:
-  `models/BPTT-1/checkpoint.pth`
-  trained to episode ~5260
-- `best_checkpoint.pth` is stale at episode 200 because best-model promotion is still tied to deterministic eval reward, and recent deterministic eval has stayed flat at `0.0`
-- current DB trend is still positive on the shaped training reward:
-  last-100 episode average reward is ~223, above the previous 100-episode window
-- deterministic behavior is still weak:
-  old late action mix was dominated by `NO_OP` plus `ATTACK`, while `MOVE` had almost vanished
-- that now reads more like an action-semantics problem than a simple reward-only problem:
-  `Attack_screen` was acting too much like a privileged attack-move token
-- the action space has now been simplified to `NO_OP + SMART`, so the next evidence run should be interpreted under the new click semantics, not the old `MOVE/ATTACK` split
+- live training checkpoint:
+  `models/Zero/checkpoint.pth`
+- active comparison artifact:
+  `analysis_results/BPTT-1` is historical only (older `MOVE/ATTACK` semantics)
+- track `Zero` on its own trajectory (action mix, terminals, rewards) before declaring any global trend conclusions
 
 Current interpretation:
 
-- the old Stage-1 action-space plumbing was internally correct but semantically crooked
 - reward refactor / rebalance is still urgent
 - the new Smart-screen action simplification should be judged before branching into wilder architecture alternatives
 
@@ -102,6 +100,12 @@ Current interpretation:
   `--trace_episodes`, `analyze_eval_trace.py`, and checkpoint/activation inspection on saved eval episodes
 - multi-timescale token memory:
   a faster token-temporal SNN path plus a slower path, combined before the PPO readout
+- spatial localization repair:
+  explicit positional encoding plus a structured click head for `SMART`
+- training-mask semantics cleanup:
+  masked transitions now mask the critic too, not only actor and entropy terms
+- update-before-eval ordering:
+  pending PPO updates now run before deterministic eval and best-checkpoint selection
 
 ## What Is Not Done
 
@@ -135,6 +139,13 @@ Checkpoints from before the 2026-04-21 multi-timescale temporal patch should als
 - the policy now includes both fast and slow token-temporal SNN pathways
 - recurrent state now carries an extra temporal-pathway dimension internally
 
+Checkpoints from before the 2026-04-22 spatial-head repair should also be treated as incompatible:
+
+- the click head now has explicit spatial positional encoding
+- the `SMART` coordinate head now uses a structured spatial branch instead of
+  the older pooled-latent MLP head
+- the policy state dict gained new spatial-click parameters
+
 ## Explicit Deferrals
 
 These were discussed, but intentionally not landed with the multi-timescale patch:
@@ -150,9 +161,9 @@ Reason:
 
 ## Immediate Priorities
 
-1. Refactor the reward function so it reflects the newer env understanding from the wrappers instead of the older V2 proxy.
+1. Finalize reward semantics for `Zero` using wrapper-derived terminal and outcome signals.
 2. Fix the terminal win/loss check in `agent_core/rewards/defeat_roaches_v2.py`.
-3. Regenerate the main `BPTT-1` analysis bundle against the live checkpoint/DB state so the static report stops lagging the run.
+3. Regenerate the main `Zero` analysis bundle once the run reaches a stable checkpoint block.
 4. Re-evaluate deterministic vs stochastic behavior under the new `SMART` action space before pulling Stage-2 action work forward.
 
 ## Future Branch Candidates

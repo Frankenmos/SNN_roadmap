@@ -27,7 +27,7 @@ The repository is structured into several logical components:
 
 ### 3. The Agent & Policy (`agent_core/`)
 - **`DefeatRoaches` (Agent):** The orchestrator that binds the observation extractor, the reward function, and the PPO update logic.
-- **`PolicyNetwork`:** A hybrid CNN + token encoder policy with spiking attention and dual-timescale token memory. Spatial features become pooled spatial tokens; unit, selection, and meta context become additional token groups before attention and the fast/slow temporal SNN pathways.
+- **`PolicyNetwork`:** A hybrid CNN + token encoder policy with spiking attention and dual-timescale token memory. Spatial features become pooled spatial tokens with explicit 2D positional encoding; unit, selection, and meta context become additional token groups before attention and the fast/slow temporal SNN pathways. The action/value heads still read a global latent, but the `SMART` click head now keeps a structured spatial branch alive for localization instead of predicting coordinates only from a pooled latent.
 - **`PPO`:** The current PPO path includes Stage-1 TBPTT with ordered chunk replay, helper-step masking, packed replay, and the SDPA attention fast path.
 
 Canonical entrypoints are now `train.py`, `eval.py`, `agent.py`, and

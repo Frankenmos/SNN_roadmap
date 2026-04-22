@@ -314,7 +314,7 @@ class PolicyInputBatch:
             "meta_vec",
             self.meta_vec,
             expected_ndim=2,
-            expected_tail=(None,),
+            expected_tail=(META_VECTOR_DIM,),
         )
 
         expected_batch = self.batch_size

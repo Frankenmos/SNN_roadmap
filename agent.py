@@ -32,13 +32,13 @@ _colors.shuffled_hue = _shuffled_hue_fixed
 def _reward_config_from_cfg():
     reward_cfg = getattr(cfg, "reward", None)
     if reward_cfg is None:
-        return "defeat_roaches_v2", {}
+        return "defeat_roaches_v3", {}
 
     try:
         items = dict(reward_cfg.items())
     except Exception:
         items = {}
-    name = items.pop("name", "defeat_roaches_v2")
+    name = items.pop("name", "defeat_roaches_v3")
     return str(name), items
 
 

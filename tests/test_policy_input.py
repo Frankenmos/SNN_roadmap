@@ -4,13 +4,18 @@ import pytest
 from agent_core.policy_protocol import (
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
+    META_VECTOR_DIM,
     PolicyInputBatch,
     SELECTION_FEATURE_DIM,
     SPATIAL_OBS_SHAPE,
 )
 
 
-def _make_batch(batch_size: int = 3, feature_unit_dim: int = 20, meta_dim: int = 37):
+def _make_batch(
+    batch_size: int = 3,
+    feature_unit_dim: int = 20,
+    meta_dim: int = META_VECTOR_DIM,
+):
     state_shape = (batch_size, 49, 64)
     return PolicyInputBatch(
         spatial_obs=torch.randn(batch_size, *SPATIAL_OBS_SHAPE),
@@ -32,7 +37,7 @@ def test_policy_input_batch_accepts_fix3_protocol_shapes():
 
     assert batch.batch_size == 3
     assert batch.feature_unit_dim == 20
-    assert batch.meta_dim == 37
+    assert batch.meta_dim == META_VECTOR_DIM
     assert tuple(batch.spatial_obs.shape) == (3, *SPATIAL_OBS_SHAPE)
     assert tuple(batch.entity_features.shape) == (3, MAX_ENTITY_TOKENS, 20)
     assert tuple(batch.selection_features.shape) == (
@@ -84,5 +89,5 @@ def test_policy_input_batch_rejects_non_bool_masks():
                 SELECTION_FEATURE_DIM,
             ),
             selection_mask=torch.ones(1, MAX_SELECTION_TOKENS, dtype=torch.bool),
-            meta_vec=torch.randn(1, 37),
+            meta_vec=torch.randn(1, META_VECTOR_DIM),
         )

@@ -444,3 +444,64 @@ def test_train_agent_skips_bootstrap_steps_outside_ppo_memory(monkeypatch):
     assert best == float("-inf")
     assert agent.ppo.store_calls == 1
     assert agent.ppo.final_next_calls == 1
+
+
+def test_train_agent_updates_before_eval_and_best_checkpoint(monkeypatch):
+    env = DummyEnv([1])
+    agent = DummyAgent()
+    queue = DummyQueue()
+    call_order = []
+
+    monkeypatch.setattr(run_mod.cfg.environment, "total_episodes", 1, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "steps_per_episode", 10, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "reward_window", 10, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "log_frequency", 999, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "eval_frequency", 1, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "eval_episodes", 1, raising=False)
+    monkeypatch.setattr(run_mod.cfg.hyperparameters, "rollout_steps", 1, raising=False)
+    monkeypatch.setattr(run_mod.cfg.hyperparameters, "reward_scale", 1.0, raising=False)
+
+    def _fake_update(agent, log_queue, episode_index):
+        del log_queue, episode_index
+        call_order.append("update")
+        agent.ppo.memory.clear()
+        return None
+
+    def _fake_eval(**kwargs):
+        del kwargs
+        call_order.append("eval")
+        return {
+            "num_episodes": 1,
+            "mean_reward": 1.0,
+            "std_reward": 0.0,
+            "min_reward": 1.0,
+            "max_reward": 1.0,
+            "deterministic": True,
+        }
+
+    def _fake_best(*args, **kwargs):
+        del args, kwargs
+        call_order.append("best")
+        return 1.0
+
+    with patch.object(
+        run_mod,
+        "load_checkpoint",
+        return_value=(0, float("-inf"), deque(maxlen=10)),
+    ), patch.object(
+        run_mod,
+        "maybe_run_policy_update",
+        side_effect=_fake_update,
+    ), patch.object(
+        run_mod,
+        "run_eval_sweep",
+        side_effect=_fake_eval,
+    ), patch.object(
+        run_mod,
+        "maybe_save_best_checkpoint",
+        side_effect=_fake_best,
+    ):
+        best = run_mod.train_agent(env, agent, None, queue)
+
+    assert best == 1.0
+    assert call_order[:3] == ["update", "eval", "best"]

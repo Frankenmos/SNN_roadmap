@@ -54,7 +54,8 @@ class FakeNet(nn.Module):
         del selection_features, selection_mask
         latent = self.fc(meta_vec[:, :4].float())
         state_value = latent.sum(dim=-1) * 0.1
-        return latent, state_value, state_in
+        spatial_context = latent.unsqueeze(-1).unsqueeze(-1)
+        return latent, state_value, state_in, spatial_context
 
     def action_head(self, latent):
         batch_size = latent.size(0)
@@ -66,8 +67,9 @@ class FakeNet(nn.Module):
 
         return action_logits
 
-    def conditioned_spatial_head(self, latent, action_ids):
+    def conditioned_spatial_head(self, latent, spatial_context, action_ids):
         batch_size = latent.size(0)
+        del spatial_context
         base = latent.sum(dim=-1) + action_ids.to(latent.device, dtype=latent.dtype) * 0
         move_x_logits = self._repeat_logits(self._move_x_logits, batch_size)
         if move_x_logits is None:
@@ -92,7 +94,7 @@ class FakeNet(nn.Module):
         state_in,
         action_ids=None,
     ):
-        latent, state_value, next_state = self.encode_step_tensors(
+        latent, state_value, next_state, spatial_context = self.encode_step_tensors(
             spatial_obs,
             entity_features,
             entity_mask,
@@ -104,7 +106,11 @@ class FakeNet(nn.Module):
         action_logits = self.action_head(latent)
         if action_ids is None:
             action_ids = action_logits.argmax(dim=-1)
-        move_x_logits, move_y_logits = self.conditioned_spatial_head(latent, action_ids)
+        move_x_logits, move_y_logits = self.conditioned_spatial_head(
+            latent,
+            spatial_context,
+            action_ids,
+        )
         return action_logits, move_x_logits, move_y_logits, state_value, next_state
 
     def init_concrete_state(self, batch_size=1, device=None, dtype=None):
@@ -176,14 +182,16 @@ class SequenceCarryNet(nn.Module):
             next_value.expand(batch_size, 1, 1),
             next_value.expand(batch_size, 1, 1),
         )
-        return latent, base, next_state
+        spatial_context = latent.unsqueeze(-1).unsqueeze(-1)
+        return latent, base, next_state, spatial_context
 
     def action_head(self, latent):
         base = latent[:, 0]
         return torch.stack((base, base + 0.1), dim=-1)
 
-    def conditioned_spatial_head(self, latent, action_ids):
+    def conditioned_spatial_head(self, latent, spatial_context, action_ids):
         base = latent[:, 0]
+        del spatial_context, action_ids
         move_x_logits = torch.stack([base + 0.01 * i for i in range(8)], dim=-1)
         move_y_logits = torch.stack([base - 0.01 * i for i in range(8)], dim=-1)
         return move_x_logits, move_y_logits
@@ -199,7 +207,7 @@ class SequenceCarryNet(nn.Module):
         state_in,
         action_ids=None,
     ):
-        latent, state_value, next_state = self.encode_step_tensors(
+        latent, state_value, next_state, spatial_context = self.encode_step_tensors(
             spatial_obs,
             entity_features,
             entity_mask,
@@ -211,7 +219,11 @@ class SequenceCarryNet(nn.Module):
         action_logits = self.action_head(latent)
         if action_ids is None:
             action_ids = action_logits.argmax(dim=-1)
-        move_x_logits, move_y_logits = self.conditioned_spatial_head(latent, action_ids)
+        move_x_logits, move_y_logits = self.conditioned_spatial_head(
+            latent,
+            spatial_context,
+            action_ids,
+        )
         return action_logits, move_x_logits, move_y_logits, state_value, next_state
 
 
@@ -298,14 +310,16 @@ class RowResetNet(nn.Module):
             next_value.expand(current.size(0), 1, 1),
             next_value.expand(current.size(0), 1, 1),
         )
-        return latent, base, next_state
+        spatial_context = latent.unsqueeze(-1).unsqueeze(-1)
+        return latent, base, next_state, spatial_context
 
     def action_head(self, latent):
         base = latent[:, 0]
         return torch.stack((base, base + 0.1), dim=-1)
 
-    def conditioned_spatial_head(self, latent, action_ids):
+    def conditioned_spatial_head(self, latent, spatial_context, action_ids):
         base = latent[:, 0]
+        del spatial_context, action_ids
         move_x_logits = torch.stack([base + 0.01 * i for i in range(8)], dim=-1)
         move_y_logits = torch.stack([base - 0.01 * i for i in range(8)], dim=-1)
         return move_x_logits, move_y_logits
@@ -321,7 +335,7 @@ class RowResetNet(nn.Module):
         state_in,
         action_ids=None,
     ):
-        latent, state_value, next_state = self.encode_step_tensors(
+        latent, state_value, next_state, spatial_context = self.encode_step_tensors(
             spatial_obs,
             entity_features,
             entity_mask,
@@ -333,7 +347,11 @@ class RowResetNet(nn.Module):
         action_logits = self.action_head(latent)
         if action_ids is None:
             action_ids = action_logits.argmax(dim=-1)
-        move_x_logits, move_y_logits = self.conditioned_spatial_head(latent, action_ids)
+        move_x_logits, move_y_logits = self.conditioned_spatial_head(
+            latent,
+            spatial_context,
+            action_ids,
+        )
         return action_logits, move_x_logits, move_y_logits, state_value, next_state
 
 
@@ -411,7 +429,7 @@ def test_select_action_deterministic_uses_argmax_for_move_heads():
     move_y_logits = torch.tensor([[-0.8, 0.0, 0.2, -0.4, 0.1, 0.3, 0.9, 1.7]])
     ppo = PPO(FakeNet(action_logits, move_x_logits, move_y_logits), lr=1e-4)
 
-    batch = make_policy_batch(batch_size=1, meta_dim=8)
+    batch = make_policy_batch(batch_size=1, meta_dim=META_VECTOR_DIM)
     action, move_x, move_y, log_prob, value, next_state = ppo.select_action(
         batch, deterministic=True,
     )
@@ -436,7 +454,7 @@ def test_select_action_no_op_ignores_spatial_log_prob():
     move_y_logits = torch.tensor([[-0.3, 0.0, 0.1, 0.2, 1.8, -0.5, 0.6, 0.7]])
     ppo = PPO(FakeNet(action_logits, move_x_logits, move_y_logits), lr=1e-4)
 
-    batch = make_policy_batch(batch_size=1, meta_dim=8)
+    batch = make_policy_batch(batch_size=1, meta_dim=META_VECTOR_DIM)
     action, move_x, move_y, log_prob, *_rest = ppo.select_action(
         batch,
         deterministic=True,
@@ -531,6 +549,66 @@ def test_calculate_losses_no_op_samples_do_not_backprop_spatial_heads():
         assert torch.count_nonzero(move_y_logits.grad) == 0
 
 
+def test_calculate_losses_masks_critic_loss_with_policy_mask():
+    ppo = PPO(FakeNet(), lr=1e-4, critic_loss_coef=1.0)
+
+    _policy_loss, value_loss, _entropy_loss, diag = ppo._calculate_losses(
+        torch.tensor([[0.0, 1.0], [0.0, 1.0]]),
+        torch.zeros(2, 84),
+        torch.zeros(2, 84),
+        torch.tensor([0.0, 0.0]),
+        torch.tensor([1, 1], dtype=torch.long),
+        torch.tensor([0, 0]),
+        torch.tensor([0, 0]),
+        torch.zeros(2),
+        torch.zeros(2),
+        torch.tensor([1.0, 100.0]),
+        torch.tensor([1.0, 0.0]),
+    )
+
+    assert value_loss.item() == pytest.approx(1.0, abs=1e-6)
+    assert diag["value_count"].item() == pytest.approx(1.0, abs=1e-6)
+
+
+def test_store_transition_requires_pre_step_recurrent_state():
+    ppo = PPO(FakeNet(), lr=1e-4)
+    batch = make_policy_batch(
+        batch_size=1,
+        meta_dim=META_VECTOR_DIM,
+        with_state=False,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Stored transition must carry the pre-step recurrent state",
+    ):
+        ppo.store_transition(
+            batch,
+            torch.tensor(1),
+            torch.tensor(2),
+            torch.tensor(3),
+            torch.tensor(-0.5),
+            torch.tensor(1.0),
+            torch.tensor(0.0),
+            torch.tensor(0.0),
+        )
+
+
+def test_set_final_next_requires_bootstrap_recurrent_state():
+    ppo = PPO(FakeNet(), lr=1e-4)
+    batch = make_policy_batch(
+        batch_size=1,
+        meta_dim=META_VECTOR_DIM,
+        with_state=False,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Bootstrap observation must carry the recurrent state after the final rollout step",
+    ):
+        ppo.set_final_next(batch)
+
+
 def test_update_policy_replays_state_and_clears_memory():
     torch.manual_seed(0)
     net = PolicyNetwork(
@@ -616,7 +694,7 @@ def test_update_policy_uses_chunk_state_carry_and_resets_on_done():
     for stored_state, done in zip(stored_states, dones):
         batch = make_policy_batch(
             batch_size=1,
-            meta_dim=8,
+            meta_dim=META_VECTOR_DIM,
             zeros=True,
         ).with_state(_state(stored_state))
         ppo.store_transition(
@@ -648,7 +726,7 @@ def test_pack_chunk_group_shapes_and_masks():
     ):
         batch = make_policy_batch(
             batch_size=1,
-            meta_dim=8,
+            meta_dim=META_VECTOR_DIM,
             zeros=True,
         ).with_state(_make_state(stored_state))
         ppo.store_transition(
@@ -682,7 +760,7 @@ def test_packed_replay_matches_reference_replay():
     for stored_state, done in ((0.0, 0.0), (99.0, 1.0), (7.0, 1.0)):
         batch = make_policy_batch(
             batch_size=1,
-            meta_dim=8,
+            meta_dim=META_VECTOR_DIM,
             zeros=True,
         ).with_state(_make_state(stored_state))
         ppo.store_transition(
@@ -733,7 +811,7 @@ def test_packed_replay_uses_one_forward_per_timestep_group():
     for stored_state, done in ((0.0, 0.0), (1.0, 1.0), (7.0, 1.0)):
         batch = make_policy_batch(
             batch_size=1,
-            meta_dim=8,
+            meta_dim=META_VECTOR_DIM,
             zeros=True,
         ).with_state(_make_state(stored_state))
         ppo.store_transition(
@@ -763,7 +841,7 @@ def test_packed_replay_resets_only_done_rows_inside_group():
     for stored_state in stored_states:
         batch = make_policy_batch(
             batch_size=1,
-            meta_dim=8,
+            meta_dim=META_VECTOR_DIM,
             zeros=True,
         ).with_state(_make_state(stored_state))
         ppo.store_transition(
