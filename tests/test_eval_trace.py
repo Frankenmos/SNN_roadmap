@@ -50,8 +50,8 @@ class _DummyAgent:
             from pysc2.lib import actions
 
             return (
-                actions.FUNCTIONS.Attack_screen("now", [12, 34]),
-                2,
+                actions.FUNCTIONS.Smart_screen("now", [12, 34]),
+                1,
                 12,
                 34,
                 None,
@@ -127,7 +127,7 @@ def test_eval_play_can_write_episode_trace(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(eval_mod.cfg.environment, "steps_per_episode", 10, raising=False)
     monkeypatch.setattr(eval_mod.cfg.environment, "map_name", "DefeatRoaches", raising=False)
-    monkeypatch.setattr(eval_mod.cfg.model, "action_dim", 3, raising=False)
+    monkeypatch.setattr(eval_mod.cfg.model, "action_dim", 2, raising=False)
 
     eval_mod.play(
         checkpoint_path="models/dummy/checkpoint.pth",
@@ -152,8 +152,8 @@ def test_eval_play_can_write_episode_trace(tmp_path, monkeypatch):
 
     records = payload["records"]
     assert len(records) == 2
-    assert records[0]["action"] == 2
-    assert records[0]["dispatched_action"]["function_name"] == "Attack_screen"
+    assert records[0]["action"] == 1
+    assert records[0]["dispatched_action"]["function_name"] == "Smart_screen"
     assert tuple(records[0]["policy_input"]["spatial_obs"].shape) == SPATIAL_OBS_SHAPE
     assert tuple(records[0]["policy_input"]["meta_vec"].shape) == (META_VECTOR_DIM,)
     assert records[1]["action"] == 0

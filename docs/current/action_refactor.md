@@ -2,12 +2,17 @@
 
 Updated: 2026-04-21
 
-This file is now a status note, not a speculative plan. Stage 1 of the
-action refactor has landed.
+This file is now a status note, not a speculative plan. The repo has
+already moved through two action-space stages:
+
+- the original Stage-1 `NO_OP / MOVE / ATTACK` conditioned-spatial refactor
+- a follow-up simplification to `NO_OP / SMART` once it became clear that
+  `Attack_screen` was semantically cheating by behaving too much like
+  attack-move on empty ground
 
 ## What Landed
 
-### Action semantics
+### Earlier landed semantics
 
 - policy action IDs stay bounded to `NO_OP=0`, `MOVE=1`, `ATTACK=2`
 - dispatch is explicit and interpretable:
@@ -17,6 +22,15 @@ action refactor has landed.
 - `Smart_screen` is no longer used in the learned path
 - the old scripted nearest-enemy attack heuristic is gone from normal policy control
 - the old mid-episode `select_army` fallback is gone from normal control flow
+
+### Current semantics
+
+- learned policy action IDs are now bounded to `NO_OP=0`, `SMART=1`
+- dispatch is now:
+  - `NO_OP -> no_op()`
+  - `SMART -> Smart_screen(x, y)`
+- `Smart_screen` is now the only learned spatial primitive
+- the old `MOVE` vs `ATTACK` split is no longer considered trustworthy enough to keep as the learned interface
 
 ### Reset bootstrap
 
@@ -65,26 +79,26 @@ deterministic behavior.
 
 What the diagnostics say:
 
-- after the reset bootstrap, `Move_screen` and `Attack_screen` are
-  available on >99% of logged eval steps
-- deterministic traces are heavily `NO_OP` + `ATTACK` and almost never
-  `MOVE`
-- stochastic traces do use all three policy actions, including
-  `MOVE`
+- under the older 3-way action design, deterministic traces were heavily
+  `NO_OP + ATTACK` and almost never `MOVE`
+- that pattern is now interpreted as evidence that `ATTACK` was a
+  privileged primitive, not just a plain reward-coefficient problem
+- the action-space simplification to `SMART` is meant to remove that leak
+  before broader branching work
 
 Current interpretation:
 
-- the Stage-1 action path is not mainly failing because the env is
-  starving the policy of `MOVE` / `ATTACK`
-- the bigger immediate problem looks like reward shaping and policy
-  preference, not missing Stage-2 action vocabulary
-- action-space expansion should stay deferred until reward refactor has
-  had a chance to change the learned behavior
+- the older Stage-1 action path was wired correctly, but the command
+  semantics were not as honest as they looked
+- reward shaping is still important, but the repo should now evaluate
+  the `SMART`-only action space before adding new explicit click tokens
+- broader action-space expansion should stay deferred until the simpler
+  `SMART` interface proves stable or clearly insufficient
 
 ## Current Invariants
 
-- learned policy vocab stays exactly 3-way:
-  `NO_OP`, `MOVE`, `ATTACK`
+- learned policy vocab stays exactly 2-way:
+  `NO_OP`, `SMART`
 - bridge-token type space is slightly wider than policy vocab only to represent the reset bootstrap helper honestly
 - reset bootstrap is allowed only at episode start
 - `select_rect` and other broader action-space tokens are still deferred
@@ -96,7 +110,7 @@ Current interpretation:
   reward refactor now looks more urgent than broader action-space work
 - replace the 4-float bridge token with a dedicated action-history token group
 - add learnable selection actions such as `SELECT_POINT` / `SELECT_RECT`
-- decide whether broader action vocab items should stay explicit or move toward richer token-conditioned interaction semantics
+- decide whether broader action vocab items should stay explicit or move toward richer token-conditioned interaction semantics beyond the current `SMART` click
 - revisit whether the bridge token still earns its keep once longer action history is available in the attention stream
 
 ## Archive Pointers

@@ -6,16 +6,14 @@ import torch
 import torch.optim as optim
 
 from agent_core.policy_protocol import (
-    ATTACK_AVAILABLE_ACTION_INDEX,
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
     META_AVAILABLE_ACTION_DIM,
     META_AVAILABLE_ACTION_OFFSET,
-    MOVE_AVAILABLE_ACTION_INDEX,
-    POLICY_ACTION_ATTACK,
-    POLICY_ACTION_MOVE,
     POLICY_ACTION_NO_OP,
+    POLICY_ACTION_SMART,
     PolicyInputBatch,
+    SMART_AVAILABLE_ACTION_INDEX,
 )
 
 
@@ -58,8 +56,7 @@ class PPO:
         self.final_next = None
 
     NO_OP_ACTION_ID = POLICY_ACTION_NO_OP
-    MOVE_ACTION_ID = POLICY_ACTION_MOVE
-    ATTACK_ACTION_ID = POLICY_ACTION_ATTACK
+    SMART_ACTION_ID = POLICY_ACTION_SMART
 
     def resolved_config(self):
         return {
@@ -79,15 +76,13 @@ class PPO:
         }
 
     def _spatial_action_mask(self, actions: torch.Tensor) -> torch.Tensor:
-        return (
-            (actions == self.MOVE_ACTION_ID) | (actions == self.ATTACK_ACTION_ID)
-        ).to(dtype=torch.float32)
+        return (actions == self.SMART_ACTION_ID).to(dtype=torch.float32)
 
     def _policy_action_availability(self, meta_vec: torch.Tensor) -> torch.Tensor:
         if int(meta_vec.size(-1)) < META_AVAILABLE_ACTION_OFFSET + META_AVAILABLE_ACTION_DIM:
             batch_shape = meta_vec.shape[:-1]
             return torch.ones(
-                (*batch_shape, 3),
+                (*batch_shape, 2),
                 device=meta_vec.device,
                 dtype=torch.bool,
             )
@@ -97,9 +92,8 @@ class PPO:
             + META_AVAILABLE_ACTION_DIM,
         ]
         no_op = torch.ones_like(available[..., 0], dtype=torch.bool)
-        move = available[..., MOVE_AVAILABLE_ACTION_INDEX] > 0.5
-        attack = available[..., ATTACK_AVAILABLE_ACTION_INDEX] > 0.5
-        return torch.stack((no_op, move, attack), dim=-1)
+        smart = available[..., SMART_AVAILABLE_ACTION_INDEX] > 0.5
+        return torch.stack((no_op, smart), dim=-1)
 
     def _mask_action_logits(
         self,

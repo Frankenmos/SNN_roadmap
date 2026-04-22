@@ -44,7 +44,7 @@ def test_eval_trace_analyzer_exports_basic_bundle(tmp_path):
                 },
                 {
                     "step_index": 1,
-                    "action": 2,
+                    "action": 1,
                     "move_x": 12,
                     "move_y": 34,
                     "reward": 1.0,
@@ -53,8 +53,8 @@ def test_eval_trace_analyzer_exports_basic_bundle(tmp_path):
                     "learnable": True,
                     "policy_step": True,
                     "dispatched_action": {
-                        "function_id": 12,
-                        "function_name": "Attack_screen",
+                        "function_id": 451,
+                        "function_name": "Smart_screen",
                         "arguments": ["now", [12, 34]],
                     },
                     "policy_input": {
@@ -68,7 +68,7 @@ def test_eval_trace_analyzer_exports_basic_bundle(tmp_path):
                 },
                 {
                     "step_index": 2,
-                    "action": 1,
+                    "action": 0,
                     "move_x": 20,
                     "move_y": 21,
                     "reward": 1.5,
@@ -77,9 +77,9 @@ def test_eval_trace_analyzer_exports_basic_bundle(tmp_path):
                     "learnable": True,
                     "policy_step": True,
                     "dispatched_action": {
-                        "function_id": 331,
-                        "function_name": "Move_screen",
-                        "arguments": ["now", [20, 21]],
+                        "function_id": 0,
+                        "function_name": "no_op",
+                        "arguments": [],
                     },
                     "policy_input": {
                         "spatial_obs": batch.spatial_obs[0].clone(),
@@ -102,12 +102,12 @@ def test_eval_trace_analyzer_exports_basic_bundle(tmp_path):
 
     assert summary["bootstrap_steps"] == 1
     assert summary["policy_steps"] == 2
-    assert summary["action_counts"]["attack"] == 1
-    assert summary["action_counts"]["move"] == 1
+    assert summary["action_counts"]["smart"] == 1
+    assert summary["action_counts"]["no-op"] == 1
     assert "trace_report.txt" in exported
     assert "05_spatial_planes.png" in exported
     assert (out_dir / "manifest.txt").exists()
     assert (out_dir / "04_spatial_targets.png").exists()
     report_text = (out_dir / "trace_report.txt").read_text(encoding="utf-8")
     assert "Dispatched action counts:" in report_text
-    assert "Attack_screen" in report_text
+    assert "Smart_screen" in report_text

@@ -6,8 +6,8 @@ from agent_core.policy_protocol import (
     AGENT_LAST_ACTION_OFFSET,
     BRIDGE_ACTION_BOOTSTRAP_SELECT,
     META_VECTOR_DIM,
-    POLICY_ACTION_ATTACK,
-    POLICY_ACTION_MOVE,
+    POLICY_ACTION_DIM,
+    POLICY_ACTION_SMART,
     PolicyInputBatch,
     SPATIAL_OBS_SHAPE,
 )
@@ -25,7 +25,7 @@ def _small_policy():
     net = PolicyNetwork(
         SPATIAL_OBS_SHAPE,
         vector_input_dim=META_VECTOR_DIM,
-        action_dim=3,
+        action_dim=POLICY_ACTION_DIM,
         num_steps=2,
         screen_size=16,
         attention_embed_dim=32,
@@ -76,10 +76,9 @@ def test_agent_step_returns_current_training_tuple(make_obs):
 
     assert action_func.name in {
         "no_op",
-        "Attack_screen",
-        "Move_screen",
+        "Smart_screen",
     }
-    assert action in {0, 1, 2}
+    assert action in {0, 1}
     assert 0 <= move_x < 84
     assert 0 <= move_y < 84
     assert len(pre_step_state) == 2
@@ -96,7 +95,7 @@ def test_agent_step_returns_current_training_tuple(make_obs):
     assert isinstance(learnable, bool)
 
 
-def test_attack_uses_policy_coordinates(make_obs, monkeypatch):
+def test_smart_uses_policy_coordinates(make_obs, monkeypatch):
     agent = DefeatRoaches()
     next_state = agent.policy.init_concrete_state(batch_size=1)
 
@@ -104,7 +103,7 @@ def test_attack_uses_policy_coordinates(make_obs, monkeypatch):
         agent.ppo,
         "select_action",
         lambda observations, state=None, deterministic=False: (
-            POLICY_ACTION_ATTACK,
+            POLICY_ACTION_SMART,
             17,
             19,
             -0.25,
@@ -116,8 +115,8 @@ def test_attack_uses_policy_coordinates(make_obs, monkeypatch):
     obs = make_obs()
     action_func, action, *_rest, learnable = agent.step(obs)
 
-    assert action == POLICY_ACTION_ATTACK
-    assert action_func.name == "Attack_screen"
+    assert action == POLICY_ACTION_SMART
+    assert action_func.name == "Smart_screen"
     assert action_func.args == ("now", [17, 19])
     assert learnable is True
 
@@ -158,7 +157,7 @@ def test_deterministic_step_does_not_update_extractor_stats(make_obs, monkeypatc
         agent.ppo,
         "select_action",
         lambda observations, deterministic=False: (
-            2,
+            POLICY_ACTION_SMART,
             0,
             0,
             -0.1,
@@ -210,7 +209,7 @@ def test_policy_forward_shapes_and_state_continuity():
         )
     )
 
-    assert action_logits.shape == (2, 3)
+    assert action_logits.shape == (2, POLICY_ACTION_DIM)
     assert move_x_logits.shape == (2, 16)
     assert move_y_logits.shape == (2, 16)
     assert state_value.shape == (2,)
@@ -236,21 +235,21 @@ def test_conditioned_spatial_head_changes_with_action_id():
         state_in=batch.state_in,
     )
 
-    move_x_logits, move_y_logits = net.conditioned_spatial_head(
+    smart_x_logits, smart_y_logits = net.conditioned_spatial_head(
         latent,
-        torch.full((2,), POLICY_ACTION_MOVE, dtype=torch.long),
+        torch.full((2,), POLICY_ACTION_SMART, dtype=torch.long),
     )
-    attack_x_logits, attack_y_logits = net.conditioned_spatial_head(
+    no_op_x_logits, no_op_y_logits = net.conditioned_spatial_head(
         latent,
-        torch.full((2,), POLICY_ACTION_ATTACK, dtype=torch.long),
+        torch.zeros((2,), dtype=torch.long),
     )
 
-    assert move_x_logits.shape == (2, 16)
-    assert move_y_logits.shape == (2, 16)
-    assert attack_x_logits.shape == move_x_logits.shape
-    assert attack_y_logits.shape == move_y_logits.shape
-    assert not torch.allclose(move_x_logits, attack_x_logits)
-    assert not torch.allclose(move_y_logits, attack_y_logits)
+    assert smart_x_logits.shape == (2, 16)
+    assert smart_y_logits.shape == (2, 16)
+    assert no_op_x_logits.shape == smart_x_logits.shape
+    assert no_op_y_logits.shape == smart_y_logits.shape
+    assert not torch.allclose(smart_x_logits, no_op_x_logits)
+    assert not torch.allclose(smart_y_logits, no_op_y_logits)
 
 
 def test_policy_zeroes_entity_recurrent_state_between_env_steps():
@@ -322,7 +321,7 @@ def test_policy_accepts_legacy_single_timescale_state():
 
     action_logits, move_x_logits, move_y_logits, state_value, next_state = net(batch)
 
-    assert action_logits.shape == (1, 3)
+    assert action_logits.shape == (1, POLICY_ACTION_DIM)
     assert move_x_logits.shape == (1, 16)
     assert move_y_logits.shape == (1, 16)
     assert state_value.shape == (1,)
@@ -336,7 +335,7 @@ def test_policy_forward_handles_batch_size_not_equal_temporal_pathways():
 
     action_logits, move_x_logits, move_y_logits, state_value, next_state = net(batch)
 
-    assert action_logits.shape == (4, 3)
+    assert action_logits.shape == (4, POLICY_ACTION_DIM)
     assert move_x_logits.shape == (4, 16)
     assert move_y_logits.shape == (4, 16)
     assert state_value.shape == (4,)
@@ -366,7 +365,7 @@ def test_spiking_self_attention_sdpa_respects_padding_mask():
 
 
 def test_policy_parameter_count_stays_below_one_million():
-    net = PolicyNetwork((27, 84, 84), META_VECTOR_DIM, 3)
+    net = PolicyNetwork((27, 84, 84), META_VECTOR_DIM, POLICY_ACTION_DIM)
     param_count = sum(param.numel() for param in net.parameters())
     assert param_count < 1_000_000
 
