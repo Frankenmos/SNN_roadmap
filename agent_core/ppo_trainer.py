@@ -79,13 +79,14 @@ class PPO:
         return (actions == self.SMART_ACTION_ID).to(dtype=torch.float32)
 
     def _policy_action_availability(self, meta_vec: torch.Tensor) -> torch.Tensor:
-        if int(meta_vec.size(-1)) < META_AVAILABLE_ACTION_OFFSET + META_AVAILABLE_ACTION_DIM:
-            batch_shape = meta_vec.shape[:-1]
-            return torch.ones(
-                (*batch_shape, 2),
-                device=meta_vec.device,
-                dtype=torch.bool,
+        required_width = META_AVAILABLE_ACTION_OFFSET + META_AVAILABLE_ACTION_DIM
+        if int(meta_vec.size(-1)) < required_width:
+            raise ValueError(
+                f"meta_vec width too small for availability slice: "
+                f"got {int(meta_vec.size(-1))}, require at least {required_width}",
             )
+        if torch.isnan(meta_vec).any():
+            raise ValueError("meta_vec contains NaN values; protocol validation failed")
         available = meta_vec[
             ...,
             META_AVAILABLE_ACTION_OFFSET : META_AVAILABLE_ACTION_OFFSET
@@ -117,14 +118,16 @@ class PPO:
             dtype=self.policy_net.amp_dtype,
             enabled=self.policy_net.use_amp,
         ):
-            latent, state_value, next_state = self.policy_net.encode_step_tensors(
-                spatial_obs=batch.spatial_obs,
-                entity_features=batch.entity_features,
-                entity_mask=batch.entity_mask,
-                selection_features=batch.selection_features,
-                selection_mask=batch.selection_mask,
-                meta_vec=batch.meta_vec,
-                state_in=batch.state_in,
+            latent, state_value, next_state, spatial_context = (
+                self.policy_net.encode_step_tensors(
+                    spatial_obs=batch.spatial_obs,
+                    entity_features=batch.entity_features,
+                    entity_mask=batch.entity_mask,
+                    selection_features=batch.selection_features,
+                    selection_mask=batch.selection_mask,
+                    meta_vec=batch.meta_vec,
+                    state_in=batch.state_in,
+                )
             )
             action_logits = self._mask_action_logits(
                 self.policy_net.action_head(latent),
@@ -141,6 +144,7 @@ class PPO:
                 action = action_dist.sample()
             move_x_logits, move_y_logits = self.policy_net.conditioned_spatial_head(
                 latent,
+                spatial_context,
                 action,
             )
             move_x_dist = torch.distributions.Categorical(
@@ -186,6 +190,10 @@ class PPO:
         )
 
     def set_final_next(self, observation_batch: PolicyInputBatch):
+        if observation_batch.state_in is None:
+            raise ValueError(
+                "Bootstrap observation must carry the recurrent state after the final rollout step.",
+            )
         self.final_next = observation_batch.detach().to(device="cpu")
 
     def _clear_rollout_cache(self):
@@ -202,10 +210,19 @@ class PPO:
         reward: torch.Tensor,
         value: torch.Tensor,
         done: torch.Tensor,
+        sample_mask: torch.Tensor | None = None,
         policy_mask: torch.Tensor | None = None,
     ):
-        if policy_mask is None:
-            policy_mask = torch.tensor(1.0, dtype=torch.float32)
+        if observation_batch.state_in is None:
+            raise ValueError(
+                "Stored transition must carry the pre-step recurrent state.",
+            )
+        if sample_mask is None:
+            if policy_mask is None:
+                sample_mask = torch.tensor(1.0, dtype=torch.float32)
+            else:
+                sample_mask = policy_mask
+        sample_mask = sample_mask.to(device="cpu").detach()
         self.memory.append(
             {
                 "observation_batch": observation_batch.detach().to(device="cpu"),
@@ -216,7 +233,8 @@ class PPO:
                 "reward": reward.detach().to(device="cpu"),
                 "value": value.detach().to(device="cpu"),
                 "done": done.detach().to(device="cpu"),
-                "policy_mask": policy_mask.detach().to(device="cpu"),
+                "sample_mask": sample_mask,
+                "policy_mask": sample_mask,
             }
         )
 
@@ -246,11 +264,14 @@ class PPO:
         dones = torch.stack(
             [transition["done"].to(self.device) for transition in self.memory],
         )
-        policy_masks = torch.stack(
+        sample_masks = torch.stack(
             [
                 transition.get(
-                    "policy_mask",
-                    torch.tensor(1.0, dtype=torch.float32),
+                    "sample_mask",
+                    transition.get(
+                        "policy_mask",
+                        torch.tensor(1.0, dtype=torch.float32, device=self.device),
+                    ),
                 ).to(self.device)
                 for transition in self.memory
             ],
@@ -276,8 +297,8 @@ class PPO:
             rewards, values, dones, last_next_value,
         )
         returns = (raw_advantages + values).detach()
-        if bool((policy_masks > 0.0).any().item()):
-            valid_advantages = raw_advantages[policy_masks > 0.0]
+        if bool((sample_masks > 0.0).any().item()):
+            valid_advantages = raw_advantages[sample_masks > 0.0]
             advantages = (
                 raw_advantages - valid_advantages.mean()
             ) / (valid_advantages.std(unbiased=False) + 1e-8)
@@ -292,7 +313,7 @@ class PPO:
             advantages=advantages,
             returns=returns,
             dones=dones,
-            policy_masks=policy_masks,
+            sample_masks=sample_masks,
         )
         tbptt_chunks = int(len(chunks))
 
@@ -375,15 +396,15 @@ class PPO:
                             replayed_group["old_log_prob"].reshape(-1)[active_mask],
                             replayed_group["advantages"].reshape(-1)[active_mask],
                             replayed_group["returns"].reshape(-1)[active_mask],
-                            replayed_group["policy_mask"].reshape(-1)[active_mask],
+                             replayed_group["sample_mask"].reshape(-1)[active_mask],
                         )
                     )
-                    policy_num = policy_num + policy_loss * diag["policy_count"]
-                    policy_den = policy_den + diag["policy_count"]
-                    value_num = value_num + value_loss * diag["value_count"]
-                    value_den = value_den + diag["value_count"]
-                    entropy_num = entropy_num + entropy_loss * diag["policy_count"]
-                    policy_weight = float(diag["policy_count"].item())
+                    policy_num = policy_num + policy_loss * diag["sample_count"]
+                    policy_den = policy_den + diag["sample_count"]
+                    value_num = value_num + value_loss * diag["sample_count"]
+                    value_den = value_den + diag["sample_count"]
+                    entropy_num = entropy_num + entropy_loss * diag["sample_count"]
+                    policy_weight = float(diag["sample_count"].item())
                     diag_kl_num += float(diag["approx_kl"].item()) * policy_weight
                     diag_clip_num += float(diag["clip_frac"].item()) * policy_weight
                     diag_entropy_num += (
@@ -532,8 +553,18 @@ class PPO:
         advantages: torch.Tensor,
         returns: torch.Tensor,
         dones: torch.Tensor,
-        policy_masks: torch.Tensor,
+        sample_masks: torch.Tensor | None = None,
+        policy_masks: torch.Tensor | None = None,
     ):
+        if sample_masks is None:
+            if policy_masks is not None:
+                sample_masks = policy_masks
+            else:
+                sample_masks = torch.ones(
+                    len(self.memory),
+                    dtype=torch.float32,
+                    device=self.device,
+                )
         chunks = []
         rollout_size = len(self.memory)
         window = rollout_size if self.tbptt_window is None else self.tbptt_window
@@ -561,7 +592,8 @@ class PPO:
                     "advantages": advantages[start:end],
                     "returns": returns[start:end],
                     "dones": dones[start:end],
-                    "policy_mask": policy_masks[start:end],
+                    "sample_mask": sample_masks[start:end],
+                    "policy_mask": sample_masks[start:end],
                     "length": int(end - start),
                 }
             )
@@ -599,14 +631,16 @@ class PPO:
         action_ids: torch.Tensor | None,
         state_in: tuple[torch.Tensor, torch.Tensor] | None,
     ):
-        latent, state_value, next_state = self.policy_net.encode_step_tensors(
-            spatial_obs=spatial_obs,
-            entity_features=entity_features,
-            entity_mask=entity_mask,
-            selection_features=selection_features,
-            selection_mask=selection_mask,
-            meta_vec=meta_vec,
-            state_in=state_in,
+        latent, state_value, next_state, spatial_context = (
+            self.policy_net.encode_step_tensors(
+                spatial_obs=spatial_obs,
+                entity_features=entity_features,
+                entity_mask=entity_mask,
+                selection_features=selection_features,
+                selection_mask=selection_mask,
+                meta_vec=meta_vec,
+                state_in=state_in,
+            )
         )
         action_logits = self._mask_action_logits(
             self.policy_net.action_head(latent),
@@ -614,6 +648,7 @@ class PPO:
         )
         move_x_logits, move_y_logits = self.policy_net.conditioned_spatial_head(
             latent,
+            spatial_context,
             action_ids,
         )
         return action_logits, move_x_logits, move_y_logits, state_value, next_state
@@ -700,10 +735,15 @@ class PPO:
             device=self.device,
             dtype=chunk_group[0]["returns"].dtype,
         )
+        sample_mask = torch.zeros(
+            (max_len, group_size),
+            device=self.device,
+            dtype=chunk_group[0]["sample_mask"].dtype,
+        )
         policy_mask = torch.zeros(
             (max_len, group_size),
             device=self.device,
-            dtype=chunk_group[0]["policy_mask"].dtype,
+            dtype=chunk_group[0]["sample_mask"].dtype,
         )
         done = torch.zeros(
             (max_len, group_size),
@@ -752,7 +792,15 @@ class PPO:
             old_log_prob[:length, column] = chunk["old_log_prob"]
             advantages[:length, column] = chunk["advantages"]
             returns[:length, column] = chunk["returns"]
-            policy_mask[:length, column] = chunk["policy_mask"]
+            chunk_mask = chunk.get(
+                "sample_mask",
+                chunk.get(
+                    "policy_mask",
+                    torch.ones((length,), device=self.device, dtype=sample_mask.dtype),
+                ),
+            )
+            sample_mask[:length, column] = chunk_mask
+            policy_mask[:length, column] = chunk_mask
             done[:length, column] = chunk["dones"] > 0.5
             alive_mask[:length, column] = True
 
@@ -769,6 +817,7 @@ class PPO:
             "old_log_prob": old_log_prob,
             "advantages": advantages,
             "returns": returns,
+            "sample_mask": sample_mask,
             "policy_mask": policy_mask,
             "done": done,
             "alive_mask": alive_mask,
@@ -1120,6 +1169,7 @@ class PPO:
         old_log_probs: torch.Tensor,
         advantages: torch.Tensor,
         returns: torch.Tensor,
+        sample_mask: torch.Tensor | None = None,
         policy_mask: torch.Tensor | None = None,
     ):
         action_dist = torch.distributions.Categorical(
@@ -1141,20 +1191,27 @@ class PPO:
             )
         )
 
-        if policy_mask is None:
-            policy_mask = torch.ones_like(advantages)
-        policy_mask = policy_mask.to(device=advantages.device, dtype=advantages.dtype)
-        policy_count = policy_mask.sum()
+        if sample_mask is None:
+            if policy_mask is None:
+                sample_mask = torch.ones_like(advantages)
+            else:
+                sample_mask = policy_mask
+        sample_mask = sample_mask.to(
+            device=advantages.device,
+            dtype=advantages.dtype,
+        )
+        sample_count = sample_mask.sum()
 
         ratio = torch.exp(new_log_probs - old_log_probs)
         surr1 = ratio * advantages
         surr2 = torch.clamp(
             ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon,
         ) * advantages
-        policy_loss = -self._masked_mean(torch.min(surr1, surr2), policy_mask)
+        policy_loss = -self._masked_mean(torch.min(surr1, surr2), sample_mask)
 
-        value_loss = (
-            self.critic_loss_coef * (returns - state_values).pow(2).mean()
+        value_loss = self.critic_loss_coef * self._masked_mean(
+            (returns - state_values).pow(2),
+            sample_mask,
         )
 
         action_dim = action_logits.size(-1)
@@ -1171,28 +1228,25 @@ class PPO:
                 + move_y_dist.entropy() * inv_log_y
             )
         )
-        entropy_loss = self.entropy_coef * self._masked_mean(entropy, policy_mask)
+        entropy_loss = self.entropy_coef * self._masked_mean(entropy, sample_mask)
 
         with torch.no_grad():
             approx_kl = self._masked_mean(
                 (ratio - 1.0) - (new_log_probs - old_log_probs),
-                policy_mask,
+                sample_mask,
             )
             clip_frac = self._masked_mean(
                 ((ratio - 1.0).abs() > self.clip_epsilon).float(),
-                policy_mask,
+                sample_mask,
             )
-            entropy_mean = self._masked_mean(entropy, policy_mask)
+            entropy_mean = self._masked_mean(entropy, sample_mask)
 
         return policy_loss, value_loss, entropy_loss, {
             "approx_kl": approx_kl,
             "clip_frac": clip_frac,
             "entropy_mean": entropy_mean,
-            "policy_count": policy_count.detach(),
-            "value_count": torch.tensor(
-                float(state_values.numel()),
-                device=state_values.device,
-            ),
+            "sample_count": sample_count.detach(),
+            "value_count": sample_count.detach(),
         }
 
     @staticmethod

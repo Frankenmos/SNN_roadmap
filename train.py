@@ -139,7 +139,15 @@ def save_checkpoint(
     checkpoint_path=None,
     avg_reward=None,
     eval_reward=None,
+    require_rollout_clear=True,
 ):
+    saved = False
+    if require_rollout_clear and len(agent.ppo.memory) > 0:
+        print(
+            "Skipping checkpoint save (PPO rollout cache not empty; "
+            "waiting for update to preserve continuity).",
+        )
+        return saved
     if checkpoint_path is None:
         checkpoint_path = _run_path(cfg.environment.checkpoint_path)
     checkpoint = {
@@ -165,10 +173,12 @@ def save_checkpoint(
     try:
         os.replace(temp_path, checkpoint_path)
         print(f"Checkpoint saved to {checkpoint_path} at episode {episode}.")
+        saved = True
     except OSError as exc:
         print(f"Error saving checkpoint: {exc}")
         if os.path.exists(temp_path):
             os.remove(temp_path)
+    return saved
 
 
 def maybe_save_best_checkpoint(
@@ -193,7 +203,7 @@ def maybe_save_best_checkpoint(
     if eval_reward <= best_eval_reward:
         return best_eval_reward
 
-    save_checkpoint(
+    did_save = save_checkpoint(
         agent,
         episode,
         eval_reward,
@@ -202,6 +212,9 @@ def maybe_save_best_checkpoint(
         avg_reward=avg_reward,
         eval_reward=eval_reward,
     )
+    if not did_save:
+        return best_eval_reward
+
     print(
         f"  -> new best deterministic eval reward: {eval_reward:.2f} "
         f"(was {best_eval_reward:.2f})",
@@ -391,7 +404,7 @@ def train_agent(env, agent, observation_extractor, log_queue):
                         dtype=torch.float32,
                         device=agent.policy.device,
                     ),
-                    policy_mask=torch.tensor(
+                    sample_mask=torch.tensor(
                         1.0 if learnable else 0.0,
                         dtype=torch.float32,
                         device=agent.policy.device,
@@ -458,6 +471,9 @@ def train_agent(env, agent, observation_extractor, log_queue):
             }
         )
 
+        if len(agent.ppo.memory) >= rollout_steps:
+            maybe_run_policy_update(agent, log_queue, episode + 1)
+
         if eval_frequency > 0 and eval_episodes > 0 and (episode + 1) % eval_frequency == 0:
             eval_summary = run_eval_sweep(
                 env=env,
@@ -489,9 +505,6 @@ def train_agent(env, agent, observation_extractor, log_queue):
                 best_eval_reward,
                 episode_rewards,
             )
-
-        if len(agent.ppo.memory) >= rollout_steps:
-            maybe_run_policy_update(agent, log_queue, episode + 1)
 
         if (episode + 1) % cfg.environment.log_frequency == 0:
             save_checkpoint(

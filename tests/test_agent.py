@@ -225,7 +225,7 @@ def test_policy_forward_shapes_and_state_continuity():
 def test_conditioned_spatial_head_changes_with_action_id():
     net = _small_policy()
     batch = _policy_batch(batch_size=2, spatial_shape=SPATIAL_OBS_SHAPE)
-    latent, _value, _next_state = net.encode_step_tensors(
+    latent, _value, _next_state, spatial_context = net.encode_step_tensors(
         spatial_obs=batch.spatial_obs,
         entity_features=batch.entity_features,
         entity_mask=batch.entity_mask,
@@ -237,10 +237,12 @@ def test_conditioned_spatial_head_changes_with_action_id():
 
     smart_x_logits, smart_y_logits = net.conditioned_spatial_head(
         latent,
+        spatial_context,
         torch.full((2,), POLICY_ACTION_SMART, dtype=torch.long),
     )
     no_op_x_logits, no_op_y_logits = net.conditioned_spatial_head(
         latent,
+        spatial_context,
         torch.zeros((2,), dtype=torch.long),
     )
 
@@ -250,6 +252,26 @@ def test_conditioned_spatial_head_changes_with_action_id():
     assert no_op_y_logits.shape == smart_y_logits.shape
     assert not torch.allclose(smart_x_logits, no_op_x_logits)
     assert not torch.allclose(smart_y_logits, no_op_y_logits)
+
+
+def test_encode_step_tensors_returns_structured_spatial_context():
+    net = _small_policy()
+    batch = _policy_batch(batch_size=2, spatial_shape=SPATIAL_OBS_SHAPE)
+
+    latent, state_value, next_state, spatial_context = net.encode_step_tensors(
+        spatial_obs=batch.spatial_obs,
+        entity_features=batch.entity_features,
+        entity_mask=batch.entity_mask,
+        selection_features=batch.selection_features,
+        selection_mask=batch.selection_mask,
+        meta_vec=batch.meta_vec,
+        state_in=batch.state_in,
+    )
+
+    assert latent.shape == (2, 64)
+    assert state_value.shape == (2,)
+    assert next_state[0].shape == (2, 2, 4 * 4 + 24 + 20 + 1, 32)
+    assert spatial_context.shape == (2, 32, 4, 4)
 
 
 def test_policy_zeroes_entity_recurrent_state_between_env_steps():

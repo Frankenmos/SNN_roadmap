@@ -431,6 +431,8 @@ class PolicyNetwork(nn.Module):
             "attention_embed_dim": self._embed_dim,
             "attention_pool_size": self._pool_size,
             "attention_beta": float(attention_beta),
+            "spatial_positional_encoding": "learned_xy_mlp",
+            "spatial_click_head": "structured_xy",
             "meta_input_dim": self._meta_input_dim,
             "carry_entity_state": bool(self._carry_entity_state),
             "carry_selection_state": bool(self._carry_selection_state),
@@ -447,6 +449,26 @@ class PolicyNetwork(nn.Module):
 
         self.token_pool = nn.AdaptiveAvgPool2d(
             (self._pool_size, self._pool_size),
+        )
+        self.spatial_pos_proj = nn.Sequential(
+            nn.Linear(2, self._embed_dim),
+            nn.ReLU(),
+            nn.Linear(self._embed_dim, self._embed_dim),
+        )
+        grid_y, grid_x = torch.meshgrid(
+            torch.linspace(-1.0, 1.0, self._pool_size),
+            torch.linspace(-1.0, 1.0, self._pool_size),
+            indexing="ij",
+        )
+        spatial_pos_grid = torch.stack((grid_x, grid_y), dim=-1).view(
+            1,
+            self._spatial_tokens,
+            2,
+        )
+        self.register_buffer(
+            "spatial_pos_grid",
+            spatial_pos_grid,
+            persistent=False,
         )
         self.entity_encoder = EntityEncoder(
             feature_dim=len(CURATED_FEATURE_UNIT_FIELDS),
@@ -489,8 +511,26 @@ class PolicyNetwork(nn.Module):
         self.actor_fc = nn.Linear(64, action_dim)
         self.critic_fc = nn.Linear(64, 1)
         self.action_condition_embedding = nn.Embedding(self._action_dim, 64)
-        self.move_x_fc = nn.Linear(64, self.screen_size)
-        self.move_y_fc = nn.Linear(64, self.screen_size)
+        self.latent_to_spatial = nn.Linear(64, self._embed_dim)
+        self.action_to_spatial = nn.Linear(64, self._embed_dim)
+        self.click_tower = nn.Sequential(
+            nn.Conv2d(
+                self._embed_dim,
+                self._embed_dim,
+                kernel_size=3,
+                padding=1,
+            ),
+            nn.ReLU(),
+            nn.Conv2d(
+                self._embed_dim,
+                self._embed_dim,
+                kernel_size=3,
+                padding=1,
+            ),
+            nn.ReLU(),
+        )
+        self.x_readout = nn.Linear(self._embed_dim, 1)
+        self.y_readout = nn.Linear(self._embed_dim, 1)
 
         self.use_amp = torch.cuda.is_available()
         self.amp_dtype = torch.float16 if self.use_amp else torch.float32
@@ -650,6 +690,17 @@ class PolicyNetwork(nn.Module):
             summaries.append(summed / count)
         return torch.cat(summaries, dim=-1)
 
+    def _add_spatial_positional_encoding(
+        self,
+        spatial_tokens: torch.Tensor,
+    ) -> torch.Tensor:
+        coords = self.spatial_pos_grid.to(
+            device=spatial_tokens.device,
+            dtype=spatial_tokens.dtype,
+        ).expand(spatial_tokens.size(0), -1, -1)
+        pos_emb = self.spatial_pos_proj(coords)
+        return spatial_tokens + pos_emb
+
     def encode_step_tensors(
         self,
         spatial_obs: torch.Tensor,
@@ -677,6 +728,7 @@ class PolicyNetwork(nn.Module):
 
         spatial_tokens = self.token_pool(x)
         spatial_tokens = spatial_tokens.flatten(2).transpose(1, 2)
+        spatial_tokens = self._add_spatial_positional_encoding(spatial_tokens)
         batch_size = spatial_tokens.size(0)
         device = spatial_tokens.device
         spatial_mask = torch.ones(
@@ -742,6 +794,13 @@ class PolicyNetwork(nn.Module):
         syn_tok, mem_tok = self._zero_entity_state(syn_tok, mem_tok)
 
         aggregated = torch.stack(spike_rec, dim=0).sum(dim=0)
+        spatial_context = aggregated[:, : self._spatial_tokens, :]
+        spatial_context = spatial_context.transpose(1, 2).reshape(
+            batch_size,
+            self._embed_dim,
+            self._pool_size,
+            self._pool_size,
+        )
         pooled = self._group_masked_mean(aggregated, token_mask)
         combined = self.combined_norm(pooled)
 
@@ -749,7 +808,7 @@ class PolicyNetwork(nn.Module):
         latent = F.relu(self.shared_fc2(latent))
         state_value = self.critic_fc(latent).squeeze(-1)
         next_state = (syn_tok, mem_tok)
-        return latent, state_value, next_state
+        return latent, state_value, next_state, spatial_context
 
     def action_head(self, latent: torch.Tensor) -> torch.Tensor:
         return self.actor_fc(latent)
@@ -757,6 +816,7 @@ class PolicyNetwork(nn.Module):
     def conditioned_spatial_head(
         self,
         latent: torch.Tensor,
+        spatial_context: torch.Tensor,
         action_ids: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if action_ids is None:
@@ -769,8 +829,34 @@ class PolicyNetwork(nn.Module):
         else:
             action_ids = action_ids.to(device=latent.device, dtype=torch.long)
         action_ids = action_ids.clamp(0, self._action_dim - 1)
-        conditioned = latent + self.action_condition_embedding(action_ids)
-        return self.move_x_fc(conditioned), self.move_y_fc(conditioned)
+        action_emb = self.action_condition_embedding(action_ids)
+        action_bias = self.action_to_spatial(action_emb).view(
+            latent.size(0),
+            self._embed_dim,
+            1,
+            1,
+        )
+        latent_bias = self.latent_to_spatial(latent).view(
+            latent.size(0),
+            self._embed_dim,
+            1,
+            1,
+        )
+        click_features = self.click_tower(
+            spatial_context + action_bias + latent_bias,
+        )
+        click_features = F.interpolate(
+            click_features,
+            size=(self.screen_size, self.screen_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        x_features = click_features.mean(dim=2).transpose(1, 2)
+        move_x_logits = self.x_readout(x_features).squeeze(-1)
+        y_features = click_features.mean(dim=3).transpose(1, 2)
+        move_y_logits = self.y_readout(y_features).squeeze(-1)
+        return move_x_logits, move_y_logits
 
     def forward_step_tensors(
         self,
@@ -783,7 +869,7 @@ class PolicyNetwork(nn.Module):
         state_in: tuple[torch.Tensor, torch.Tensor] | None,
         action_ids: torch.Tensor | None = None,
     ):
-        latent, state_value, next_state = self.encode_step_tensors(
+        latent, state_value, next_state, spatial_context = self.encode_step_tensors(
             spatial_obs=spatial_obs,
             entity_features=entity_features,
             entity_mask=entity_mask,
@@ -797,6 +883,7 @@ class PolicyNetwork(nn.Module):
             action_ids = action_logits.float().argmax(dim=-1)
         move_x_logits, move_y_logits = self.conditioned_spatial_head(
             latent,
+            spatial_context,
             action_ids,
         )
         return action_logits, move_x_logits, move_y_logits, state_value, next_state
