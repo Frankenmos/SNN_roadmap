@@ -31,8 +31,10 @@ The repository is structured into several logical components:
 - **`PPO`:** The current PPO path includes Stage-1 TBPTT with ordered chunk replay, helper-step masking, packed replay, and the SDPA attention fast path.
 
 Canonical entrypoints are now `train.py`, `eval.py`, `agent.py`, and
-the `agent_core/` package. The older `PPO_CNN*` file/package names are
-kept as thin compatibility shims for now.
+the `agent_core/` package. The root-level `PPO_CNN_*` launchers remain
+as compatibility wrappers for old commands, but the `PPO_CNN/` package
+itself is now treated as a legacy snapshot of the older architecture
+rather than a live shim into `agent_core/`.
 
 ### 4. Utilities & Analysis (`Utility/`, `tools/analysis/`, Root)
 - `tools/analysis/`: Home for the actual analysis implementations.

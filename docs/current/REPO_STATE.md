@@ -74,6 +74,17 @@ Current interpretation:
   compressed recent-memory log
 - `config.yaml`
   current default knobs
+- live runtime code paths point at:
+  `agent.py`, `train.py`, `eval.py`, and `agent_core/`
+
+## What Is Considered Legacy
+
+- `PPO_CNN/`
+  restored older architecture snapshot kept for historical reference,
+  archaeology, and old-code comparison rather than live runtime imports
+- root `PPO_CNN_*` files
+  compatibility wrappers for old commands; useful for transition, but not
+  the canonical code path going forward
 
 ## What Is Done
 
