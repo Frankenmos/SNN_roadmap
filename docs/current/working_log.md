@@ -86,6 +86,15 @@ Verbose pre-compression snapshot:
 
 ## 2026-04-22
 
+- cleaned up the rename boundary so the live plumbing no longer depends on
+  placeholder modules inside `PPO_CNN/`
+- restored `PPO_CNN/policy_input.py`, `PPO_CNN/policy_network.py`,
+  `PPO_CNN/PPO.py`, `PPO_CNN/reward_function.py`, and
+  `PPO_CNN/reward_function_2.py` from the archived `old_scritps/`
+  snapshot
+- current repo contract after that cleanup:
+  `agent_core/` is the canonical runtime package, while `PPO_CNN/` is now
+  honest legacy code instead of a disguised alias layer
 - captured several post-`SMART` action-space training ideas as future branch candidates rather than immediate reward-function edits
 - offline pretraining idea:
   relabel stronger old `MOVE` / `ATTACK` trajectories into the new `SMART` action space and use them as a behavior-cloning warm start before PPO
