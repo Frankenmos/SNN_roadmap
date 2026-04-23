@@ -9,8 +9,8 @@ plans.
 
 - [current/REPO_STATE.md](current/REPO_STATE.md)
   primary source of truth for what the code does today, what is stable,
-  and what is still open; now reflects the `NO_OP + SMART` action space,
-  the structured spatial click head, the masked-critic semantics, and
+  and what is still open; now reflects the semantic click action space,
+  token-pointer target head, masked-critic semantics, and
   the update-before-eval trainer ordering
 - [current/action_refactor.md](current/action_refactor.md)
   status note for the landed action-space work; now covers both the old
@@ -22,8 +22,12 @@ plans.
   this for the historical "why TBPTT was needed" context
 - [current/working_log.md](current/working_log.md)
   compressed implementation log; now includes the rename-boundary
-  cleanup, Smart-screen redesign, spatial-head repair, masked-critic
-  decision, and the latest future-branch notes
+  cleanup, semantic-action migration, token-pointer target head,
+  masked-critic decision, and the latest future-branch notes
+- [current/help-needed.md](current/help-needed.md)
+  practical handoff note for what still needs user input, env-backed
+  verification, or tooling support after the semantic-action /
+  token-pointer migration
 - [current/BPTT_test_review_report (1).md](<current/BPTT_test_review_report%20(1).md>)
   independent review focused on the live branch after TBPTT and SMART;
   especially useful for understanding why the structured spatial click

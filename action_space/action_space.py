@@ -3,8 +3,12 @@ from pysc2.lib import actions
 
 from agent_core.policy_protocol import (
     BRIDGE_ACTION_BOOTSTRAP_SELECT,
+    BRIDGE_ACTION_LEFT_CLICK,
     BRIDGE_ACTION_NO_OP,
-    BRIDGE_ACTION_SMART,
+    BRIDGE_ACTION_RIGHT_CLICK,
+    POLICY_ACTION_LEFT_CLICK,
+    POLICY_ACTION_NO_OP,
+    POLICY_ACTION_RIGHT_CLICK,
 )
 
 
@@ -55,9 +59,26 @@ class ActionSpace:
         units = np.argwhere(feature_layer == condition)
         return [tuple(unit) for unit in units]
 
-    def smart(self, obs, target_x, target_y, screen_size=None):
+    def left_click(self, obs, target_x, target_y, screen_size=None):
+        del obs, target_x, target_y, screen_size
+        return self.no_op()
+
+    def right_click(self, obs, target_x, target_y, screen_size=None):
         target_x, target_y = self._clip_coords(target_x, target_y, screen_size)
         if actions.FUNCTIONS.Smart_screen.id in obs.observation.available_actions:
-            self._set_token(BRIDGE_ACTION_SMART, target_x, target_y, 0)
+            self._set_token(BRIDGE_ACTION_RIGHT_CLICK, target_x, target_y, 0)
             return actions.FUNCTIONS.Smart_screen("now", [target_x, target_y])
         return self.no_op()
+
+    def smart(self, obs, target_x, target_y, screen_size=None):
+        return self.right_click(obs, target_x, target_y, screen_size=screen_size)
+
+    def dispatch(self, action_id, target_x, target_y, obs):
+        if int(action_id) == POLICY_ACTION_NO_OP:
+            return self.no_op()
+        if int(action_id) == POLICY_ACTION_LEFT_CLICK:
+            self._set_token(BRIDGE_ACTION_LEFT_CLICK, target_x, target_y, 0)
+            return self.left_click(obs, target_x, target_y)
+        if int(action_id) == POLICY_ACTION_RIGHT_CLICK:
+            return self.right_click(obs, target_x, target_y)
+        raise ValueError(f"Unknown semantic action id: {action_id}")

@@ -4,6 +4,7 @@ import pytest
 from agent_core.policy_protocol import (
     AGENT_LAST_ACTION_OFFSET,
     BRIDGE_ACTION_SMART,
+    META_VECTOR_DIM,
     META_LAST_ACTION_INDEX_OFFSET,
     NO_ACTION_SENTINEL_INDEX,
     UNKNOWN_LAST_ACTION_INDEX,
@@ -88,7 +89,7 @@ def test_observation_extractor_appends_last_action_bridge_token(make_obs):
     )
 
     token = batch.meta_vec[0, AGENT_LAST_ACTION_OFFSET : AGENT_LAST_ACTION_OFFSET + 4]
-    assert batch.meta_vec.shape[-1] == 32
+    assert batch.meta_vec.shape[-1] == META_VECTOR_DIM
     assert float(token[0].item()) == pytest.approx(float(BRIDGE_ACTION_SMART))
     assert float(token[1].item()) == pytest.approx(42.0 / 83.0)
     assert float(token[2].item()) == pytest.approx(21.0 / 83.0)

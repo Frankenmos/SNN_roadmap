@@ -8,7 +8,7 @@ hyperparameters:
   entropy_coef: 0.01
   critic_loss_coef: 0.5
   rollout_steps: 2048
-  tbptt_window: 32
+  tbptt_window: 128
   target_kl: 0.03
   reward_scale: 0.1
 
@@ -33,7 +33,7 @@ environment:
   visualize: false
   use_action_printer: false
   total_episodes: 10000
-  steps_per_episode: 600
+  steps_per_episode: 3600
   target_reward: 25.0
   reward_window: 200
   run_name: ""
@@ -61,8 +61,8 @@ environment:
 
 model:
   spatial_input_shape: [27, 84, 84]
-  vector_input_dim: 32
-  action_dim: 2
+  vector_input_dim: 19
+  action_dim: 3
   screen_size: 84
   num_steps: 1
   fast_token_snn_alpha: 0.55
@@ -73,3 +73,7 @@ model:
   attention_embed_dim: 64
   attention_pool_size: 7
   attention_beta: 0.5
+  spatial_head_type: "token_pointer"
+  coarse_grid_size: 7
+  local_grid_size: 12
+  target_decode_mode: "center"

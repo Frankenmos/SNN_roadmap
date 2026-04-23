@@ -21,7 +21,15 @@ from agent_core.policy_protocol import (
     SELECTION_FEATURE_DIM,
     SELECTION_UNIT_TYPE_INDEX,
     TOKEN_TYPE_GROUPS,
+    UNKNOWN_LAST_ACTION_INDEX,
     UNIT_TYPE_FEATURE_INDEX,
+)
+from agent_core.target_heads import (
+    FactorizedXYTargetHead,
+    TargetEval,
+    TargetHeadState,
+    TargetSample,
+    TokenPointerTargetHead,
 )
 
 
@@ -149,7 +157,7 @@ class MetaEncoder(nn.Module):
         player_dim: int = META_PLAYER_FEATURE_DIM,
         available_action_dim: int = META_AVAILABLE_ACTION_DIM,
         last_action_embed_dim: int | None = None,
-        last_action_vocab_size: int = META_AVAILABLE_ACTION_DIM + 2,
+        last_action_vocab_size: int = UNKNOWN_LAST_ACTION_INDEX + 1,
         bridge_action_embed_dim: int | None = None,
         bridge_action_vocab_size: int = BRIDGE_ACTION_VOCAB_SIZE,
     ):
@@ -383,6 +391,10 @@ class PolicyNetwork(nn.Module):
         attention_embed_dim=64,
         attention_pool_size=7,
         attention_beta=0.5,
+        spatial_head_type="token_pointer",
+        coarse_grid_size=None,
+        local_grid_size=None,
+        target_decode_mode="center",
     ):
         super().__init__()
 
@@ -403,6 +415,7 @@ class PolicyNetwork(nn.Module):
         self._carry_entity_state = False
         self._carry_selection_state = False
         self._meta_input_dim = int(vector_input_dim)
+        self._latent_dim = 64
         fast_token_snn_alpha = float(
             token_snn_alpha if fast_token_snn_alpha is None else fast_token_snn_alpha,
         )
@@ -419,6 +432,21 @@ class PolicyNetwork(nn.Module):
             )
         self._temporal_pathways = 2
         self._temporal_combine_mode = temporal_combine_mode
+        self._spatial_head_type = str(spatial_head_type).lower()
+        self._coarse_grid_size = (
+            self._pool_size if coarse_grid_size is None else int(coarse_grid_size)
+        )
+        self._local_grid_size = (
+            self.screen_size // self._coarse_grid_size
+            if local_grid_size is None
+            else int(local_grid_size)
+        )
+        self._target_decode_mode = str(target_decode_mode).lower()
+        if self._coarse_grid_size != self._pool_size:
+            raise ValueError(
+                "coarse_grid_size must match attention_pool_size for the current spatial tokenizer, "
+                f"got coarse_grid_size={self._coarse_grid_size} and attention_pool_size={self._pool_size}",
+            )
         self._config = {
             "num_steps": self.num_steps,
             "screen_size": self.screen_size,
@@ -432,10 +460,14 @@ class PolicyNetwork(nn.Module):
             "attention_pool_size": self._pool_size,
             "attention_beta": float(attention_beta),
             "spatial_positional_encoding": "learned_xy_mlp",
-            "spatial_click_head": "structured_xy",
+            "spatial_head_type": self._spatial_head_type,
+            "coarse_grid_size": int(self._coarse_grid_size),
+            "local_grid_size": int(self._local_grid_size),
+            "target_decode_mode": self._target_decode_mode,
             "meta_input_dim": self._meta_input_dim,
             "carry_entity_state": bool(self._carry_entity_state),
             "carry_selection_state": bool(self._carry_selection_state),
+            "action_dim": int(action_dim),
         }
         spike_grad = surrogate.fast_sigmoid()
 
@@ -505,32 +537,12 @@ class PolicyNetwork(nn.Module):
         pooled_dim = TOKEN_TYPE_GROUPS * self._embed_dim
         self.combined_norm = nn.LayerNorm(pooled_dim)
         self.shared_fc1 = nn.Linear(pooled_dim, 128)
-        self.shared_fc2 = nn.Linear(128, 64)
+        self.shared_fc2 = nn.Linear(128, self._latent_dim)
 
         self._action_dim = int(action_dim)
-        self.actor_fc = nn.Linear(64, action_dim)
-        self.critic_fc = nn.Linear(64, 1)
-        self.action_condition_embedding = nn.Embedding(self._action_dim, 64)
-        self.latent_to_spatial = nn.Linear(64, self._embed_dim)
-        self.action_to_spatial = nn.Linear(64, self._embed_dim)
-        self.click_tower = nn.Sequential(
-            nn.Conv2d(
-                self._embed_dim,
-                self._embed_dim,
-                kernel_size=3,
-                padding=1,
-            ),
-            nn.ReLU(),
-            nn.Conv2d(
-                self._embed_dim,
-                self._embed_dim,
-                kernel_size=3,
-                padding=1,
-            ),
-            nn.ReLU(),
-        )
-        self.x_readout = nn.Linear(self._embed_dim, 1)
-        self.y_readout = nn.Linear(self._embed_dim, 1)
+        self.actor_fc = nn.Linear(self._latent_dim, action_dim)
+        self.critic_fc = nn.Linear(self._latent_dim, 1)
+        self.target_head = self._build_target_head_module()
 
         self.use_amp = torch.cuda.is_available()
         self.amp_dtype = torch.float16 if self.use_amp else torch.float32
@@ -547,6 +559,28 @@ class PolicyNetwork(nn.Module):
             "amp_dtype": str(self.amp_dtype),
             "device": str(self.device),
         }
+
+    def _build_target_head_module(self) -> nn.Module:
+        if self._spatial_head_type == "factorized_xy":
+            return FactorizedXYTargetHead(
+                embed_dim=self._embed_dim,
+                latent_dim=self._latent_dim,
+                action_dim=self._action_dim,
+                screen_size=self.screen_size,
+            )
+        if self._spatial_head_type == "token_pointer":
+            return TokenPointerTargetHead(
+                embed_dim=self._embed_dim,
+                latent_dim=self._latent_dim,
+                action_dim=self._action_dim,
+                coarse_grid_size=self._coarse_grid_size,
+                local_grid_size=self._local_grid_size,
+                screen_size=self.screen_size,
+                target_decode_mode=self._target_decode_mode,
+            )
+        raise ValueError(
+            f"Unsupported spatial_head_type: {self._spatial_head_type!r}",
+        )
 
     def _zero_entity_state(
         self,
@@ -813,12 +847,12 @@ class PolicyNetwork(nn.Module):
     def action_head(self, latent: torch.Tensor) -> torch.Tensor:
         return self.actor_fc(latent)
 
-    def conditioned_spatial_head(
+    def build_target_head(
         self,
         latent: torch.Tensor,
         spatial_context: torch.Tensor,
         action_ids: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> TargetHeadState:
         if action_ids is None:
             action_ids = torch.full(
                 (latent.size(0),),
@@ -829,34 +863,72 @@ class PolicyNetwork(nn.Module):
         else:
             action_ids = action_ids.to(device=latent.device, dtype=torch.long)
         action_ids = action_ids.clamp(0, self._action_dim - 1)
-        action_emb = self.action_condition_embedding(action_ids)
-        action_bias = self.action_to_spatial(action_emb).view(
-            latent.size(0),
-            self._embed_dim,
-            1,
-            1,
-        )
-        latent_bias = self.latent_to_spatial(latent).view(
-            latent.size(0),
-            self._embed_dim,
-            1,
-            1,
-        )
-        click_features = self.click_tower(
-            spatial_context + action_bias + latent_bias,
-        )
-        click_features = F.interpolate(
-            click_features,
-            size=(self.screen_size, self.screen_size),
-            mode="bilinear",
-            align_corners=False,
+        return self.target_head.build(latent, spatial_context, action_ids)
+
+    def sample_target(
+        self,
+        target_head_state: TargetHeadState,
+        action_ids: torch.Tensor | None,
+        deterministic: bool = False,
+    ) -> TargetSample:
+        del action_ids
+        return self.target_head.sample(
+            target_head_state,
+            deterministic=deterministic,
         )
 
-        x_features = click_features.mean(dim=2).transpose(1, 2)
-        move_x_logits = self.x_readout(x_features).squeeze(-1)
-        y_features = click_features.mean(dim=3).transpose(1, 2)
-        move_y_logits = self.y_readout(y_features).squeeze(-1)
-        return move_x_logits, move_y_logits
+    def evaluate_target(
+        self,
+        target_head_state: TargetHeadState,
+        recorded_target: dict[str, torch.Tensor | None],
+        action_ids: torch.Tensor | None,
+    ) -> TargetEval:
+        del action_ids
+        return self.target_head.evaluate(
+            target_head_state,
+            x=recorded_target["x"],
+            y=recorded_target["y"],
+            target_index=recorded_target.get("target_index"),
+            coarse_index=recorded_target.get("coarse_index"),
+            fine_index=recorded_target.get("fine_index"),
+        )
+
+    def decode_target_to_xy(
+        self,
+        *,
+        x: torch.Tensor | None = None,
+        y: torch.Tensor | None = None,
+        target_index: torch.Tensor | None = None,
+        coarse_index: torch.Tensor | None = None,
+        fine_index: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.target_head.decode_target_to_xy(
+            x=x,
+            y=y,
+            target_index=target_index,
+            coarse_index=coarse_index,
+            fine_index=fine_index,
+        )
+
+    def encode_xy_to_target(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+    ) -> dict[str, torch.Tensor | None]:
+        return self.target_head.encode_xy_to_target(x, y)
+
+    def conditioned_spatial_head(
+        self,
+        latent: torch.Tensor,
+        spatial_context: torch.Tensor,
+        action_ids: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        target_head_state = self.build_target_head(latent, spatial_context, action_ids)
+        if target_head_state.secondary_logits is None:
+            raise RuntimeError(
+                "conditioned_spatial_head compatibility is only available for factorized_xy",
+            )
+        return target_head_state.primary_logits, target_head_state.secondary_logits
 
     def forward_step_tensors(
         self,
@@ -881,12 +953,12 @@ class PolicyNetwork(nn.Module):
         action_logits = self.action_head(latent)
         if action_ids is None:
             action_ids = action_logits.float().argmax(dim=-1)
-        move_x_logits, move_y_logits = self.conditioned_spatial_head(
+        target_head_state = self.build_target_head(
             latent,
             spatial_context,
             action_ids,
         )
-        return action_logits, move_x_logits, move_y_logits, state_value, next_state
+        return action_logits, target_head_state, state_value, next_state
 
     def forward(self, batch: PolicyInputBatch, action_ids: torch.Tensor | None = None):
         if not isinstance(batch, PolicyInputBatch):

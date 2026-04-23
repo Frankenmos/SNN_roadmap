@@ -91,3 +91,26 @@ def test_policy_input_batch_rejects_non_bool_masks():
             selection_mask=torch.ones(1, MAX_SELECTION_TOKENS, dtype=torch.bool),
             meta_vec=torch.randn(1, META_VECTOR_DIM),
         )
+
+
+def test_policy_input_batch_rejects_rank2_recurrent_state():
+    with pytest.raises(
+        ValueError,
+        match="state_in tensors must be rank-3 legacy or rank-4 multi-timescale",
+    ):
+        PolicyInputBatch(
+            spatial_obs=torch.randn(1, *SPATIAL_OBS_SHAPE),
+            entity_features=torch.randn(1, MAX_ENTITY_TOKENS, 20),
+            entity_mask=torch.ones(1, MAX_ENTITY_TOKENS, dtype=torch.bool),
+            selection_features=torch.randn(
+                1,
+                MAX_SELECTION_TOKENS,
+                SELECTION_FEATURE_DIM,
+            ),
+            selection_mask=torch.ones(1, MAX_SELECTION_TOKENS, dtype=torch.bool),
+            meta_vec=torch.randn(1, META_VECTOR_DIM),
+            state_in=(
+                torch.randn(1, 64),
+                torch.randn(1, 64),
+            ),
+        )

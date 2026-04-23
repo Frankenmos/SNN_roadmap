@@ -10,9 +10,9 @@ from pysc2.env import base_env_wrapper
 from agent_core.policy_protocol import (
     AGENT_LAST_ACTION_OFFSET,
     CURATED_FEATURE_UNIT_FIELDS,
-    DEFEAT_ROACHES_ACTION_IDS,
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
+    META_AVAILABLE_ACTION_DIM,
     META_AVAILABLE_ACTION_OFFSET,
     META_LAST_ACTION_INDEX_OFFSET,
     META_PLAYER_FEATURE_DIM,
@@ -101,7 +101,7 @@ class PolicyInputDiagnosticsWrapper(base_env_wrapper.BaseEnvWrapper):
         meta_vec = batch.meta_vec[0].detach().cpu().float()
         avail_slice = meta_vec[
             META_AVAILABLE_ACTION_OFFSET : META_AVAILABLE_ACTION_OFFSET
-            + len(DEFEAT_ROACHES_ACTION_IDS)
+            + META_AVAILABLE_ACTION_DIM
         ]
         bridge_token = meta_vec[
             AGENT_LAST_ACTION_OFFSET : AGENT_LAST_ACTION_OFFSET + 4
