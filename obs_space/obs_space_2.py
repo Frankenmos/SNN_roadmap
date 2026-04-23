@@ -28,7 +28,9 @@ import torch  # noqa: E402
 from agent_core.policy_protocol import (
     AGENT_LAST_ACTION_DIM,
     AGENT_LAST_ACTION_OFFSET,
+    BRIDGE_ACTION_LEFT_CLICK,
     BRIDGE_ACTION_NO_OP,
+    BRIDGE_ACTION_RIGHT_CLICK,
     CURATED_FEATURE_UNIT_FIELDS,
     DEFEAT_ROACHES_ACTION_IDS,
     MAX_ENTITY_TOKENS,
@@ -39,7 +41,11 @@ from agent_core.policy_protocol import (
     META_VECTOR_DIM,
     NO_ACTION_SENTINEL_INDEX,
     PolicyInputBatch,
+    POLICY_ACTION_LEFT_CLICK,
+    POLICY_ACTION_NO_OP,
+    POLICY_ACTION_RIGHT_CLICK,
     SELECTION_FEATURE_NAMES,
+    SMART_SCREEN_FUNCTION_ID,
     SPATIAL_OBS_SHAPE,
     UNKNOWN_LAST_ACTION_INDEX,
 )
@@ -327,12 +333,11 @@ class ObservationExtractor:
             if available_actions is not None
             else set()
         )
-        available_mask = np.asarray(
-            [
-                1.0 if action_id in available_set else 0.0
-                for action_id in DEFEAT_ROACHES_ACTION_IDS
-            ],
-            dtype=np.float32,
+        available_mask = np.zeros(3, dtype=np.float32)
+        available_mask[POLICY_ACTION_NO_OP] = 1.0
+        available_mask[POLICY_ACTION_LEFT_CLICK] = 0.0
+        available_mask[POLICY_ACTION_RIGHT_CLICK] = float(
+            SMART_SCREEN_FUNCTION_ID in available_set,
         )
 
         last_actions = getattr(obs.observation, "last_actions", None)

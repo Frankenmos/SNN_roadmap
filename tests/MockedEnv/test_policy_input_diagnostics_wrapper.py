@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from agent_core.policy_protocol import META_VECTOR_DIM
 from MockedEnv.fake_pysc2 import build_mock_obs
 from Utility.policy_input_diagnostics_wrapper import PolicyInputDiagnosticsWrapper
 
@@ -77,4 +78,4 @@ def test_policy_input_diagnostics_wrapper_logs_raw_and_batch_fields(
     assert first["batch"]["meta_last_action_index"] > 0
     assert second["batch"]["selection_count"] == 2
     assert second["batch"]["meta_available_action_mask_active"] == 2
-    assert second["batch"]["meta_dim"] == 32
+    assert second["batch"]["meta_dim"] == META_VECTOR_DIM

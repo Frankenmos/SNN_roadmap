@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 LEGACY_ACTION_LABELS = {0: "attack", 1: "move", 2: "no-op"}
 CONDITIONED_ACTION_LABELS = {0: "no-op", 1: "move", 2: "attack"}
 SMART_SCREEN_ACTION_LABELS = {0: "no-op", 1: "smart"}
+SEMANTIC_CLICK_ACTION_LABELS = {0: "no-op", 1: "left_click", 2: "right_click"}
 ACTION_LABELS = CONDITIONED_ACTION_LABELS.copy()
 PHASE_LABELS = ("early", "mid", "late")
 
@@ -52,6 +53,9 @@ class TrainingAnalyzer:
         self.action_semantics = self._infer_action_semantics()
         if self.action_semantics == "smart_screen_v2":
             self.action_labels = SMART_SCREEN_ACTION_LABELS.copy()
+            self.noop_action_id = 0
+        elif self.action_semantics == "semantic_pointer_v1":
+            self.action_labels = SEMANTIC_CLICK_ACTION_LABELS.copy()
             self.noop_action_id = 0
         elif self.action_semantics == "conditioned_spatial_v1":
             self.action_labels = CONDITIONED_ACTION_LABELS.copy()
@@ -95,12 +99,29 @@ class TrainingAnalyzer:
         if isinstance(config, dict):
             model_cfg = config.get("model", {})
             if isinstance(model_cfg, dict):
+                # Check action_dim first (preferred signal)
                 value = model_cfg.get("action_dim")
                 try:
                     if int(value) == 2:
                         return "smart_screen_v2"
+                    if int(value) == 3 and str(
+                        model_cfg.get("spatial_head_type", ""),
+                    ).lower() == "token_pointer":
+                        return "semantic_pointer_v1"
                 except (TypeError, ValueError):
                     pass
+
+                # Fallback: check spatial_head_type + meta_input_dim combo
+                # This handles runs where action_dim wasn't written to config
+                spatial_head = str(model_cfg.get("spatial_head_type", "")).lower()
+                meta_dim = model_cfg.get("meta_input_dim") or model_cfg.get("vector_input_dim")
+                try:
+                    if spatial_head == "token_pointer" and int(meta_dim) == 19:
+                        return "semantic_pointer_v1"
+                except (TypeError, ValueError):
+                    pass
+
+                # Older conditioned-spatial runs had larger meta_vec
                 for field_name in ("vector_input_dim", "meta_input_dim"):
                     value = model_cfg.get(field_name)
                     try:

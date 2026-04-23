@@ -71,7 +71,8 @@ DEFEAT_ROACHES_ACTION_IDS: Final[tuple[int, ...]] = (
     452,
     453,
 )
-META_AVAILABLE_ACTION_DIM: Final[int] = len(DEFEAT_ROACHES_ACTION_IDS)
+RAW_AVAILABLE_ACTION_DIM: Final[int] = len(DEFEAT_ROACHES_ACTION_IDS)
+META_AVAILABLE_ACTION_DIM: Final[int] = 3
 META_LAST_ACTION_INDEX_DIM: Final[int] = 1
 META_PLAYER_FEATURE_OFFSET: Final[int] = 0
 META_AVAILABLE_ACTION_OFFSET: Final[int] = META_PLAYER_FEATURE_OFFSET + META_PLAYER_FEATURE_DIM
@@ -84,22 +85,34 @@ AGENT_LAST_ACTION_OFFSET: Final[int] = (
 )
 META_VECTOR_DIM: Final[int] = AGENT_LAST_ACTION_OFFSET + AGENT_LAST_ACTION_DIM
 NO_ACTION_SENTINEL_INDEX: Final[int] = 0
-UNKNOWN_LAST_ACTION_INDEX: Final[int] = len(DEFEAT_ROACHES_ACTION_IDS) + 1
+UNKNOWN_LAST_ACTION_INDEX: Final[int] = RAW_AVAILABLE_ACTION_DIM + 1
 
 POLICY_ACTION_NO_OP: Final[int] = 0
-POLICY_ACTION_SMART: Final[int] = 1
-POLICY_ACTION_DIM: Final[int] = 2
-# Legacy aliases kept so older helper code can still import the names
-# while the learned action space now collapses to NO_OP + SMART.
-POLICY_ACTION_MOVE: Final[int] = POLICY_ACTION_SMART
-POLICY_ACTION_ATTACK: Final[int] = POLICY_ACTION_SMART
+POLICY_ACTION_LEFT_CLICK: Final[int] = 1
+POLICY_ACTION_RIGHT_CLICK: Final[int] = 2
+POLICY_ACTION_DIM: Final[int] = 3
+SPATIAL_ACTION_IDS: Final[tuple[int, ...]] = (
+    POLICY_ACTION_LEFT_CLICK,
+    POLICY_ACTION_RIGHT_CLICK,
+)
+ACTION_REQUIRES_TARGET: Final[tuple[int, ...]] = SPATIAL_ACTION_IDS
+SEMANTIC_AVAILABLE_NO_OP_INDEX: Final[int] = POLICY_ACTION_NO_OP
+SEMANTIC_AVAILABLE_LEFT_CLICK_INDEX: Final[int] = POLICY_ACTION_LEFT_CLICK
+SEMANTIC_AVAILABLE_RIGHT_CLICK_INDEX: Final[int] = POLICY_ACTION_RIGHT_CLICK
+# Legacy aliases kept so older helpers can still import the names while the
+# learned action space becomes semantic NO_OP / LEFT_CLICK / RIGHT_CLICK.
+POLICY_ACTION_SMART: Final[int] = POLICY_ACTION_RIGHT_CLICK
+POLICY_ACTION_MOVE: Final[int] = POLICY_ACTION_RIGHT_CLICK
+POLICY_ACTION_ATTACK: Final[int] = POLICY_ACTION_RIGHT_CLICK
 
 BRIDGE_ACTION_NO_OP: Final[int] = 0
-BRIDGE_ACTION_SMART: Final[int] = 1
-BRIDGE_ACTION_BOOTSTRAP_SELECT: Final[int] = 2
-BRIDGE_ACTION_VOCAB_SIZE: Final[int] = 3
-BRIDGE_ACTION_MOVE: Final[int] = BRIDGE_ACTION_SMART
-BRIDGE_ACTION_ATTACK: Final[int] = BRIDGE_ACTION_SMART
+BRIDGE_ACTION_LEFT_CLICK: Final[int] = 1
+BRIDGE_ACTION_RIGHT_CLICK: Final[int] = 2
+BRIDGE_ACTION_BOOTSTRAP_SELECT: Final[int] = 3
+BRIDGE_ACTION_VOCAB_SIZE: Final[int] = 4
+BRIDGE_ACTION_SMART: Final[int] = BRIDGE_ACTION_RIGHT_CLICK
+BRIDGE_ACTION_MOVE: Final[int] = BRIDGE_ACTION_RIGHT_CLICK
+BRIDGE_ACTION_ATTACK: Final[int] = BRIDGE_ACTION_RIGHT_CLICK
 
 ATTACK_SCREEN_FUNCTION_ID: Final[int] = 12
 MOVE_SCREEN_FUNCTION_ID: Final[int] = 13
@@ -117,6 +130,19 @@ SMART_AVAILABLE_ACTION_INDEX: Final[int] = DEFEAT_ROACHES_ACTION_IDS.index(
 )
 
 SNNState = tuple[torch.Tensor, torch.Tensor]
+
+
+@dataclass(slots=True)
+class ActionSample:
+    action_id: int
+    x: int
+    y: int
+    target_index: int | None
+    coarse_index: int | None
+    fine_index: int | None
+    log_prob: float
+    value: float
+    next_state: SNNState | None
 
 
 @dataclass(slots=True)
@@ -340,6 +366,11 @@ class PolicyInputBatch:
             if syn.shape != mem.shape:
                 raise ValueError(
                     f"state_in tensors must share a shape, got {syn.shape} and {mem.shape}",
+                )
+            if syn.ndim not in (3, 4):
+                raise ValueError(
+                    "state_in tensors must be rank-3 legacy or rank-4 multi-timescale, "
+                    f"got ndim={syn.ndim}",
                 )
             if syn.ndim < 1 or int(syn.shape[0]) != expected_batch:
                 raise ValueError(

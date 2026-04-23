@@ -1,19 +1,23 @@
 import math
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import torch
 import torch.optim as optim
 
 from agent_core.policy_protocol import (
+    ACTION_REQUIRES_TARGET,
+    ActionSample,
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
     META_AVAILABLE_ACTION_DIM,
     META_AVAILABLE_ACTION_OFFSET,
+    POLICY_ACTION_LEFT_CLICK,
     POLICY_ACTION_NO_OP,
-    POLICY_ACTION_SMART,
+    POLICY_ACTION_RIGHT_CLICK,
     PolicyInputBatch,
-    SMART_AVAILABLE_ACTION_INDEX,
+    SEMANTIC_AVAILABLE_NO_OP_INDEX,
 )
 
 
@@ -56,7 +60,9 @@ class PPO:
         self.final_next = None
 
     NO_OP_ACTION_ID = POLICY_ACTION_NO_OP
-    SMART_ACTION_ID = POLICY_ACTION_SMART
+    LEFT_CLICK_ACTION_ID = POLICY_ACTION_LEFT_CLICK
+    RIGHT_CLICK_ACTION_ID = POLICY_ACTION_RIGHT_CLICK
+    SPATIAL_ACTION_IDS = ACTION_REQUIRES_TARGET
 
     def resolved_config(self):
         return {
@@ -76,7 +82,10 @@ class PPO:
         }
 
     def _spatial_action_mask(self, actions: torch.Tensor) -> torch.Tensor:
-        return (actions == self.SMART_ACTION_ID).to(dtype=torch.float32)
+        mask = torch.zeros_like(actions, dtype=torch.bool)
+        for action_id in self.SPATIAL_ACTION_IDS:
+            mask = mask | (actions == int(action_id))
+        return mask.to(dtype=torch.float32)
 
     def _policy_action_availability(self, meta_vec: torch.Tensor) -> torch.Tensor:
         required_width = META_AVAILABLE_ACTION_OFFSET + META_AVAILABLE_ACTION_DIM
@@ -92,9 +101,9 @@ class PPO:
             META_AVAILABLE_ACTION_OFFSET : META_AVAILABLE_ACTION_OFFSET
             + META_AVAILABLE_ACTION_DIM,
         ]
-        no_op = torch.ones_like(available[..., 0], dtype=torch.bool)
-        smart = available[..., SMART_AVAILABLE_ACTION_INDEX] > 0.5
-        return torch.stack((no_op, smart), dim=-1)
+        available = available > 0.5
+        available[..., SEMANTIC_AVAILABLE_NO_OP_INDEX] = True
+        return available
 
     def _mask_action_logits(
         self,
@@ -102,7 +111,106 @@ class PPO:
         meta_vec: torch.Tensor,
     ) -> torch.Tensor:
         available = self._policy_action_availability(meta_vec)
+        if int(available.size(-1)) != int(action_logits.size(-1)):
+            if int(available.size(-1)) < int(action_logits.size(-1)):
+                raise ValueError(
+                    "meta availability width is smaller than action_logits width: "
+                    f"{int(available.size(-1))} < {int(action_logits.size(-1))}",
+                )
+            available = available[..., : action_logits.size(-1)]
         return action_logits.masked_fill(~available, -1.0e4)
+
+    def _build_target_head_state(
+        self,
+        latent: torch.Tensor,
+        spatial_context: torch.Tensor,
+        action_ids: torch.Tensor,
+    ):
+        if hasattr(self.policy_net, "build_target_head"):
+            return self.policy_net.build_target_head(latent, spatial_context, action_ids)
+        move_x_logits, move_y_logits = self.policy_net.conditioned_spatial_head(
+            latent,
+            spatial_context,
+            action_ids,
+        )
+        return {
+            "head_type": "factorized_xy_legacy",
+            "move_x_logits": move_x_logits,
+            "move_y_logits": move_y_logits,
+        }
+
+    def _sample_target(
+        self,
+        target_head_state,
+        action_ids: torch.Tensor,
+        *,
+        deterministic: bool = False,
+    ):
+        if hasattr(self.policy_net, "sample_target") and not isinstance(
+            target_head_state,
+            dict,
+        ):
+            return self.policy_net.sample_target(
+                target_head_state,
+                action_ids,
+                deterministic=deterministic,
+            )
+        move_x_dist = torch.distributions.Categorical(
+            logits=target_head_state["move_x_logits"].float(),
+        )
+        move_y_dist = torch.distributions.Categorical(
+            logits=target_head_state["move_y_logits"].float(),
+        )
+        if deterministic:
+            x = target_head_state["move_x_logits"].float().argmax(dim=-1)
+            y = target_head_state["move_y_logits"].float().argmax(dim=-1)
+        else:
+            x = move_x_dist.sample()
+            y = move_y_dist.sample()
+        entropy = (
+            move_x_dist.entropy() / math.log(float(target_head_state["move_x_logits"].size(-1)))
+            + move_y_dist.entropy() / math.log(float(target_head_state["move_y_logits"].size(-1)))
+        )
+        return SimpleNamespace(
+            x=x,
+            y=y,
+            target_index=None,
+            coarse_index=None,
+            fine_index=None,
+            log_prob=move_x_dist.log_prob(x) + move_y_dist.log_prob(y),
+            entropy=entropy,
+        )
+
+    def _evaluate_target(
+        self,
+        target_head_state,
+        recorded_target: dict[str, torch.Tensor | None],
+        action_ids: torch.Tensor,
+    ):
+        if hasattr(self.policy_net, "evaluate_target") and not isinstance(
+            target_head_state,
+            dict,
+        ):
+            return self.policy_net.evaluate_target(
+                target_head_state,
+                recorded_target,
+                action_ids,
+            )
+        move_x_dist = torch.distributions.Categorical(
+            logits=target_head_state["move_x_logits"].float(),
+        )
+        move_y_dist = torch.distributions.Categorical(
+            logits=target_head_state["move_y_logits"].float(),
+        )
+        entropy = (
+            move_x_dist.entropy() / math.log(float(target_head_state["move_x_logits"].size(-1)))
+            + move_y_dist.entropy() / math.log(float(target_head_state["move_y_logits"].size(-1)))
+        )
+        return SimpleNamespace(
+            log_prob=move_x_dist.log_prob(recorded_target["x"].long())
+            + move_y_dist.log_prob(recorded_target["y"].long()),
+            entropy=entropy,
+        )
 
     def select_action(self, observations, state=None, deterministic: bool = False):
         if not isinstance(observations, PolicyInputBatch):
@@ -142,51 +250,58 @@ class PPO:
                 action = action_logits.float().argmax(dim=-1)
             else:
                 action = action_dist.sample()
-            move_x_logits, move_y_logits = self.policy_net.conditioned_spatial_head(
+            target_head_state = self._build_target_head_state(
                 latent,
                 spatial_context,
                 action,
             )
-            move_x_dist = torch.distributions.Categorical(
-                logits=move_x_logits.float(),
+            target_sample = self._sample_target(
+                target_head_state,
+                action,
+                deterministic=deterministic,
             )
-            move_y_dist = torch.distributions.Categorical(
-                logits=move_y_logits.float(),
-            )
-            if deterministic:
-                sampled_move_x = move_x_logits.float().argmax(dim=-1)
-                sampled_move_y = move_y_logits.float().argmax(dim=-1)
-            else:
-                sampled_move_x = move_x_dist.sample()
-                sampled_move_y = move_y_dist.sample()
 
             is_spatial = self._spatial_action_mask(action)
             move_x = torch.where(
                 is_spatial.bool(),
-                sampled_move_x,
-                torch.zeros_like(sampled_move_x),
+                target_sample.x,
+                torch.zeros_like(target_sample.x),
             )
             move_y = torch.where(
                 is_spatial.bool(),
-                sampled_move_y,
-                torch.zeros_like(sampled_move_y),
+                target_sample.y,
+                torch.zeros_like(target_sample.y),
             )
             log_prob = (
                 action_dist.log_prob(action)
-                + is_spatial
-                * (
-                    move_x_dist.log_prob(sampled_move_x)
-                    + move_y_dist.log_prob(sampled_move_y)
-                )
+                + is_spatial * target_sample.log_prob
             )
 
-        return (
-            int(action.item()),
-            int(move_x.item()),
-            int(move_y.item()),
-            float(log_prob.item()),
-            float(state_value.squeeze(-1).item()),
-            next_state,
+        target_index = (
+            None
+            if target_sample.target_index is None
+            else int(target_sample.target_index.item())
+        )
+        coarse_index = (
+            None
+            if target_sample.coarse_index is None
+            else int(target_sample.coarse_index.item())
+        )
+        fine_index = (
+            None
+            if target_sample.fine_index is None
+            else int(target_sample.fine_index.item())
+        )
+        return ActionSample(
+            action_id=int(action.item()),
+            x=int(move_x.item()),
+            y=int(move_y.item()),
+            target_index=target_index,
+            coarse_index=coarse_index,
+            fine_index=fine_index,
+            log_prob=float(log_prob.item()),
+            value=float(state_value.squeeze(-1).item()),
+            next_state=next_state,
         )
 
     def set_final_next(self, observation_batch: PolicyInputBatch):
@@ -212,6 +327,10 @@ class PPO:
         done: torch.Tensor,
         sample_mask: torch.Tensor | None = None,
         policy_mask: torch.Tensor | None = None,
+        *,
+        target_index: torch.Tensor | None = None,
+        coarse_index: torch.Tensor | None = None,
+        fine_index: torch.Tensor | None = None,
     ):
         if observation_batch.state_in is None:
             raise ValueError(
@@ -223,12 +342,28 @@ class PPO:
             else:
                 sample_mask = policy_mask
         sample_mask = sample_mask.to(device="cpu").detach()
+        default_target = torch.tensor(-1, dtype=torch.long)
         self.memory.append(
             {
                 "observation_batch": observation_batch.detach().to(device="cpu"),
                 "action": action.detach().to(device="cpu"),
                 "move_x": move_x.detach().to(device="cpu"),
                 "move_y": move_y.detach().to(device="cpu"),
+                "target_index": (
+                    default_target
+                    if target_index is None
+                    else target_index.detach().to(device="cpu", dtype=torch.long)
+                ),
+                "coarse_index": (
+                    default_target
+                    if coarse_index is None
+                    else coarse_index.detach().to(device="cpu", dtype=torch.long)
+                ),
+                "fine_index": (
+                    default_target
+                    if fine_index is None
+                    else fine_index.detach().to(device="cpu", dtype=torch.long)
+                ),
                 "log_prob": log_prob.detach().to(device="cpu"),
                 "reward": reward.detach().to(device="cpu"),
                 "value": value.detach().to(device="cpu"),
@@ -251,6 +386,15 @@ class PPO:
         )
         move_ys = torch.stack(
             [transition["move_y"].to(self.device) for transition in self.memory],
+        )
+        target_indices = torch.stack(
+            [transition["target_index"].to(self.device) for transition in self.memory],
+        )
+        coarse_indices = torch.stack(
+            [transition["coarse_index"].to(self.device) for transition in self.memory],
+        )
+        fine_indices = torch.stack(
+            [transition["fine_index"].to(self.device) for transition in self.memory],
         )
         log_probs_old = torch.stack(
             [transition["log_prob"].to(self.device) for transition in self.memory],
@@ -290,7 +434,7 @@ class PPO:
                     device=self.device,
                     dtype=torch.float32,
                 )
-                _, _, _, last_next_value, _ = self.policy_net(last_batch)
+                _, _, last_next_value, _ = self.policy_net(last_batch)
                 last_next_value = last_next_value.squeeze(-1)
 
         raw_advantages = self._compute_advantages(
@@ -309,6 +453,9 @@ class PPO:
             actions=actions,
             move_xs=move_xs,
             move_ys=move_ys,
+            target_indices=target_indices,
+            coarse_indices=coarse_indices,
+            fine_indices=fine_indices,
             log_probs_old=log_probs_old,
             advantages=advantages,
             returns=returns,
@@ -373,26 +520,22 @@ class PPO:
                         -1,
                         replayed_group["action_logits"].size(-1),
                     )[active_mask]
-                    move_x_logits = replayed_group["move_x_logits"].reshape(
-                        -1,
-                        replayed_group["move_x_logits"].size(-1),
-                    )[active_mask]
-                    move_y_logits = replayed_group["move_y_logits"].reshape(
-                        -1,
-                        replayed_group["move_y_logits"].size(-1),
-                    )[active_mask]
+                    target_log_prob = replayed_group["target_log_prob"].reshape(-1)[
+                        active_mask
+                    ]
+                    target_entropy = replayed_group["target_entropy"].reshape(-1)[
+                        active_mask
+                    ]
                     state_values = replayed_group["state_values"].reshape(-1)[
                         active_mask
                     ]
                     policy_loss, value_loss, entropy_loss, diag = (
                         self._calculate_losses(
                             action_logits,
-                            move_x_logits,
-                            move_y_logits,
+                            target_log_prob,
+                            target_entropy,
                             state_values,
                             replayed_group["actions"].reshape(-1)[active_mask],
-                            replayed_group["move_x"].reshape(-1)[active_mask],
-                            replayed_group["move_y"].reshape(-1)[active_mask],
                             replayed_group["old_log_prob"].reshape(-1)[active_mask],
                             replayed_group["advantages"].reshape(-1)[active_mask],
                             replayed_group["returns"].reshape(-1)[active_mask],
@@ -555,6 +698,9 @@ class PPO:
         dones: torch.Tensor,
         sample_masks: torch.Tensor | None = None,
         policy_masks: torch.Tensor | None = None,
+        target_indices: torch.Tensor | None = None,
+        coarse_indices: torch.Tensor | None = None,
+        fine_indices: torch.Tensor | None = None,
     ):
         if sample_masks is None:
             if policy_masks is not None:
@@ -565,6 +711,12 @@ class PPO:
                     dtype=torch.float32,
                     device=self.device,
                 )
+        if target_indices is None:
+            target_indices = torch.full_like(actions, -1, dtype=torch.long)
+        if coarse_indices is None:
+            coarse_indices = torch.full_like(actions, -1, dtype=torch.long)
+        if fine_indices is None:
+            fine_indices = torch.full_like(actions, -1, dtype=torch.long)
         chunks = []
         rollout_size = len(self.memory)
         window = rollout_size if self.tbptt_window is None else self.tbptt_window
@@ -588,6 +740,9 @@ class PPO:
                     "actions": actions[start:end],
                     "move_x": move_xs[start:end],
                     "move_y": move_ys[start:end],
+                    "target_index": target_indices[start:end],
+                    "coarse_index": coarse_indices[start:end],
+                    "fine_index": fine_indices[start:end],
                     "old_log_prob": log_probs_old[start:end],
                     "advantages": advantages[start:end],
                     "returns": returns[start:end],
@@ -629,6 +784,11 @@ class PPO:
         selection_mask: torch.Tensor,
         meta_vec: torch.Tensor,
         action_ids: torch.Tensor | None,
+        move_x: torch.Tensor,
+        move_y: torch.Tensor,
+        target_index: torch.Tensor,
+        coarse_index: torch.Tensor,
+        fine_index: torch.Tensor,
         state_in: tuple[torch.Tensor, torch.Tensor] | None,
     ):
         latent, state_value, next_state, spatial_context = (
@@ -646,12 +806,29 @@ class PPO:
             self.policy_net.action_head(latent),
             meta_vec,
         )
-        move_x_logits, move_y_logits = self.policy_net.conditioned_spatial_head(
+        target_head_state = self._build_target_head_state(
             latent,
             spatial_context,
             action_ids,
         )
-        return action_logits, move_x_logits, move_y_logits, state_value, next_state
+        target_eval = self._evaluate_target(
+            target_head_state,
+            {
+                "x": move_x.long(),
+                "y": move_y.long(),
+                "target_index": target_index.long(),
+                "coarse_index": coarse_index.long(),
+                "fine_index": fine_index.long(),
+            },
+            action_ids,
+        )
+        return (
+            action_logits,
+            target_eval.log_prob,
+            target_eval.entropy,
+            state_value,
+            next_state,
+        )
 
     def _reset_replay_state_rows(
         self,
@@ -719,6 +896,24 @@ class PPO:
             (max_len, group_size),
             device=self.device,
             dtype=chunk_group[0]["move_y"].dtype,
+        )
+        target_index = torch.full(
+            (max_len, group_size),
+            -1,
+            device=self.device,
+            dtype=chunk_group[0]["target_index"].dtype,
+        )
+        coarse_index = torch.full(
+            (max_len, group_size),
+            -1,
+            device=self.device,
+            dtype=chunk_group[0]["coarse_index"].dtype,
+        )
+        fine_index = torch.full(
+            (max_len, group_size),
+            -1,
+            device=self.device,
+            dtype=chunk_group[0]["fine_index"].dtype,
         )
         old_log_prob = torch.zeros(
             (max_len, group_size),
@@ -789,6 +984,9 @@ class PPO:
             actions[:length, column] = chunk["actions"]
             move_x[:length, column] = chunk["move_x"]
             move_y[:length, column] = chunk["move_y"]
+            target_index[:length, column] = chunk["target_index"]
+            coarse_index[:length, column] = chunk["coarse_index"]
+            fine_index[:length, column] = chunk["fine_index"]
             old_log_prob[:length, column] = chunk["old_log_prob"]
             advantages[:length, column] = chunk["advantages"]
             returns[:length, column] = chunk["returns"]
@@ -814,6 +1012,9 @@ class PPO:
             "actions": actions,
             "move_x": move_x,
             "move_y": move_y,
+            "target_index": target_index,
+            "coarse_index": coarse_index,
+            "fine_index": fine_index,
             "old_log_prob": old_log_prob,
             "advantages": advantages,
             "returns": returns,
@@ -831,8 +1032,8 @@ class PPO:
         max_len = int(packed_group["max_steps"])
         state = packed_group["initial_state"]
         action_logits_buf = None
-        move_x_logits_buf = None
-        move_y_logits_buf = None
+        target_log_prob_buf = None
+        target_entropy_buf = None
         state_values_buf = None
         forward_calls = 0
         active_chunks_sum = 0.0
@@ -851,7 +1052,7 @@ class PPO:
                     "Packed replay state rows must match the active chunk count",
                 )
 
-            action_logits, move_x_logits, move_y_logits, state_values, next_state = (
+            action_logits, target_log_prob, target_entropy, state_values, next_state = (
                 self._forward_replay_step_tensors(
                     spatial_obs=packed_group["spatial_obs"][step_index].index_select(
                         0,
@@ -878,6 +1079,26 @@ class PPO:
                         0,
                         active_indices,
                     ),
+                    move_x=packed_group["move_x"][step_index].index_select(
+                        0,
+                        active_indices,
+                    ),
+                    move_y=packed_group["move_y"][step_index].index_select(
+                        0,
+                        active_indices,
+                    ),
+                    target_index=packed_group["target_index"][step_index].index_select(
+                        0,
+                        active_indices,
+                    ),
+                    coarse_index=packed_group["coarse_index"][step_index].index_select(
+                        0,
+                        active_indices,
+                    ),
+                    fine_index=packed_group["fine_index"][step_index].index_select(
+                        0,
+                        active_indices,
+                    ),
                     state_in=state,
                 )
             )
@@ -891,19 +1112,17 @@ class PPO:
                     device=self.device,
                     dtype=action_logits.dtype,
                 )
-                move_x_logits_buf = torch.zeros(
+                target_log_prob_buf = torch.zeros(
                     max_len,
                     group_size,
-                    move_x_logits.size(-1),
                     device=self.device,
-                    dtype=move_x_logits.dtype,
+                    dtype=target_log_prob.dtype,
                 )
-                move_y_logits_buf = torch.zeros(
+                target_entropy_buf = torch.zeros(
                     max_len,
                     group_size,
-                    move_y_logits.size(-1),
                     device=self.device,
-                    dtype=move_y_logits.dtype,
+                    dtype=target_entropy.dtype,
                 )
                 state_values_buf = torch.zeros(
                     max_len,
@@ -917,15 +1136,15 @@ class PPO:
                 active_indices,
                 action_logits,
             )
-            move_x_logits_buf[step_index].index_copy_(
+            target_log_prob_buf[step_index].index_copy_(
                 0,
                 active_indices,
-                move_x_logits,
+                target_log_prob,
             )
-            move_y_logits_buf[step_index].index_copy_(
+            target_entropy_buf[step_index].index_copy_(
                 0,
                 active_indices,
-                move_y_logits,
+                target_entropy,
             )
             state_values_buf[step_index].index_copy_(
                 0,
@@ -965,8 +1184,8 @@ class PPO:
         return {
             **packed_group,
             "action_logits": action_logits_buf,
-            "move_x_logits": move_x_logits_buf,
-            "move_y_logits": move_y_logits_buf,
+            "target_log_prob": target_log_prob_buf,
+            "target_entropy": target_entropy_buf,
             "state_values": state_values_buf,
             "forward_calls": int(forward_calls),
             "active_chunks_sum": float(active_chunks_sum),
@@ -992,12 +1211,32 @@ class PPO:
                         device=self.device,
                         dtype=torch.long,
                     ),
+                    "move_x": chunk["move_x"].to(
+                        device=self.device,
+                        dtype=torch.long,
+                    ),
+                    "move_y": chunk["move_y"].to(
+                        device=self.device,
+                        dtype=torch.long,
+                    ),
+                    "target_index": chunk["target_index"].to(
+                        device=self.device,
+                        dtype=torch.long,
+                    ),
+                    "coarse_index": chunk["coarse_index"].to(
+                        device=self.device,
+                        dtype=torch.long,
+                    ),
+                    "fine_index": chunk["fine_index"].to(
+                        device=self.device,
+                        dtype=torch.long,
+                    ),
                     "state": state,
                     "dones": chunk["dones"],
                     "length": int(chunk["length"]),
                     "action_logits": [],
-                    "move_x_logits": [],
-                    "move_y_logits": [],
+                    "target_log_prob": [],
+                    "target_entropy": [],
                     "state_values": [],
                 }
             )
@@ -1020,7 +1259,7 @@ class PPO:
                 [prepared_chunks[idx]["actions"][t] for idx in active_indices],
                 dim=0,
             )
-            action_logits, move_x_logits, move_y_logits, state_values, next_state = (
+            action_logits, target_log_prob, target_entropy, state_values, next_state = (
                 self._forward_replay_step_tensors(
                     spatial_obs=step_batch.spatial_obs,
                     entity_features=step_batch.entity_features,
@@ -1029,6 +1268,35 @@ class PPO:
                     selection_mask=step_batch.selection_mask,
                     meta_vec=step_batch.meta_vec,
                     action_ids=action_ids,
+                    move_x=torch.stack(
+                        [prepared_chunks[idx]["move_x"][t] for idx in active_indices],
+                        dim=0,
+                    ),
+                    move_y=torch.stack(
+                        [prepared_chunks[idx]["move_y"][t] for idx in active_indices],
+                        dim=0,
+                    ),
+                    target_index=torch.stack(
+                        [
+                            prepared_chunks[idx]["target_index"][t]
+                            for idx in active_indices
+                        ],
+                        dim=0,
+                    ),
+                    coarse_index=torch.stack(
+                        [
+                            prepared_chunks[idx]["coarse_index"][t]
+                            for idx in active_indices
+                        ],
+                        dim=0,
+                    ),
+                    fine_index=torch.stack(
+                        [
+                            prepared_chunks[idx]["fine_index"][t]
+                            for idx in active_indices
+                        ],
+                        dim=0,
+                    ),
                     state_in=step_batch.state_in,
                 )
             )
@@ -1036,8 +1304,8 @@ class PPO:
             for offset, chunk_idx in enumerate(active_indices):
                 chunk = prepared_chunks[chunk_idx]
                 chunk["action_logits"].append(action_logits[offset : offset + 1])
-                chunk["move_x_logits"].append(move_x_logits[offset : offset + 1])
-                chunk["move_y_logits"].append(move_y_logits[offset : offset + 1])
+                chunk["target_log_prob"].append(target_log_prob[offset : offset + 1])
+                chunk["target_entropy"].append(target_entropy[offset : offset + 1])
                 chunk["state_values"].append(state_values[offset : offset + 1])
 
                 if next_state is None:
@@ -1063,8 +1331,8 @@ class PPO:
             replayed.append(
                 (
                     torch.cat(chunk["action_logits"], dim=0),
-                    torch.cat(chunk["move_x_logits"], dim=0),
-                    torch.cat(chunk["move_y_logits"], dim=0),
+                    torch.cat(chunk["target_log_prob"], dim=0),
+                    torch.cat(chunk["target_entropy"], dim=0),
                     torch.cat(chunk["state_values"], dim=0),
                 )
             )
@@ -1160,12 +1428,10 @@ class PPO:
     def _calculate_losses(
         self,
         action_logits: torch.Tensor,
-        move_x_logits: torch.Tensor,
-        move_y_logits: torch.Tensor,
+        target_log_probs: torch.Tensor,
+        target_entropy: torch.Tensor,
         state_values: torch.Tensor,
         actions: torch.Tensor,
-        move_x: torch.Tensor,
-        move_y: torch.Tensor,
         old_log_probs: torch.Tensor,
         advantages: torch.Tensor,
         returns: torch.Tensor,
@@ -1175,20 +1441,11 @@ class PPO:
         action_dist = torch.distributions.Categorical(
             logits=action_logits.float(),
         )
-        move_x_dist = torch.distributions.Categorical(
-            logits=move_x_logits.float(),
-        )
-        move_y_dist = torch.distributions.Categorical(
-            logits=move_y_logits.float(),
-        )
 
         is_spatial = self._spatial_action_mask(actions)
         new_log_probs = (
             action_dist.log_prob(actions)
-            + is_spatial
-            * (
-                move_x_dist.log_prob(move_x) + move_y_dist.log_prob(move_y)
-            )
+            + is_spatial * target_log_probs
         )
 
         if sample_mask is None:
@@ -1215,18 +1472,10 @@ class PPO:
         )
 
         action_dim = action_logits.size(-1)
-        screen_x = move_x_logits.size(-1)
-        screen_y = move_y_logits.size(-1)
         inv_log_action = 1.0 / math.log(action_dim)
-        inv_log_x = 1.0 / math.log(screen_x)
-        inv_log_y = 1.0 / math.log(screen_y)
         entropy = (
             action_dist.entropy() * inv_log_action
-            + is_spatial
-            * (
-                move_x_dist.entropy() * inv_log_x
-                + move_y_dist.entropy() * inv_log_y
-            )
+            + is_spatial * target_entropy
         )
         entropy_loss = self.entropy_coef * self._masked_mean(entropy, sample_mask)
 

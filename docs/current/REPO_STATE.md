@@ -10,31 +10,34 @@ This is currently an SNN + PPO DefeatRoaches project with:
 - Stage-1 TBPTT with ordered chunk replay and packed replay
 - SDPA-backed attention as the current low-risk attention fast path
 - SQLite logging plus analysis plots under `analysis_results/`
-- explicit learned action semantics for `NO_OP` and `SMART`
+- semantic policy actions:
+  `NO_OP`, `LEFT_CLICK`, `RIGHT_CLICK`
 - eval-side trace capture plus per-trace analysis bundles for real-step inspection
 - dual-timescale token memory:
   fast + slow token-temporal SNN pathways feeding one shared control latent
 - explicit 2D positional encoding on the spatial token grid
-- a structured spatial click head:
-  the `SMART` coordinate logits now read a retained spatial map rather than
-  only a pooled global latent
+- a generic conditional target-head interface with a token-pointer default:
+  the live policy now predicts one categorical distribution over pooled spatial
+  tokens and decodes token centers back to screen clicks
 
 The current policy input path is:
 
 - spatial `feature_screen` -> CNN -> pooled spatial tokens
 - `feature_units` -> entity tokens
 - `multi_select` / `single_select` -> selection tokens
-- `meta_vec[32] = player[11] + available_actions[16] + pysc2_last_action[1] + bridge_token[4]`
+- `meta_vec[19] = player[11] + semantic_available_actions[3] + pysc2_last_action[1] + bridge_token[4]`
 - token-type embeddings
 - spiking self-attention
 - fast + slow token-temporal SNN pathways, combined into one latent readout
-- PPO action / spatial / value readout, with the click head reading a retained
-  spatial context map
+- PPO action / target / value readout, with the target head reading a retained
+  spatial context map and replay teacher-forcing recorded target payloads
 
 The current action path is:
 
-- policy action vocab: `NO_OP`, `SMART`
-- `SMART -> Smart_screen(x, y)`
+- policy action vocab: `NO_OP`, `LEFT_CLICK`, `RIGHT_CLICK`
+- current DefeatRoaches dispatch:
+  `RIGHT_CLICK -> Smart_screen(x, y)`
+  `LEFT_CLICK -> scaffolded but masked unavailable on this wrapper`
 - one reset bootstrap `select_army` step outside PPO memory so policy-controlled steps start from a selected-army state
 
 Why the repo moved there:
@@ -58,7 +61,8 @@ The active verification run is now `Zero` (not yet ready for full post-run analy
 Current interpretation:
 
 - reward refactor / rebalance is still urgent
-- the new Smart-screen action simplification should be judged before branching into wilder architecture alternatives
+- the new semantic-action + token-pointer stack now needs env-backed judgment
+  before branching into coarse-to-fine or larger action-space work
 
 ## What Is Considered Current
 
@@ -96,6 +100,16 @@ Current interpretation:
   conditioned spatial action head, executed-action bridge token, and reset bootstrap outside PPO memory
 - action-space simplification pass:
   the learned action vocab is now `NO_OP + SMART`, with `Smart_screen` as the only learned spatial primitive
+- semantic-action migration:
+  the learned action vocab is now `NO_OP / LEFT_CLICK / RIGHT_CLICK`, with
+  `RIGHT_CLICK` mapped to `Smart_screen` and `LEFT_CLICK` masked unavailable so
+  the current wrapper does not learn an alias
+- generic target-head migration:
+  the policy exposes build/sample/evaluate/decode target hooks and PPO now
+  stores richer target payload fields without breaking external `(x, y)` logs
+- token-pointer target head:
+  current default spatial targeting is one categorical over pooled spatial
+  tokens rather than factorized `x` and `y` logits
 - eval-side trace tooling:
   `--trace_episodes`, `analyze_eval_trace.py`, and checkpoint/activation inspection on saved eval episodes
 - multi-timescale token memory:
@@ -106,14 +120,28 @@ Current interpretation:
   masked transitions now mask the critic too, not only actor and entropy terms
 - update-before-eval ordering:
   pending PPO updates now run before deterministic eval and best-checkpoint selection
+- rollout-cadence semantics cleanup:
+  pending PPO updates now flush as soon as `rollout_steps` is reached, even
+  inside longer episodes
+- stricter recurrent-state protocol:
+  `PolicyInputBatch` now rejects malformed state ranks before replay reaches the
+  policy
 
 ## What Is Not Done
 
 - reward refactor / rebalance based on the newer wrapper-driven env read
 - terminal win/loss detection cleanup in `RewardFunctionV2`
 - refreshed current-run analysis bundle for the **current** checkpoint instead of relying on the old best-checkpoint snapshots
+- explicit time-cap semantics decision:
+  whether `steps_per_episode` is a true task horizon or only a training
+  truncation for PPO bootstrap
+- env-backed validation that keeping `LEFT_CLICK` masked is still the correct
+  no-alias choice on the current wrapper
 - dedicated action-history token group replacing the 4-float bridge token in `meta_vec`
-- selection actions and broader learnable action vocabulary beyond the current `SMART` click primitive
+- `coarse_to_fine` as the next spatial-head upgrade once token-pointer is
+  verified live
+- selection actions and broader learnable action vocabulary beyond the current
+  semantic click scaffold
 - tag-pinned entity identity via `raw_units.tag`
 - final verdict on whether the SNN + TBPTT branch is worth keeping as the long-term game-learning backbone
 - broader multi-minigame / full-game branch
@@ -146,6 +174,16 @@ Checkpoints from before the 2026-04-22 spatial-head repair should also be treate
   the older pooled-latent MLP head
 - the policy state dict gained new spatial-click parameters
 
+Checkpoints from before the 2026-04-22 semantic-action / token-pointer migration
+should also be treated as incompatible:
+
+- `cfg.model.action_dim` changed from `2` to `3`
+- `meta_vec` width changed from `32` to `19`
+- the bridge-token action vocabulary changed
+- the live target head changed from factorized `x/y` logits to token-pointer
+  logits over pooled spatial tokens
+- PPO rollout memory and replay now carry richer target payload fields
+
 ## Explicit Deferrals
 
 These were discussed, but intentionally not landed with the multi-timescale patch:
@@ -162,9 +200,10 @@ Reason:
 ## Immediate Priorities
 
 1. Finalize reward semantics for `Zero` using wrapper-derived terminal and outcome signals.
-2. Fix the terminal win/loss check in `agent_core/rewards/defeat_roaches_v2.py`.
-3. Regenerate the main `Zero` analysis bundle once the run reaches a stable checkpoint block.
-4. Re-evaluate deterministic vs stochastic behavior under the new `SMART` action space before pulling Stage-2 action work forward.
+2. Env-verify the new semantic action mask and token-pointer clicks on the live wrapper.
+3. Fix the terminal win/loss check in `agent_core/rewards/defeat_roaches_v2.py`.
+4. Regenerate the main `Zero` analysis bundle once the run reaches a stable checkpoint block.
+5. Re-evaluate deterministic vs stochastic behavior under the new semantic click action space before pulling `coarse_to_fine` or Stage-2 action work forward.
 
 ## Future Branch Candidates
 

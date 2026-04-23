@@ -392,6 +392,32 @@ def test_train_agent_stores_helper_steps_for_recurrent_replay(monkeypatch):
     assert agent.ppo.final_next_calls == 2
 
 
+def test_train_agent_flushes_rollout_inside_long_episode(monkeypatch):
+    env = DummyEnv([6])
+    agent = DummyAgent()
+    queue = DummyQueue()
+
+    monkeypatch.setattr(run_mod.cfg.environment, "total_episodes", 1, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "steps_per_episode", 10, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "reward_window", 10, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "log_frequency", 999, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "eval_frequency", 0, raising=False)
+    monkeypatch.setattr(run_mod.cfg.environment, "eval_episodes", 0, raising=False)
+    monkeypatch.setattr(run_mod.cfg.hyperparameters, "rollout_steps", 4, raising=False)
+    monkeypatch.setattr(run_mod.cfg.hyperparameters, "reward_scale", 1.0, raising=False)
+
+    with patch.object(
+        run_mod,
+        "load_checkpoint",
+        return_value=(0, float("-inf"), deque(maxlen=10)),
+    ):
+        best = run_mod.train_agent(env, agent, None, queue)
+
+    assert best == float("-inf")
+    assert agent.update_calls == 2
+    assert agent.ppo.memory == []
+
+
 def test_train_agent_skips_bootstrap_steps_outside_ppo_memory(monkeypatch):
     class BootstrapAgent(DummyAgent):
         def step(self, obs):

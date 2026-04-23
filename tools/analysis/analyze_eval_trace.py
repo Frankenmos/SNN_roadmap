@@ -32,6 +32,11 @@ SMART_ACTION_LABELS = {
     0: "no-op",
     1: "smart",
 }
+SEMANTIC_CLICK_ACTION_LABELS = {
+    0: "no-op",
+    1: "left_click",
+    2: "right_click",
+}
 
 
 def _cfg_defaults() -> dict:
@@ -182,6 +187,10 @@ class EvalTraceAnalyzer:
                 try:
                     if int(model_cfg.get("action_dim")) == 2:
                         return SMART_ACTION_LABELS.copy()
+                    if int(model_cfg.get("action_dim")) == 3 and str(
+                        model_cfg.get("spatial_head_type", ""),
+                    ).lower() == "token_pointer":
+                        return SEMANTIC_CLICK_ACTION_LABELS.copy()
                 except (TypeError, ValueError):
                     pass
         actions = {

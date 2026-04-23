@@ -8,8 +8,11 @@ from pysc2.lib import actions
 from pysc2.lib import colors as _colors
 
 from agent_core.policy_protocol import (
+    ActionSample,
+    POLICY_ACTION_LEFT_CLICK,
     POLICY_ACTION_NO_OP,
-    POLICY_ACTION_SMART,
+    POLICY_ACTION_RIGHT_CLICK,
+    SPATIAL_ACTION_IDS,
 )
 from agent_core.ppo_trainer import PPO
 from agent_core.rewards import build_reward_function
@@ -27,6 +30,27 @@ def _shuffled_hue_fixed(scale):
 
 
 _colors.shuffled_hue = _shuffled_hue_fixed
+
+
+def _coerce_action_sample(sample) -> ActionSample:
+    if isinstance(sample, ActionSample):
+        return sample
+    if isinstance(sample, tuple) and len(sample) == 6:
+        action_id, x, y, log_prob, value, next_state = sample
+        return ActionSample(
+            action_id=int(action_id),
+            x=int(x),
+            y=int(y),
+            target_index=None,
+            coarse_index=None,
+            fine_index=None,
+            log_prob=float(log_prob),
+            value=float(value),
+            next_state=next_state,
+        )
+    raise TypeError(
+        "PPO.select_action must return ActionSample or the legacy 6-tuple contract",
+    )
 
 
 def _reward_config_from_cfg():
@@ -126,6 +150,10 @@ class DefeatRoaches(base_agent.BaseAgent):
             attention_embed_dim=getattr(cfg.model, "attention_embed_dim", 64),
             attention_pool_size=getattr(cfg.model, "attention_pool_size", 7),
             attention_beta=getattr(cfg.model, "attention_beta", 0.5),
+            spatial_head_type=getattr(cfg.model, "spatial_head_type", "token_pointer"),
+            coarse_grid_size=getattr(cfg.model, "coarse_grid_size", None),
+            local_grid_size=getattr(cfg.model, "local_grid_size", None),
+            target_decode_mode=getattr(cfg.model, "target_decode_mode", "center"),
         )
         self.policy.to(self.policy.device)
 
@@ -156,6 +184,7 @@ class DefeatRoaches(base_agent.BaseAgent):
 
         self.bootstrap_pending = True
         self.last_action_token = self.action_space.get_last_token()
+        self.last_action_sample = None
 
     def effective_config(self):
         return {
@@ -201,6 +230,7 @@ class DefeatRoaches(base_agent.BaseAgent):
             self.action_space.reset()
             action_func = self.action_space.bootstrap_select_army(obs)
             self.last_action_token = self.action_space.get_last_token()
+            self.last_action_sample = None
             return (
                 action_func,
                 None,
@@ -216,28 +246,37 @@ class DefeatRoaches(base_agent.BaseAgent):
         self.bootstrap_pending = False
         pre_step_state = self.snn_state
         policy_input = policy_input.with_state(pre_step_state)
-        action, move_x, move_y, log_prob, value, self.snn_state = (
+        action_sample = _coerce_action_sample(
             self.ppo.select_action(
                 policy_input,
                 deterministic=deterministic,
-            )
+            ),
         )
+        self.last_action_sample = action_sample
+        self.snn_state = action_sample.next_state
+        action = int(action_sample.action_id)
+        move_x = int(action_sample.x)
+        move_y = int(action_sample.y)
+        log_prob = float(action_sample.log_prob)
+        value = float(action_sample.value)
 
-        action_func = self.action_space.no_op()
+        action_func = self.action_space.dispatch(action, move_x, move_y, obs)
         learnable = True
 
-        if action == POLICY_ACTION_SMART:
-            action_func = self.action_space.smart(obs, move_x, move_y)
+        if action == POLICY_ACTION_RIGHT_CLICK:
             learnable = _matches_function_call(
                 action_func,
                 actions.FUNCTIONS.Smart_screen,
             )
-        elif action == POLICY_ACTION_NO_OP:
-            action_func = self.action_space.no_op()
-        else:
+        elif action == POLICY_ACTION_LEFT_CLICK:
+            learnable = False
+        elif action != POLICY_ACTION_NO_OP:
             raise ValueError(f"Unknown policy action id: {action}")
-
-        self.last_action_token = self.action_space.get_last_token()
+        if action in SPATIAL_ACTION_IDS and not learnable:
+            action_func = self.action_space.no_op()
+            self.last_action_token = self.action_space.get_last_token()
+        else:
+            self.last_action_token = self.action_space.get_last_token()
 
         return (
             action_func,
@@ -259,6 +298,7 @@ class DefeatRoaches(base_agent.BaseAgent):
         self.bootstrap_pending = True
         self.action_space.reset()
         self.last_action_token = self.action_space.get_last_token()
+        self.last_action_sample = None
 
     def update_policy(self):
         _, stats = self.ppo.update_policy(

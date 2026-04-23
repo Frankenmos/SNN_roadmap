@@ -1,3 +1,5 @@
+import math
+
 import pytest
 import torch
 import torch.nn as nn
@@ -430,7 +432,7 @@ def test_select_action_deterministic_uses_argmax_for_move_heads():
     ppo = PPO(FakeNet(action_logits, move_x_logits, move_y_logits), lr=1e-4)
 
     batch = make_policy_batch(batch_size=1, meta_dim=META_VECTOR_DIM)
-    action, move_x, move_y, log_prob, value, next_state = ppo.select_action(
+    sample = ppo.select_action(
         batch, deterministic=True,
     )
 
@@ -440,12 +442,12 @@ def test_select_action_deterministic_uses_argmax_for_move_heads():
         + torch.log_softmax(move_y_logits, dim=-1)[0, 7]
     )
 
-    assert action == 1
-    assert move_x == 5
-    assert move_y == 7
-    assert log_prob == pytest.approx(float(expected_log_prob.item()), abs=1e-6)
-    assert isinstance(value, float)
-    assert next_state is None
+    assert sample.action_id == 1
+    assert sample.x == 5
+    assert sample.y == 7
+    assert sample.log_prob == pytest.approx(float(expected_log_prob.item()), abs=1e-6)
+    assert isinstance(sample.value, float)
+    assert sample.next_state is None
 
 
 def test_select_action_no_op_ignores_spatial_log_prob():
@@ -455,17 +457,17 @@ def test_select_action_no_op_ignores_spatial_log_prob():
     ppo = PPO(FakeNet(action_logits, move_x_logits, move_y_logits), lr=1e-4)
 
     batch = make_policy_batch(batch_size=1, meta_dim=META_VECTOR_DIM)
-    action, move_x, move_y, log_prob, *_rest = ppo.select_action(
+    sample = ppo.select_action(
         batch,
         deterministic=True,
     )
 
     expected_log_prob = torch.log_softmax(action_logits, dim=-1)[0, 0]
 
-    assert action == 0
-    assert move_x == 0
-    assert move_y == 0
-    assert log_prob == pytest.approx(float(expected_log_prob.item()), abs=1e-6)
+    assert sample.action_id == 0
+    assert sample.x == 0
+    assert sample.y == 0
+    assert sample.log_prob == pytest.approx(float(expected_log_prob.item()), abs=1e-6)
 
 
 def test_compute_advantages_matches_hand_calculation():
@@ -499,15 +501,17 @@ def test_compute_advantages_matches_hand_calculation():
 def test_calculate_losses_reports_normalized_entropy():
     ppo = PPO(FakeNet(), lr=1e-4)
     batch_size = 128
+    action_logits = torch.randn(batch_size, 2)
+    target_logits = torch.randn(batch_size, 84)
+    target_dist = torch.distributions.Categorical(logits=target_logits.float())
+    sampled_target = torch.randint(0, 84, (batch_size,))
 
     policy_loss, value_loss, entropy_loss, diag = ppo._calculate_losses(
-        torch.randn(batch_size, 2),
-        torch.randn(batch_size, 84),
-        torch.randn(batch_size, 84),
+        action_logits,
+        target_dist.log_prob(sampled_target),
+        target_dist.entropy() / math.log(84.0),
         torch.randn(batch_size),
         torch.ones(batch_size, dtype=torch.long),
-        torch.randint(0, 84, (batch_size,)),
-        torch.randint(0, 84, (batch_size,)),
         torch.randn(batch_size),
         torch.randn(batch_size),
         torch.randn(batch_size),
@@ -516,7 +520,7 @@ def test_calculate_losses_reports_normalized_entropy():
     assert policy_loss.ndim == 0
     assert value_loss.ndim == 0
     assert entropy_loss.ndim == 0
-    assert 1.0 <= float(diag["entropy_mean"].item()) <= 3.0
+    assert 0.5 <= float(diag["entropy_mean"].item()) <= 2.0
     assert torch.isfinite(diag["approx_kl"])
     assert 0.0 <= float(diag["clip_frac"].item()) <= 1.0
 
@@ -524,18 +528,17 @@ def test_calculate_losses_reports_normalized_entropy():
 def test_calculate_losses_no_op_samples_do_not_backprop_spatial_heads():
     ppo = PPO(FakeNet(), lr=1e-4)
     action_logits = torch.randn(8, 2, requires_grad=True)
-    move_x_logits = torch.randn(8, 84, requires_grad=True)
-    move_y_logits = torch.randn(8, 84, requires_grad=True)
+    target_logits = torch.randn(8, 84, requires_grad=True)
+    target_dist = torch.distributions.Categorical(logits=target_logits.float())
+    sampled_target = torch.randint(0, 84, (8,))
     state_values = torch.randn(8, requires_grad=True)
 
     policy_loss, value_loss, entropy_loss, _diag = ppo._calculate_losses(
         action_logits,
-        move_x_logits,
-        move_y_logits,
+        target_dist.log_prob(sampled_target),
+        target_dist.entropy() / math.log(84.0),
         state_values,
         torch.zeros(8, dtype=torch.long),
-        torch.randint(0, 84, (8,)),
-        torch.randint(0, 84, (8,)),
         torch.zeros(8),
         torch.ones(8),
         torch.zeros(8),
@@ -543,10 +546,8 @@ def test_calculate_losses_no_op_samples_do_not_backprop_spatial_heads():
     total = policy_loss + value_loss - entropy_loss
     total.backward()
 
-    if move_x_logits.grad is not None:
-        assert torch.count_nonzero(move_x_logits.grad) == 0
-    if move_y_logits.grad is not None:
-        assert torch.count_nonzero(move_y_logits.grad) == 0
+    if target_logits.grad is not None:
+        assert torch.count_nonzero(target_logits.grad) == 0
 
 
 def test_calculate_losses_masks_critic_loss_with_policy_mask():
@@ -554,12 +555,10 @@ def test_calculate_losses_masks_critic_loss_with_policy_mask():
 
     _policy_loss, value_loss, _entropy_loss, diag = ppo._calculate_losses(
         torch.tensor([[0.0, 1.0], [0.0, 1.0]]),
-        torch.zeros(2, 84),
-        torch.zeros(2, 84),
+        torch.zeros(2),
+        torch.zeros(2),
         torch.tensor([0.0, 0.0]),
         torch.tensor([1, 1], dtype=torch.long),
-        torch.tensor([0, 0]),
-        torch.tensor([0, 0]),
         torch.zeros(2),
         torch.zeros(2),
         torch.tensor([1.0, 100.0]),
@@ -638,7 +637,7 @@ def test_update_policy_replays_state_and_clears_memory():
             state_shape=state[0].shape,
         )
         with torch.no_grad():
-            _, _, _, state_value, _ = net(batch.with_state(state))
+            _, _, state_value, _ = net(batch.with_state(state))
         ppo.store_transition(
             batch.with_state(state),
             torch.tensor(1),
@@ -781,20 +780,20 @@ def test_packed_replay_matches_reference_replay():
 
     for column, chunk in enumerate(chunks):
         length = int(chunk["length"])
-        ref_action, ref_move_x, ref_move_y, ref_values = reference[column]
+        ref_action, ref_target_log_prob, ref_target_entropy, ref_values = reference[column]
         assert torch.allclose(
             packed["action_logits"][:length, column],
             ref_action,
             atol=1e-6,
         )
         assert torch.allclose(
-            packed["move_x_logits"][:length, column],
-            ref_move_x,
+            packed["target_log_prob"][:length, column],
+            ref_target_log_prob,
             atol=1e-6,
         )
         assert torch.allclose(
-            packed["move_y_logits"][:length, column],
-            ref_move_y,
+            packed["target_entropy"][:length, column],
+            ref_target_entropy,
             atol=1e-6,
         )
         assert torch.allclose(

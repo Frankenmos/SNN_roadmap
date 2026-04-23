@@ -142,9 +142,109 @@ Verbose pre-compression snapshot:
   `RewardFunctionV2` remains available through `agent_core.rewards.__init__`, while `v3` remains current default
 - updated docs index text to mark `docs/current/urgent.md` as an active historical review source rather than an empty scratchpad
 
+## 2026-04-22 (deep research follow-up)
+
+- reviewed `docs/deep-research-report.md` against the live code and limited the
+  patch set to contract-level fixes that did not require environment-side intent
+- tightened the frozen observation protocol:
+  `PolicyInputBatch` now rejects recurrent state tensors unless they are rank-3
+  legacy or rank-4 multi-timescale, so malformed state now fails at the
+  protocol boundary instead of later inside `spiking_policy.py`
+- fixed rollout cadence for long episodes:
+  `train.py` now flushes PPO updates immediately once `rollout_steps` is reached
+  inside the episode loop, rather than waiting only for the episode boundary
+- explicitly did **not** change time-cap semantics yet:
+  the repo still needs a task-definition decision on whether
+  `steps_per_episode` is a real horizon or only a training truncation before we
+  touch PPO bootstrap behavior there
+- added regression coverage for the new contract/cadence behavior:
+  - `tests/test_policy_input.py`
+  - `tests/test_training_loop.py`
+- verification after the follow-up pass:
+  `pytest tests/test_policy_input.py tests/test_training_loop.py tests/test_PPO.py tests/test_agent.py -q`
+  `47 passed`
+  `pytest tests -q`
+  `63 passed`
+
+## 2026-04-23 (semantic fixes before Phase 2)
+
+- fixed action-dimension reporting in `spiking_policy.py`:
+  added `action_dim` to `resolved_config()` output so analysis tools
+  can correctly detect action semantics
+- fixed action-semantics inference in `results.py`:
+  added fallback logic to detect `semantic_pointer_v1` when
+  `spatial_head_type == "token_pointer"` and `meta_input_dim == 19`,
+  even when `action_dim` is missing from config
+- regenerated Zero-3 instability report with corrected action labels
+- **fixed time-cap semantics in `train.py`**:
+  - changed `done = env_done or time_cap` to `done = env_only`
+  - timeout is now treated as truncation, not terminal
+  - value bootstrapping continues through time_cap
+  - loop still exits at time_cap but doesn't treat it as episode end
+- **verified rollout cadence is correct**:
+  - the `rollout_steps` check already happens inside the step loop
+  - PPO updates fire immediately when target is reached, not just at episode boundaries
+- **increased TBPTT window from 32 to 128**:
+  - allows gradients to flow 4x further back in time
+  - better credit assignment for long-horizon events
+  - enabled by available VRAM/compute
+- **increased `steps_per_episode` from 600 to 3600**:
+  - the 600 limit was legacy and doesn't match DefeatRoaches survival dynamics
+  - games depend on survival + long time limit, not artificial short caps
+
+## 2026-04-22 (semantic action + token-pointer migration)
+
+- implemented Phase 1 + Phase 2 of the spatial-target migration plan
+  instead of mixing it with any new TBPTT or reward rewrite
+- replaced the live policy semantics with:
+  `NO_OP`, `LEFT_CLICK`, `RIGHT_CLICK`
+- current DefeatRoaches mapping after that migration:
+  `RIGHT_CLICK -> Smart_screen(x, y)`
+  `LEFT_CLICK` is scaffolded in code and protocol, but masked unavailable on
+  the current wrapper so it cannot become a live policy alias
+- shrank `meta_vec` from the older raw-action shape to the semantic one:
+  `meta_vec[19] = player[11] + semantic_available_actions[3] + pysc2_last_action[1] + bridge_token[4]`
+- expanded bridge-token semantics so the recurrent path can distinguish
+  `LEFT_CLICK`, `RIGHT_CLICK`, bootstrap select, and no-op cleanly
+- added `ActionSample` as the acting payload and threaded optional
+  `target_index / coarse_index / fine_index` storage through PPO rollout
+  memory without breaking external `act / move_x / move_y` logging
+- replaced the hardcoded factorized `x + y` replay contract with a generic
+  policy-side target-head interface:
+  `build_target_head`, `sample_target`, `evaluate_target`,
+  `encode_xy_to_target`, and `decode_target_to_xy`
+- kept `factorized_xy` alive as a legacy target-head mode behind config
+- made `token_pointer` the new default head:
+  the policy now predicts one categorical distribution over the pooled spatial
+  token grid and decodes token centers back to logged `(x, y)` screen clicks
+- generalized PPO from "SMART is the only spatial action" to a semantic
+  spatial-action set and moved target entropy / target log-prob evaluation out
+  of PPO math and into the policy head
+- preserved the core seam that was already correct:
+  action selection still happens first, target selection second, and replay
+  still teacher-forces the recorded action id
+- updated analysis helpers and eval-trace helpers so new runs with
+  `action_dim=3` plus `spatial_head_type=token_pointer` do not get mislabeled
+  as legacy runs
+- refreshed diagnostics / tests to the new contract:
+  semantic availability, bridge token shape, token-pointer head shape,
+  ActionSample returns, generic PPO losses, packed replay, and current
+  policy-input diagnostics now all assert against the migrated behavior
+- verification after the migration:
+  `pytest tests -q`
+  `63 passed`
+
 ## Next Checks
 
 - refactor / rebalance the reward function using the newer wrapper-driven env understanding
+- decide and document time-cap semantics:
+  task horizon vs training truncation for PPO bootstrap
+- env-verify the new semantic action mask:
+  confirm `RIGHT_CLICK` behaves as intended and keeping `LEFT_CLICK` masked is
+  still the right no-alias choice on the live wrapper
+- decide whether the next spatial-head step is actually ready:
+  `coarse_to_fine` should come next only after a short live training/eval pass
+  confirms the token-pointer version is stable
 - fix terminal win/loss detection in `RewardFunctionV2`
 - regenerate the main `Zero` report bundle against the live DB/checkpoint state
 - keep `analysis_results/BPTT-1` as historical context only (same obs function shape, but older action-space version)

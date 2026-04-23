@@ -1,0 +1,17 @@
+AI-friendly export bundle
+window=100
+num_bins=50
+action_semantics=semantic_pointer_v1
+action_labels=0:no-op,1:left_click,2:right_click
+
+files:
+- 01_reward_trajectory.png
+- 02_episode_length.png
+- 03_reward_efficiency.png
+- 04_oscillation_score.png
+- 05_action_entropy.png
+- 06_action_mix.png
+- 07_phase_action_mix.png
+- 09_tbptt_speed.png
+- 10_eval_split.png
+- 12_reward_component_trends.png

@@ -7,10 +7,11 @@ from agent_core.policy_protocol import (
     BRIDGE_ACTION_BOOTSTRAP_SELECT,
     META_VECTOR_DIM,
     POLICY_ACTION_DIM,
-    POLICY_ACTION_SMART,
+    POLICY_ACTION_RIGHT_CLICK,
     PolicyInputBatch,
     SPATIAL_OBS_SHAPE,
 )
+from agent_core.target_heads import TargetHeadState
 from agent_core.spiking_policy import (
     EntityEncoder,
     MetaEncoder,
@@ -78,7 +79,7 @@ def test_agent_step_returns_current_training_tuple(make_obs):
         "no_op",
         "Smart_screen",
     }
-    assert action in {0, 1}
+    assert action in {0, 2}
     assert 0 <= move_x < 84
     assert 0 <= move_y < 84
     assert len(pre_step_state) == 2
@@ -103,7 +104,7 @@ def test_smart_uses_policy_coordinates(make_obs, monkeypatch):
         agent.ppo,
         "select_action",
         lambda observations, state=None, deterministic=False: (
-            POLICY_ACTION_SMART,
+            POLICY_ACTION_RIGHT_CLICK,
             17,
             19,
             -0.25,
@@ -115,7 +116,7 @@ def test_smart_uses_policy_coordinates(make_obs, monkeypatch):
     obs = make_obs()
     action_func, action, *_rest, learnable = agent.step(obs)
 
-    assert action == POLICY_ACTION_SMART
+    assert action == POLICY_ACTION_RIGHT_CLICK
     assert action_func.name == "Smart_screen"
     assert action_func.args == ("now", [17, 19])
     assert learnable is True
@@ -157,7 +158,7 @@ def test_deterministic_step_does_not_update_extractor_stats(make_obs, monkeypatc
         agent.ppo,
         "select_action",
         lambda observations, deterministic=False: (
-            POLICY_ACTION_SMART,
+            POLICY_ACTION_RIGHT_CLICK,
             0,
             0,
             -0.1,
@@ -196,8 +197,8 @@ def test_policy_forward_shapes_and_state_continuity():
         meta_vec=batch.meta_vec,
     )
 
-    action_logits, move_x_logits, move_y_logits, state_value, state1 = net(batch_no_state)
-    action_logits_2, move_x_logits_2, move_y_logits_2, state_value_2, state2 = net(
+    action_logits, target_head_state, state_value, state1 = net(batch_no_state)
+    action_logits_2, target_head_state_2, state_value_2, state2 = net(
         PolicyInputBatch(
             spatial_obs=batch.spatial_obs,
             entity_features=batch.entity_features,
@@ -210,19 +211,20 @@ def test_policy_forward_shapes_and_state_continuity():
     )
 
     assert action_logits.shape == (2, POLICY_ACTION_DIM)
-    assert move_x_logits.shape == (2, 16)
-    assert move_y_logits.shape == (2, 16)
+    assert isinstance(target_head_state, TargetHeadState)
+    assert target_head_state.primary_logits.shape == (2, 16)
+    assert target_head_state.secondary_logits is None
     assert state_value.shape == (2,)
     assert action_logits_2.shape == action_logits.shape
-    assert move_x_logits_2.shape == move_x_logits.shape
-    assert move_y_logits_2.shape == move_y_logits.shape
+    assert target_head_state_2.primary_logits.shape == target_head_state.primary_logits.shape
+    assert target_head_state_2.secondary_logits is None
     assert state_value_2.shape == state_value.shape
     assert len(state2) == 2
     assert state2[0].shape == state1[0].shape
     assert state2[1].shape == state1[1].shape
 
 
-def test_conditioned_spatial_head_changes_with_action_id():
+def test_target_head_changes_with_action_id():
     net = _small_policy()
     batch = _policy_batch(batch_size=2, spatial_shape=SPATIAL_OBS_SHAPE)
     latent, _value, _next_state, spatial_context = net.encode_step_tensors(
@@ -235,23 +237,24 @@ def test_conditioned_spatial_head_changes_with_action_id():
         state_in=batch.state_in,
     )
 
-    smart_x_logits, smart_y_logits = net.conditioned_spatial_head(
+    right_click_head = net.build_target_head(
         latent,
         spatial_context,
-        torch.full((2,), POLICY_ACTION_SMART, dtype=torch.long),
+        torch.full((2,), POLICY_ACTION_RIGHT_CLICK, dtype=torch.long),
     )
-    no_op_x_logits, no_op_y_logits = net.conditioned_spatial_head(
+    no_op_head = net.build_target_head(
         latent,
         spatial_context,
         torch.zeros((2,), dtype=torch.long),
     )
 
-    assert smart_x_logits.shape == (2, 16)
-    assert smart_y_logits.shape == (2, 16)
-    assert no_op_x_logits.shape == smart_x_logits.shape
-    assert no_op_y_logits.shape == smart_y_logits.shape
-    assert not torch.allclose(smart_x_logits, no_op_x_logits)
-    assert not torch.allclose(smart_y_logits, no_op_y_logits)
+    assert right_click_head.primary_logits.shape == (2, 16)
+    assert right_click_head.secondary_logits is None
+    assert no_op_head.primary_logits.shape == right_click_head.primary_logits.shape
+    assert not torch.allclose(
+        right_click_head.primary_logits,
+        no_op_head.primary_logits,
+    )
 
 
 def test_encode_step_tensors_returns_structured_spatial_context():
@@ -280,7 +283,7 @@ def test_policy_zeroes_entity_recurrent_state_between_env_steps():
     state = (torch.ones_like(state[0]), torch.ones_like(state[1]))
     batch = _policy_batch(batch_size=1, spatial_shape=SPATIAL_OBS_SHAPE)
 
-    _, _, _, _, next_state = net(
+    _, _, _state_value, next_state = net(
         PolicyInputBatch(
             spatial_obs=batch.spatial_obs,
             entity_features=batch.entity_features,
@@ -304,7 +307,7 @@ def test_learnable_time_constants_receive_gradients():
     net = _small_policy()
     batch = _policy_batch(batch_size=1, spatial_shape=SPATIAL_OBS_SHAPE)
 
-    action_logits, _, _, state_value, _ = net(
+    action_logits, _target_head_state, state_value, _ = net(
         PolicyInputBatch(
             spatial_obs=batch.spatial_obs,
             entity_features=batch.entity_features,
@@ -341,11 +344,11 @@ def test_policy_accepts_legacy_single_timescale_state():
         zeros=True,
     )
 
-    action_logits, move_x_logits, move_y_logits, state_value, next_state = net(batch)
+    action_logits, target_head_state, state_value, next_state = net(batch)
 
     assert action_logits.shape == (1, POLICY_ACTION_DIM)
-    assert move_x_logits.shape == (1, 16)
-    assert move_y_logits.shape == (1, 16)
+    assert target_head_state.primary_logits.shape == (1, 16)
+    assert target_head_state.secondary_logits is None
     assert state_value.shape == (1,)
     assert next_state[0].shape == (1, 2, 4 * 4 + 24 + 20 + 1, 32)
     assert next_state[1].shape == next_state[0].shape
@@ -355,11 +358,11 @@ def test_policy_forward_handles_batch_size_not_equal_temporal_pathways():
     net = _small_policy()
     batch = _policy_batch(batch_size=4, spatial_shape=SPATIAL_OBS_SHAPE)
 
-    action_logits, move_x_logits, move_y_logits, state_value, next_state = net(batch)
+    action_logits, target_head_state, state_value, next_state = net(batch)
 
     assert action_logits.shape == (4, POLICY_ACTION_DIM)
-    assert move_x_logits.shape == (4, 16)
-    assert move_y_logits.shape == (4, 16)
+    assert target_head_state.primary_logits.shape == (4, 16)
+    assert target_head_state.secondary_logits is None
     assert state_value.shape == (4,)
     assert next_state[0].shape == (4, 2, 4 * 4 + 24 + 20 + 1, 32)
     assert next_state[1].shape == next_state[0].shape

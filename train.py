@@ -382,7 +382,11 @@ def train_agent(env, agent, observation_extractor, log_queue):
             step_count += 1
             env_done = next_obs.last()
             time_cap = step_count >= steps_per_episode
-            done = env_done or time_cap
+            # Treat time_cap as truncation, not terminal:
+            # - terminal (done) is only true game endings
+            # - timeout continues bootstrapping through the cap
+            terminal = env_done
+            done = terminal
 
             raw_reward = agent.reward_function.calculate_reward(next_obs, None)
             raw_reward = float(
@@ -391,6 +395,7 @@ def train_agent(env, agent, observation_extractor, log_queue):
             scaled_reward = raw_reward * reward_scale
 
             if policy_input is not None:
+                action_sample = getattr(agent, "last_action_sample", None)
                 agent.ppo.store_transition(
                     policy_input,
                     torch.tensor(action_id, device=agent.policy.device),
@@ -408,6 +413,30 @@ def train_agent(env, agent, observation_extractor, log_queue):
                         1.0 if learnable else 0.0,
                         dtype=torch.float32,
                         device=agent.policy.device,
+                    ),
+                    target_index=(
+                        None
+                        if action_sample is None or action_sample.target_index is None
+                        else torch.tensor(
+                            action_sample.target_index,
+                            device=agent.policy.device,
+                        )
+                    ),
+                    coarse_index=(
+                        None
+                        if action_sample is None or action_sample.coarse_index is None
+                        else torch.tensor(
+                            action_sample.coarse_index,
+                            device=agent.policy.device,
+                        )
+                    ),
+                    fine_index=(
+                        None
+                        if action_sample is None or action_sample.fine_index is None
+                        else torch.tensor(
+                            action_sample.fine_index,
+                            device=agent.policy.device,
+                        )
                     ),
                 )
                 next_policy_input = agent.peek_observation(next_obs).with_state(
@@ -454,7 +483,11 @@ def train_agent(env, agent, observation_extractor, log_queue):
                     }
                 )
 
-            if done:
+            if len(agent.ppo.memory) >= rollout_steps:
+                maybe_run_policy_update(agent, log_queue, episode + 1)
+
+            # Exit on true terminal or time cap (but cap is truncation, not terminal)
+            if env_done or time_cap:
                 break
             obs = next_obs
 
