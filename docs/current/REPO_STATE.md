@@ -25,7 +25,7 @@ The current policy input path is:
 - spatial `feature_screen` -> CNN -> pooled spatial tokens
 - `feature_units` -> entity tokens
 - `multi_select` / `single_select` -> selection tokens
-- `meta_vec[19] = player[11] + semantic_available_actions[3] + pysc2_last_action[1] + bridge_token[4]`
+- `meta_vec[24] = player[11] + semantic_available_actions[3] + pysc2_last_action[1] + action_history_bridge[9]`
 - token-type embeddings
 - spiking self-attention
 - fast + slow token-temporal SNN pathways, combined into one latent readout
@@ -138,7 +138,7 @@ Current interpretation:
   truncation for PPO bootstrap
 - env-backed validation that keeping `LEFT_CLICK` masked is still the correct
   no-alias choice on the current wrapper
-- dedicated action-history token group replacing the 4-float bridge token in `meta_vec`
+- broader action-history token groups beyond the current one-step 9-field bridge
 - `coarse_to_fine` spatial head (implemented, ready for testing) - see [../SPATIAL_HEADS.md](../SPATIAL_HEADS.md)
 - selection actions and broader learnable action vocabulary beyond the current
   semantic click scaffold
@@ -185,6 +185,13 @@ should also be treated as incompatible:
   logits over pooled spatial tokens
 - PPO rollout memory and replay now carry richer target payload fields
 
+Checkpoints from before the 2026-04-24 action-history bridge expansion should
+also be treated as incompatible:
+
+- `meta_vec` width changed from `19` to `24`
+- the bridge slice changed from 4 attempted-action fields to 9 fields:
+  attempted action plus last-action and score-delta feedback
+
 **Note (2026-04-23)**: The `coarse_to_fine` spatial head is now implemented
 and ready for testing. To use it, set `model.spatial_head_type: "coarse_to_fine"`
 in `config.yaml`. See [../SPATIAL_HEADS.md](../SPATIAL_HEADS.md) for details.
@@ -227,7 +234,7 @@ Reason:
 ## Open Questions
 
 1. Once the reward path is updated, does deterministic behavior recover, or is there still a deeper action-space or optimization bottleneck?
-2. Is the 4-float bridge token enough for now, or should Stage 2 move action history into its own token group soon?
+2. Is the 9-field one-step bridge enough for now, or should Stage 2 move longer action history into its own token group soon?
 3. How much remaining weakness is reward shaping versus entity identity versus optimization instability?
 4. If `SMART` remains hard to learn from pure PPO, is the better next move offline pretraining, curriculum maps, or both?
 5. When we leave "make the SNN work" mode, do we keep this branch as the research branch and build a denser recurrent branch for the actual game-learning push?

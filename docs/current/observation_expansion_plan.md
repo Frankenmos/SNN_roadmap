@@ -1,7 +1,7 @@
 # Plan: Observation Expansion - Adding Action Feedback
 
 **Created:** 2026-04-23
-**Status:** Feedback shape documented; ready for meta-vector design discussion
+**Status:** 24-dim action-history bridge implemented
 
 ## Problem Statement
 
@@ -47,7 +47,7 @@ Important caveat:
 
 ## Phase 2: Design Expanded Meta Vector
 
-Current `meta_vec[19]`:
+Previous `meta_vec[19]`:
 
 | Slice | Dim | Meaning |
 |-------|-----|---------|
@@ -56,7 +56,7 @@ Current `meta_vec[19]`:
 | `14:15` | 1 | PySC2 last-action index |
 | `15:19` | 4 | agent bridge token `[type, x_norm, y_norm, extra]` |
 
-Proposed evidence-backed expansion:
+Implemented evidence-backed expansion:
 
 | Offset | Field | Dim | Encoding |
 |--------|-------|-----|----------|
@@ -66,7 +66,10 @@ Proposed evidence-backed expansion:
 | `22` | `killed_value_delta` | 1 | clipped/normalized delta of `score_cumulative[5]` |
 | `23` | `score_penalty_bit` | 1 | `1.0` if `score_total_delta < 0` |
 
-Target: expand `META_VECTOR_DIM` from `19` to `24`.
+Target landed: `META_VECTOR_DIM` expanded from `19` to `24`.
+
+The source-of-truth protocol note is now
+[action_history_bridge_plan.md](action_history_bridge_plan.md).
 
 Deferred until it earns space:
 
@@ -113,11 +116,12 @@ Needed:
 - [x] Phase 1b: Inspect `theta-1` JSONL and identify useful feedback fields
 - [x] Phase 1c: Document observed diagnostic shape and timing semantics
 - [x] Phase 2a: Document first-pass score-delta normalization/clipping
-- [ ] Phase 2b: Confirm or revise score normalization before code
-- [ ] Phase 3: Implement 24-dim `meta_vec`
-- [ ] Phase 4: Test and smoke-run
+- [x] Phase 2b: Confirm or revise score normalization before code
+- [x] Phase 3: Implement 24-dim `meta_vec`
+- [x] Phase 4: Test and smoke-run
 
 ---
 
-**Next Step:** Agree on normalization/clipping for the two score-delta fields,
-then implement the 24-dim `meta_vec` expansion.
+**Next Step:** Run evals with the current checkpoint shape and inspect the
+policy-input diagnostics to confirm the bridge fields are populated in live
+PySC2 observations.

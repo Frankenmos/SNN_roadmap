@@ -26,7 +26,7 @@ from pysc2.lib import features  # noqa: E402,F401  (kept for downstream consumer
 import torch  # noqa: E402
 
 from agent_core.policy_protocol import (
-    AGENT_LAST_ACTION_DIM,
+    AGENT_ACTION_TOKEN_DIM,
     AGENT_LAST_ACTION_OFFSET,
     BRIDGE_ACTION_LEFT_CLICK,
     BRIDGE_ACTION_NO_OP,
@@ -51,6 +51,7 @@ from agent_core.policy_protocol import (
 )
 
 _PLAYER_FRIENDLY = 1
+_SCORE_CUMULATIVE_DIM = 13
 _FEATURE_UNIT_INDEX = {
     name: int(field.value)
     for name, field in features.FeatureUnit.__members__.items()
@@ -224,8 +225,15 @@ class ObservationExtractor:
                 "build_progress",
             ),
         )
+        self._previous_score_cumulative = None
 
-    def extract_observation(self, obs, update_stats=True, last_action_token=None):
+    def extract_observation(
+        self,
+        obs,
+        update_stats=True,
+        last_action_token=None,
+        update_feedback_state=True,
+    ):
         feature_screen = getattr(obs.observation, "feature_screen", None)
         if feature_screen is not None and getattr(feature_screen, "size", 0) > 0:
             spatial_obs = torch.as_tensor(
@@ -263,6 +271,7 @@ class ObservationExtractor:
         meta_vec = self._extract_meta_vector(
             obs,
             last_action_token=last_action_token,
+            update_feedback_state=update_feedback_state,
         )
 
         return PolicyInputBatch(
@@ -279,6 +288,7 @@ class ObservationExtractor:
             obs,
             update_stats=False,
             last_action_token=last_action_token,
+            update_feedback_state=False,
         )
 
     def _extract_entity_rows(self, obs):
@@ -312,7 +322,12 @@ class ObservationExtractor:
             field_names=SELECTION_FEATURE_NAMES,
         )
 
-    def _extract_meta_vector(self, obs, last_action_token=None):
+    def _extract_meta_vector(
+        self,
+        obs,
+        last_action_token=None,
+        update_feedback_state=True,
+    ):
         player = getattr(obs.observation, "player", None)
         if player is None:
             player_vec = np.zeros(META_PLAYER_FEATURE_DIM, dtype=np.float32)
@@ -340,22 +355,30 @@ class ObservationExtractor:
             SMART_SCREEN_FUNCTION_ID in available_set,
         )
 
-        last_actions = getattr(obs.observation, "last_actions", None)
-        if last_actions is None or len(last_actions) == 0:
+        last_action_ids = self._as_int_list(
+            getattr(obs.observation, "last_actions", None),
+        )
+        if not last_action_ids:
             last_action_index = float(NO_ACTION_SENTINEL_INDEX)
         else:
-            raw_last_action = int(list(last_actions)[0])
+            raw_last_action = int(last_action_ids[0])
             last_action_index = float(
                 _LAST_ACTION_TO_INDEX.get(raw_last_action, UNKNOWN_LAST_ACTION_INDEX),
             )
 
         agent_last = self._normalize_last_action_token(last_action_token)
+        action_history = self._extract_action_history_vector(
+            obs,
+            last_action_ids=last_action_ids,
+            update_feedback_state=update_feedback_state,
+        )
         full = np.concatenate(
             (
                 player_vec,
                 available_mask,
                 np.asarray([last_action_index], dtype=np.float32),
                 agent_last,
+                action_history,
             ),
         )
         return torch.as_tensor(
@@ -372,14 +395,14 @@ class ObservationExtractor:
             )
         else:
             token = np.asarray(token, dtype=np.float32).reshape(-1)
-        if token.size < AGENT_LAST_ACTION_DIM:
+        if token.size < AGENT_ACTION_TOKEN_DIM:
             token = np.pad(
                 token,
-                (0, AGENT_LAST_ACTION_DIM - token.size),
+                (0, AGENT_ACTION_TOKEN_DIM - token.size),
                 mode="constant",
             )
         else:
-            token = token[:AGENT_LAST_ACTION_DIM]
+            token = token[:AGENT_ACTION_TOKEN_DIM]
 
         max_coord = float(SPATIAL_OBS_SHAPE[-1] - 1)
         out = token.astype(np.float32, copy=True)
@@ -388,6 +411,65 @@ class ObservationExtractor:
         out[2] = float(np.clip(out[2], 0.0, max_coord) / max_coord)
         out[3] = float(out[3])
         return out
+
+    def _extract_action_history_vector(
+        self,
+        obs,
+        last_action_ids,
+        update_feedback_state=True,
+    ):
+        raw_score_delta = self._score_delta(obs)
+        if update_feedback_state:
+            self._previous_score_cumulative = self._extract_score_cumulative(obs)
+
+        score_total_delta = float(np.clip(raw_score_delta[0], -10.0, 10.0) / 10.0)
+        killed_value_delta = float(np.clip(raw_score_delta[5], 0.0, 100.0) / 100.0)
+        score_penalty_bit = 1.0 if float(raw_score_delta[0]) < 0.0 else 0.0
+
+        return np.asarray(
+            [
+                1.0 if last_action_ids else 0.0,
+                1.0 if SMART_SCREEN_FUNCTION_ID in set(last_action_ids) else 0.0,
+                score_total_delta,
+                killed_value_delta,
+                score_penalty_bit,
+            ],
+            dtype=np.float32,
+        )
+
+    def _score_delta(self, obs):
+        current = self._extract_score_cumulative(obs)
+        if self._previous_score_cumulative is None:
+            return np.zeros(_SCORE_CUMULATIVE_DIM, dtype=np.float32)
+        return current - self._previous_score_cumulative
+
+    def _extract_score_cumulative(self, obs):
+        score = getattr(obs.observation, "score_cumulative", None)
+        if score is None:
+            return np.zeros(_SCORE_CUMULATIVE_DIM, dtype=np.float32)
+
+        score_arr = np.asarray(score, dtype=np.float32).reshape(-1)
+        if score_arr.size < _SCORE_CUMULATIVE_DIM:
+            score_arr = np.pad(
+                score_arr,
+                (0, _SCORE_CUMULATIVE_DIM - score_arr.size),
+                mode="constant",
+            )
+        else:
+            score_arr = score_arr[:_SCORE_CUMULATIVE_DIM]
+        return score_arr
+
+    def _as_int_list(self, value):
+        if value is None:
+            return []
+        try:
+            arr = np.asarray(value).reshape(-1)
+            return [int(item) for item in arr.tolist()]
+        except Exception:
+            try:
+                return [int(item) for item in list(value)]
+            except Exception:
+                return []
 
     def _coerce_numeric_rows(self, rows):
         if rows is None:
@@ -453,6 +535,7 @@ class ObservationExtractor:
         return SPATIAL_OBS_SHAPE, META_VECTOR_DIM
 
     def reset(self):
+        self._previous_score_cumulative = None
         return None
 
     def state_dict(self):

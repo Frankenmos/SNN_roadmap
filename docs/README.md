@@ -12,6 +12,7 @@ Start here when you want repo context without spelunking through old plans.
 - [current/observation_expansion_plan.md](current/observation_expansion_plan.md) - Plan for adding action feedback (action_result, alerts, score_cumulative)
 - [current/observation_feedback_investigation.md](current/observation_feedback_investigation.md) - Investigation findings about missing observation fields
 - [current/feedback_diagnostics_note.md](current/feedback_diagnostics_note.md) - Observed feedback JSONL shape, timing semantics, and candidate 24-dim meta shape
+- [current/action_history_bridge_plan.md](current/action_history_bridge_plan.md) - Current 24-dim action-history bridge protocol
 
 ## Current
 

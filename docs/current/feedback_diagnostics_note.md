@@ -191,9 +191,9 @@ invocations. Prefer a fresh output path, delete the old diagnostic file before a
 new run, or add a future `run_id` / truncate mode before relying on
 episode-step uniqueness.
 
-## Candidate Meta Shape
+## Current Action-History Meta Shape
 
-Current `meta_vec[19]`:
+Previous `meta_vec[19]`:
 
 | Slice | Dim | Meaning |
 |-------|-----|---------|
@@ -202,7 +202,7 @@ Current `meta_vec[19]`:
 | `14:15` | 1 | PySC2 last-action index |
 | `15:19` | 4 | agent bridge token `[type, x_norm, y_norm, extra]` |
 
-Evidence-backed minimal feedback extension:
+Implemented evidence-backed feedback extension:
 
 | New field | Dim | Encoding |
 |-----------|-----|----------|
@@ -212,7 +212,9 @@ Evidence-backed minimal feedback extension:
 | `killed_value_delta` | 1 | clipped/normalized delta of `score_cumulative[5]` |
 | `score_penalty_bit` | 1 | `1.0` if `score_total_delta < 0` |
 
-Tentative target: `META_VECTOR_DIM = 24`.
+Current target: `META_VECTOR_DIM = 24`; see
+[action_history_bridge_plan.md](action_history_bridge_plan.md) for the source of
+truth.
 
 Deferred until it earns space:
 
