@@ -67,6 +67,18 @@ if "inspect_actions" not in FLAGS:
         False,
         "Enable AvailableActionsDiagnosticsWrapper to log per-step action availability and dispatched calls.",
     )
+if "inspect_last_action" not in FLAGS:
+    flags.DEFINE_bool(
+        "inspect_last_action",
+        False,
+        "Enable LastActionDiagnosticsWrapper to log last_actions, action_result, alerts, and dispatched-action matching.",
+    )
+if "inspect_score" not in FLAGS:
+    flags.DEFINE_bool(
+        "inspect_score",
+        False,
+        "Enable ScoreDiagnosticsWrapper to log score_cumulative and score deltas.",
+    )
 if "policy_input_output" not in FLAGS:
     flags.DEFINE_string(
         "policy_input_output",
@@ -94,6 +106,34 @@ if "actions_every" not in FLAGS:
         "actions_every",
         1,
         "Log every N env steps when --inspect_actions is enabled.",
+    )
+if "last_action_output" not in FLAGS:
+    flags.DEFINE_string(
+        "last_action_output",
+        None,
+        "Path for last-action feedback diagnostics JSONL. Defaults to "
+        "analysis_results/<run_name>/last_action_diagnostics.jsonl when "
+        "--run_name is known, otherwise analysis_results/last_action_diagnostics.jsonl.",
+    )
+if "last_action_every" not in FLAGS:
+    flags.DEFINE_integer(
+        "last_action_every",
+        1,
+        "Log every N env steps when --inspect_last_action is enabled.",
+    )
+if "score_output" not in FLAGS:
+    flags.DEFINE_string(
+        "score_output",
+        None,
+        "Path for score diagnostics JSONL. Defaults to "
+        "analysis_results/<run_name>/score_diagnostics.jsonl when "
+        "--run_name is known, otherwise analysis_results/score_diagnostics.jsonl.",
+    )
+if "score_every" not in FLAGS:
+    flags.DEFINE_integer(
+        "score_every",
+        1,
+        "Log every N env steps when --inspect_score is enabled.",
     )
 if "trace_episodes" not in FLAGS:
     flags.DEFINE_integer(
@@ -156,6 +196,12 @@ def play(
     inspect_actions=False,
     actions_output_path=None,
     actions_every=1,
+    inspect_last_action=False,
+    last_action_output_path=None,
+    last_action_every=1,
+    inspect_score=False,
+    score_output_path=None,
+    score_every=1,
     trace_episodes=0,
     trace_output_dir=None,
     run_name=None,
@@ -174,6 +220,26 @@ def play(
             )
         ),
         available_actions_diagnostics_every_n_steps=actions_every,
+        use_last_action_diagnostics=inspect_last_action,
+        last_action_diagnostics_output_path=(
+            last_action_output_path
+            or getattr(
+                cfg.environment,
+                "last_action_diagnostics_output_path",
+                "analysis_results/last_action_diagnostics.jsonl",
+            )
+        ),
+        last_action_diagnostics_every_n_steps=last_action_every,
+        use_score_diagnostics=inspect_score,
+        score_diagnostics_output_path=(
+            score_output_path
+            or getattr(
+                cfg.environment,
+                "score_diagnostics_output_path",
+                "analysis_results/score_diagnostics.jsonl",
+            )
+        ),
+        score_diagnostics_every_n_steps=score_every,
         use_observation_inspector=inspect,
         observation_inspector_output_path=(
             inspect_output_path
@@ -358,6 +424,32 @@ def main(argv):
                 analysis_dir, "available_actions_diagnostics.jsonl",
             )
 
+    last_action_output_path = FLAGS.last_action_output
+    if FLAGS.inspect_last_action and last_action_output_path is None:
+        analysis_dir = getattr(cfg.environment, "analysis_dir", "analysis_results")
+        name = FLAGS.run_name or getattr(cfg.environment, "run_name", "")
+        if name:
+            last_action_output_path = os.path.join(
+                analysis_dir, name, "last_action_diagnostics.jsonl",
+            )
+        else:
+            last_action_output_path = os.path.join(
+                analysis_dir, "last_action_diagnostics.jsonl",
+            )
+
+    score_output_path = FLAGS.score_output
+    if FLAGS.inspect_score and score_output_path is None:
+        analysis_dir = getattr(cfg.environment, "analysis_dir", "analysis_results")
+        name = FLAGS.run_name or getattr(cfg.environment, "run_name", "")
+        if name:
+            score_output_path = os.path.join(
+                analysis_dir, name, "score_diagnostics.jsonl",
+            )
+        else:
+            score_output_path = os.path.join(
+                analysis_dir, "score_diagnostics.jsonl",
+            )
+
     trace_output_dir = FLAGS.trace_output_dir
     if FLAGS.trace_episodes > 0 and trace_output_dir is None:
         trace_output_dir = _default_trace_output_dir(
@@ -377,6 +469,12 @@ def main(argv):
         inspect_actions=FLAGS.inspect_actions,
         actions_output_path=actions_output_path,
         actions_every=FLAGS.actions_every,
+        inspect_last_action=FLAGS.inspect_last_action,
+        last_action_output_path=last_action_output_path,
+        last_action_every=FLAGS.last_action_every,
+        inspect_score=FLAGS.inspect_score,
+        score_output_path=score_output_path,
+        score_every=FLAGS.score_every,
         trace_episodes=FLAGS.trace_episodes,
         trace_output_dir=trace_output_dir,
         run_name=FLAGS.run_name or getattr(cfg.environment, "run_name", ""),

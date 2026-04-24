@@ -1,0 +1,50 @@
+======================================================================
+SNN-PPO Training Instability Report
+======================================================================
+
+Summary:
+  episodes:              96
+  avg episode length:    76.5
+  avg total reward:      73.45
+  max total reward:      385.20
+  reward std (full run): 87.02
+  final 100-ep avg:      73.45
+
+Plateau detection: none detected
+
+----------------------------------------------------------------------
+Data-driven flags:
+----------------------------------------------------------------------
+  [HIGH] PPO clip fraction sustained high: 31.63% of samples clipped in last 1 updates.
+        suggested knob: clip_eps: 0.18 -> 0.10; lr: 1e-4 -> 5e-5
+
+  [MED] Sharp action-mix shift (L1 > 0.3) at bin(s) [10, 12, 33] — possible catastrophic forgetting.
+        suggested knob: clip_eps: 0.18 -> 0.10; lower lr
+
+----------------------------------------------------------------------
+Interpretation Notes:
+----------------------------------------------------------------------
+  1. Current code has already fixed two older structural suspects:
+     - state-replay PPO training now uses stored SNN state
+     - entropy bonus is normalized per head instead of favoring move samples
+  2. If you are analyzing a run produced before those fixes landed,
+     older collapse patterns may reflect historical bugs rather than the
+     current trainer.
+
+----------------------------------------------------------------------
+Instrumentation status:
+----------------------------------------------------------------------
+  ppo_updates: 3 rows logged.
+  Late-stage (last 1 updates) means:
+    mean_entropy        = 1.266
+    mean_kl (approx)    = 0.0178
+    clip_fraction       = 0.316
+    explained_variance  = 0.528
+    grad_norm (finite)  = 8.710
+    grad_norm = inf cnt = 0
+    lr                  = 5.00e-05
+    nonfinite_grad_steps= 0
+    skipped_opt_steps   = 0
+    transitions/update  = 2116.0
+  eval_runs: 1 rows logged.
+  latest eval @ ep 50: mean=0.00, std=0.00

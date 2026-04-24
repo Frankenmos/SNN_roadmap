@@ -61,6 +61,28 @@ def reset_environment():
             available_actions_diagnostics_every_n_steps=getattr(
                 cfg.environment, "available_actions_diagnostics_every_n_steps", 1,
             ),
+            use_last_action_diagnostics=getattr(
+                cfg.environment, "use_last_action_diagnostics", False,
+            ),
+            last_action_diagnostics_output_path=getattr(
+                cfg.environment,
+                "last_action_diagnostics_output_path",
+                "analysis_results/last_action_diagnostics.jsonl",
+            ),
+            last_action_diagnostics_every_n_steps=getattr(
+                cfg.environment, "last_action_diagnostics_every_n_steps", 1,
+            ),
+            use_score_diagnostics=getattr(
+                cfg.environment, "use_score_diagnostics", False,
+            ),
+            score_diagnostics_output_path=getattr(
+                cfg.environment,
+                "score_diagnostics_output_path",
+                "analysis_results/score_diagnostics.jsonl",
+            ),
+            score_diagnostics_every_n_steps=getattr(
+                cfg.environment, "score_diagnostics_every_n_steps", 1,
+            ),
             use_observation_inspector=getattr(
                 cfg.environment, "use_observation_inspector", False,
             ),
@@ -211,6 +233,7 @@ def maybe_save_best_checkpoint(
         checkpoint_path=best_path,
         avg_reward=avg_reward,
         eval_reward=eval_reward,
+        require_rollout_clear=False,
     )
     if not did_save:
         return best_eval_reward
@@ -546,6 +569,7 @@ def train_agent(env, agent, observation_extractor, log_queue):
                 best_eval_reward,
                 episode_rewards,
                 avg_reward=avg_reward,
+                require_rollout_clear=False,
             )
             total_steps = learnable_steps + helper_steps
             helper_pct = (helper_steps / total_steps * 100) if total_steps else 0
@@ -591,6 +615,28 @@ def main(argv):
             ),
             available_actions_diagnostics_every_n_steps=getattr(
                 cfg.environment, "available_actions_diagnostics_every_n_steps", 1,
+            ),
+            use_last_action_diagnostics=getattr(
+                cfg.environment, "use_last_action_diagnostics", False,
+            ),
+            last_action_diagnostics_output_path=getattr(
+                cfg.environment,
+                "last_action_diagnostics_output_path",
+                "analysis_results/last_action_diagnostics.jsonl",
+            ),
+            last_action_diagnostics_every_n_steps=getattr(
+                cfg.environment, "last_action_diagnostics_every_n_steps", 1,
+            ),
+            use_score_diagnostics=getattr(
+                cfg.environment, "use_score_diagnostics", False,
+            ),
+            score_diagnostics_output_path=getattr(
+                cfg.environment,
+                "score_diagnostics_output_path",
+                "analysis_results/score_diagnostics.jsonl",
+            ),
+            score_diagnostics_every_n_steps=getattr(
+                cfg.environment, "score_diagnostics_every_n_steps", 1,
             ),
             use_observation_inspector=getattr(
                 cfg.environment, "use_observation_inspector", False,

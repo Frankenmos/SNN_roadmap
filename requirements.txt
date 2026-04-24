@@ -1,3 +1,4 @@
+<<<<<<< ours
 # ============================
 # Core numerical + ML stack
 # ============================
@@ -30,3 +31,16 @@ ray>=2.0.0            # tests/poc_ray_test.py
 # ============================
 streamlit
 plotly
+=======
+# Core scientific stack
+numpy>=1.24.0
+torch>=2.1.0
+
+# PySC2 and related tooling
+pysc2>=3.0.0
+absl-py>=2.1.0
+
+# Configuration and plotting utilities
+pyyaml>=6.0.0
+matplotlib>=3.7.0
+>>>>>>> theirs

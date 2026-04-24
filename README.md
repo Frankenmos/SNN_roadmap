@@ -92,6 +92,7 @@ python results.py --run-name <your_run_name> --report
 To also export the high-signal panels as separate PNGs for easy sharing
 back into text-only workflows:
 
+<<<<<<< ours
 ```bash
 python results.py --run-name <your_run_name> --report --aismart
 ```
@@ -102,6 +103,15 @@ This writes the usual files under `analysis_results/<run_name>/`, including:
 - `win_rate.png`
 - `training_metrics.csv`
 - `instability_report.txt`
+=======
+Install the Python dependencies before running training scripts or tests:
+
+```bash
+pip install -r requirements.txt
+```
+
+This covers the core stack (`numpy`, `torch`), PySC2 tooling (`pysc2`, `absl-py`), and utilities used by the helpers (`pyyaml`, `matplotlib`).
+>>>>>>> theirs
 
 When `--aismart` is enabled it also writes:
 - `analysis_results/<run_name>/ai_friendly_results/`
@@ -182,6 +192,18 @@ Inspection flags that write JSONL diagnostics:
   output path for action-space diagnostics
 - `--actions_every <N>`
   log every `N` env steps for action-space diagnostics
+- `--inspect_last_action`
+  post-action feedback logging via `LastActionDiagnosticsWrapper`
+- `--last_action_output <path>`
+  output path for last-action diagnostics
+- `--last_action_every <N>`
+  log every `N` env steps for last-action diagnostics
+- `--inspect_score`
+  reward and `score_cumulative` delta logging via `ScoreDiagnosticsWrapper`
+- `--score_output <path>`
+  output path for score diagnostics
+- `--score_every <N>`
+  log every `N` env steps for score diagnostics
 
 Trace flags that write per-episode `.pt` sidecar artifacts:
 - `--trace_episodes <N>`
@@ -209,7 +231,7 @@ This writes a small analysis bundle next to the trace by default, including:
 One useful combined command:
 
 ```bash
-python eval.py --run_name <your_run_name> --best --episodes 5 --inspect --inspect_policy_input --inspect_actions --inspect_output analysis_results/<your_run_name>/eval_observation_space.jsonl --policy_input_output analysis_results/<your_run_name>/policy_input_diagnostics.jsonl --actions_output analysis_results/<your_run_name>/available_actions_diagnostics.jsonl
+python eval.py --run_name <your_run_name> --best --episodes 5 --inspect --inspect_policy_input --inspect_actions --inspect_last_action --inspect_score --inspect_output analysis_results/<your_run_name>/eval_observation_space.jsonl --policy_input_output analysis_results/<your_run_name>/policy_input_diagnostics.jsonl --actions_output analysis_results/<your_run_name>/available_actions_diagnostics.jsonl --last_action_output analysis_results/<your_run_name>/last_action_diagnostics.jsonl --score_output analysis_results/<your_run_name>/score_diagnostics.jsonl
 ```
 
 Training-side defaults for these diagnostics can also be centralized in `config.yaml`:
@@ -219,6 +241,10 @@ Training-side defaults for these diagnostics can also be centralized in `config.
 - `policy_input_diagnostics_*`
 - `use_available_actions_diagnostics`
 - `available_actions_diagnostics_*`
+- `use_last_action_diagnostics`
+- `last_action_diagnostics_*`
+- `use_score_diagnostics`
+- `score_diagnostics_*`
 
 ---
 

@@ -25,6 +25,7 @@ from agent_core.policy_protocol import (
     UNIT_TYPE_FEATURE_INDEX,
 )
 from agent_core.target_heads import (
+    CoarseToFineTargetHead,
     FactorizedXYTargetHead,
     TargetEval,
     TargetHeadState,
@@ -570,6 +571,16 @@ class PolicyNetwork(nn.Module):
             )
         if self._spatial_head_type == "token_pointer":
             return TokenPointerTargetHead(
+                embed_dim=self._embed_dim,
+                latent_dim=self._latent_dim,
+                action_dim=self._action_dim,
+                coarse_grid_size=self._coarse_grid_size,
+                local_grid_size=self._local_grid_size,
+                screen_size=self.screen_size,
+                target_decode_mode=self._target_decode_mode,
+            )
+        if self._spatial_head_type == "coarse_to_fine":
+            return CoarseToFineTargetHead(
                 embed_dim=self._embed_dim,
                 latent_dim=self._latent_dim,
                 action_dim=self._action_dim,

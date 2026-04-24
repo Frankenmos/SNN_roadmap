@@ -30,7 +30,7 @@ reward:
 
 environment:
   map_name: "DefeatRoaches"
-  visualize: false
+  visualize: true
   use_action_printer: false
   total_episodes: 10000
   steps_per_episode: 3600
@@ -56,6 +56,12 @@ environment:
   use_available_actions_diagnostics: false
   available_actions_diagnostics_output_path: "analysis_results/available_actions_diagnostics.jsonl"
   available_actions_diagnostics_every_n_steps: 1
+  use_last_action_diagnostics: false
+  last_action_diagnostics_output_path: "analysis_results/last_action_diagnostics.jsonl"
+  last_action_diagnostics_every_n_steps: 1
+  use_score_diagnostics: false
+  score_diagnostics_output_path: "analysis_results/score_diagnostics.jsonl"
+  score_diagnostics_every_n_steps: 1
   eval_frequency: 50
   eval_episodes: 5
 
@@ -73,7 +79,7 @@ model:
   attention_embed_dim: 64
   attention_pool_size: 7
   attention_beta: 0.5
-  spatial_head_type: "token_pointer"
+  spatial_head_type: "coarse_to_fine"
   coarse_grid_size: 7
   local_grid_size: 12
   target_decode_mode: "center"

@@ -1,0 +1,51 @@
+======================================================================
+SNN-PPO Training Instability Report
+======================================================================
+
+Summary:
+  episodes:              61
+  avg episode length:    100.5
+  avg total reward:      -87.72
+  max total reward:      0.00
+  reward std (full run): 11.66
+  final 100-ep avg:      -87.72
+  action semantics:      semantic_pointer_v1
+  action labels:         0=no-op, 1=left_click, 2=right_click
+
+Plateau detection: none detected
+
+----------------------------------------------------------------------
+Data-driven flags:
+----------------------------------------------------------------------
+  (no rule triggered — training looks healthy by log signals)
+----------------------------------------------------------------------
+Interpretation Notes:
+----------------------------------------------------------------------
+  1. Current code has already fixed two older structural suspects:
+     - state-replay PPO training now uses stored SNN state
+     - entropy bonus is normalized per head instead of favoring move samples
+  2. If you are analyzing a run produced before those fixes landed,
+     older collapse patterns may reflect historical bugs rather than the
+     current trainer.
+
+----------------------------------------------------------------------
+Instrumentation status:
+----------------------------------------------------------------------
+  ppo_updates: 2 rows logged.
+  Late-stage (last 1 updates) means:
+    mean_entropy        = 1.190
+    mean_kl (approx)    = 0.0020
+    clip_fraction       = 0.107
+    explained_variance  = 0.072
+    grad_norm (finite)  = 4.057
+    grad_norm = inf cnt = 0
+    lr                  = 5.00e-05
+    nonfinite_grad_steps= 0
+    skipped_opt_steps   = 0
+    transitions/update  = 2048.0
+    entity_mask_util    = 0.435
+    entity_count_p50    = 12.00
+    entity_count_p99    = 13.00
+    selection_mask_util = 0.322
+  eval_runs: 1 rows logged.
+  latest eval @ ep 50 (n=5, det=True): mean=-3.60, std=4.41

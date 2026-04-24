@@ -1,0 +1,63 @@
+======================================================================
+SNN-PPO Training Instability Report
+======================================================================
+
+Summary:
+  episodes:              4253
+  avg episode length:    126.8
+  avg total reward:      177.39
+  max total reward:      1123.40
+  reward std (full run): 128.66
+  final 100-ep avg:      225.87
+  action semantics:      conditioned_spatial_v1
+  action labels:         0=no-op, 1=move, 2=attack
+
+Plateau detection: ep 1525
+Late-stage CoV (last 200 eps): 0.596
+
+----------------------------------------------------------------------
+Data-driven flags:
+----------------------------------------------------------------------
+  [HIGH] Non-finite gradients detected late: 4 update(s) with non-finite grad_norm, 4 skipped optimizer step(s) in the late-update tail.
+        suggested knob: inspect surrogate gradient stability and reward/value scale
+
+  [MED] Optimizer steps were skipped 4 time(s) in the late-update tail due to invalid gradients.
+        suggested knob: check long-rollout batches and log per-batch failure context
+
+  [HIGH] Late-stage instability: mean CoV over last 200 eps = 0.60 (> 0.5) after plateau at ep 1525.
+        suggested knob: lr: 1e-4 -> 5e-5; epochs: 20 -> 10
+
+  [MED] No-Op dominates: 54.7% of late-training steps are no-op.
+        suggested knob: add step-level penalty; verify reward function
+
+----------------------------------------------------------------------
+Interpretation Notes:
+----------------------------------------------------------------------
+  1. Current code has already fixed two older structural suspects:
+     - state-replay PPO training now uses stored SNN state
+     - entropy bonus is normalized per head instead of favoring move samples
+  2. If you are analyzing a run produced before those fixes landed,
+     older collapse patterns may reflect historical bugs rather than the
+     current trainer.
+
+----------------------------------------------------------------------
+Instrumentation status:
+----------------------------------------------------------------------
+  ppo_updates: 252 rows logged.
+  Late-stage (last 63 updates) means:
+    mean_entropy        = 1.322
+    mean_kl (approx)    = 0.0047
+    clip_fraction       = 0.200
+    explained_variance  = 0.878
+    grad_norm (finite)  = 41.221
+    grad_norm = inf cnt = 4
+    lr                  = 4.93e-05
+    nonfinite_grad_steps= 4
+    skipped_opt_steps   = 4
+    transitions/update  = 2117.7
+    entity_mask_util    = 0.399
+    entity_count_p50    = 10.87
+    entity_count_p99    = 13.27
+    selection_mask_util = 0.315
+  eval_runs: 85 rows logged.
+  latest eval @ ep 4350 (n=5, det=True): mean=0.00, std=0.00

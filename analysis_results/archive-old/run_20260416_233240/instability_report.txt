@@ -1,0 +1,44 @@
+======================================================================
+SNN-PPO Training Instability Report
+======================================================================
+
+Summary:
+  episodes:              2150
+  avg episode length:    165.2
+  avg total reward:      289.83
+  max total reward:      2165.00
+  reward std (full run): 384.98
+  final 100-ep avg:      -21.40
+
+Plateau detection: ep 229
+Late-stage CoV (last 200 eps): 2.490
+
+----------------------------------------------------------------------
+Data-driven flags:
+----------------------------------------------------------------------
+  [HIGH] PPO clip fraction sustained high: 35.64% of samples clipped in last 53 updates.
+        suggested knob: clip_eps: 0.18 -> 0.10; lr: 1e-4 -> 5e-5
+
+  [HIGH] Late-stage instability: mean CoV over last 200 eps = 2.49 (> 0.5) after plateau at ep 229.
+        suggested knob: lr: 1e-4 -> 5e-5; epochs: 20 -> 10
+
+  [MED] Sharp action-mix shift (L1 > 0.3) at bin(s) [43, 1505, 1548] — possible catastrophic forgetting.
+        suggested knob: clip_eps: 0.18 -> 0.10; lower lr
+
+----------------------------------------------------------------------
+Architecture-specific suspects (cannot verify from logs):
+----------------------------------------------------------------------
+  1. Stateful/stateless SNN mismatch. Rollout carries self.snn_state across env steps (PPO_CNN_agent.py:83-85), but training evaluates with state=None (PPO.py:179-181). The PPO importance ratio is built on inconsistent policies; bias grows with episode length.
+  2. Move-head entropy asymmetry. Joint log-prob masking means a move-action sample gets H ~ log(3) + 2*log(84) ~ 9.9, while an attack sample gets H ~ log(3) ~ 1.1. With entropy_coef=0.01 this is a ~10x bias favoring movement, which can suppress commitment to attacks.
+
+----------------------------------------------------------------------
+Instrumentation status:
+----------------------------------------------------------------------
+  ppo_updates: 215 rows logged.
+  Late-stage (last 53 updates) means:
+    mean_entropy        = 0.808
+    mean_kl (approx)    = 0.0236
+    clip_fraction       = 0.356
+    explained_variance  = 0.271
+    grad_norm           = 313.832
+    lr                  = 9.23e-05
