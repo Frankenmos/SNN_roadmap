@@ -1,0 +1,58 @@
+======================================================================
+SNN-PPO Training Instability Report
+======================================================================
+
+Summary:
+  episodes:              2038
+  avg episode length:    154.9
+  avg total reward:      596.11
+  max total reward:      3035.40
+  reward std (full run): 612.26
+  final 100-ep avg:      691.16
+
+Plateau detection: ep 457
+Late-stage CoV (last 200 eps): 0.964
+
+----------------------------------------------------------------------
+Data-driven flags:
+----------------------------------------------------------------------
+  [HIGH] Non-finite gradients detected late: 2 update(s) with non-finite grad_norm, 2 skipped optimizer step(s) in the late-update tail.
+        suggested knob: inspect surrogate gradient stability and reward/value scale
+
+  [MED] Optimizer steps were skipped 2 time(s) in the late-update tail due to invalid gradients.
+        suggested knob: check long-rollout batches and log per-batch failure context
+
+  [HIGH] Late-stage instability: mean CoV over last 200 eps = 0.96 (> 0.5) after plateau at ep 457.
+        suggested knob: lr: 1e-4 -> 5e-5; epochs: 20 -> 10
+
+----------------------------------------------------------------------
+Interpretation Notes:
+----------------------------------------------------------------------
+  1. Current code has already fixed two older structural suspects:
+     - state-replay PPO training now uses stored SNN state
+     - entropy bonus is normalized per head instead of favoring move samples
+  2. If you are analyzing a run produced before those fixes landed,
+     older collapse patterns may reflect historical bugs rather than the
+     current trainer.
+
+----------------------------------------------------------------------
+Instrumentation status:
+----------------------------------------------------------------------
+  ppo_updates: 147 rows logged.
+  Late-stage (last 36 updates) means:
+    mean_entropy        = 0.609
+    mean_kl (approx)    = 0.0018
+    clip_fraction       = 0.048
+    explained_variance  = 0.879
+    grad_norm (finite)  = 351.004
+    grad_norm = inf cnt = 2
+    lr                  = 4.98e-05
+    nonfinite_grad_steps= 2
+    skipped_opt_steps   = 2
+    transitions/update  = 2125.6
+    entity_mask_util    = 0.400
+    entity_count_p50    = 9.44
+    entity_count_p99    = 20.40
+    selection_mask_util = 0.341
+  eval_runs: 40 rows logged.
+  latest eval @ ep 2000 (n=5, det=True): mean=53.00, std=16.61

@@ -62,7 +62,8 @@ Current interpretation:
 
 - reward refactor / rebalance is still urgent
 - the new semantic-action + token-pointer stack now needs env-backed judgment
-  before branching into coarse-to-fine or larger action-space work
+  before training runs with the implemented `coarse_to_fine` spatial head
+  (Phase 3 `heatmap` head and larger action-space work are still deferred)
 
 ## What Is Considered Current
 
@@ -138,8 +139,7 @@ Current interpretation:
 - env-backed validation that keeping `LEFT_CLICK` masked is still the correct
   no-alias choice on the current wrapper
 - dedicated action-history token group replacing the 4-float bridge token in `meta_vec`
-- `coarse_to_fine` as the next spatial-head upgrade once token-pointer is
-  verified live
+- `coarse_to_fine` spatial head (implemented, ready for testing) - see [../SPATIAL_HEADS.md](../SPATIAL_HEADS.md)
 - selection actions and broader learnable action vocabulary beyond the current
   semantic click scaffold
 - tag-pinned entity identity via `raw_units.tag`
@@ -147,6 +147,7 @@ Current interpretation:
 - broader multi-minigame / full-game branch
 - reward-as-neuromodulator experiment inside the policy recurrent state
 - ALIF / adaptive-threshold neuron swap in the policy
+- `heatmap` spatial head (Phase 3)
 
 ## Known Compatibility Note
 
@@ -184,6 +185,10 @@ should also be treated as incompatible:
   logits over pooled spatial tokens
 - PPO rollout memory and replay now carry richer target payload fields
 
+**Note (2026-04-23)**: The `coarse_to_fine` spatial head is now implemented
+and ready for testing. To use it, set `model.spatial_head_type: "coarse_to_fine"`
+in `config.yaml`. See [../SPATIAL_HEADS.md](../SPATIAL_HEADS.md) for details.
+
 ## Explicit Deferrals
 
 These were discussed, but intentionally not landed with the multi-timescale patch:
@@ -203,7 +208,8 @@ Reason:
 2. Env-verify the new semantic action mask and token-pointer clicks on the live wrapper.
 3. Fix the terminal win/loss check in `agent_core/rewards/defeat_roaches_v2.py`.
 4. Regenerate the main `Zero` analysis bundle once the run reaches a stable checkpoint block.
-5. Re-evaluate deterministic vs stochastic behavior under the new semantic click action space before pulling `coarse_to_fine` or Stage-2 action work forward.
+5. Test `coarse_to_fine` spatial head with a short training run (implementation complete, see [../SPATIAL_HEADS.md](../SPATIAL_HEADS.md)).
+6. Re-evaluate deterministic vs stochastic behavior before pulling Stage-2 action work forward.
 
 ## Future Branch Candidates
 

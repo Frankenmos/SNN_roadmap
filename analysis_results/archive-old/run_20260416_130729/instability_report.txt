@@ -1,0 +1,41 @@
+======================================================================
+SNN-PPO Training Instability Report
+======================================================================
+
+Summary:
+  episodes:              3810
+  avg episode length:    170.6
+  avg total reward:      394.10
+  max total reward:      2219.50
+  reward std (full run): 401.77
+  final 100-ep avg:      457.19
+
+Plateau detection: ep 224
+Late-stage CoV (last 200 eps): 0.824
+
+----------------------------------------------------------------------
+Data-driven flags:
+----------------------------------------------------------------------
+  [HIGH] Late-stage instability: mean CoV over last 200 eps = 0.82 (> 0.5) after plateau at ep 224.
+        suggested knob: lr: 1e-4 -> 5e-5; epochs: 20 -> 10
+
+  [MED] Sharp action-mix shift (L1 > 0.3) at bin(s) [76] — possible catastrophic forgetting.
+        suggested knob: clip_eps: 0.18 -> 0.10; lower lr
+
+----------------------------------------------------------------------
+Architecture-specific suspects (cannot verify from logs):
+----------------------------------------------------------------------
+  1. Stateful/stateless SNN mismatch. Rollout carries self.snn_state across env steps (PPO_CNN_agent.py:83-85), but training evaluates with state=None (PPO.py:179-181). The PPO importance ratio is built on inconsistent policies; bias grows with episode length.
+  2. Move-head entropy asymmetry. Joint log-prob masking means a move-action sample gets H ~ log(3) + 2*log(84) ~ 9.9, while an attack sample gets H ~ log(3) ~ 1.1. With entropy_coef=0.01 this is a ~10x bias favoring movement, which can suppress commitment to attacks.
+
+----------------------------------------------------------------------
+Instrumentation status:
+----------------------------------------------------------------------
+  ppo_updates: 380 rows logged.
+  Late-stage (last 95 updates) means:
+    mean_entropy        = 0.302
+    mean_kl (approx)    = 0.0271
+    clip_fraction       = 0.191
+    explained_variance  = 0.885
+    grad_norm           = inf
+    lr                  = 7.76e-05

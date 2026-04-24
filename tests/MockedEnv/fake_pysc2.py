@@ -232,6 +232,10 @@ def build_mock_obs(
     multi_select=None,
     single_select=None,
     last_actions=None,
+    action_result=None,
+    alerts=None,
+    score_cumulative=None,
+    game_loop=None,
 ):
     if friendly_positions is None:
         friendly_positions = [(10, 10)]
@@ -248,6 +252,14 @@ def build_mock_obs(
         single_select = np.zeros((0, 7), dtype=np.int32)
     if last_actions is None:
         last_actions = np.zeros((0,), dtype=np.int32)
+    if action_result is None:
+        action_result = np.zeros((0,), dtype=np.int32)
+    if alerts is None:
+        alerts = np.zeros((0,), dtype=np.int32)
+    if score_cumulative is None:
+        score_cumulative = [0] * 13
+    if game_loop is None:
+        game_loop = [0]
 
     player_relative = np.zeros(
         (spatial_shape[1], spatial_shape[2]), dtype=np.uint8,
@@ -293,7 +305,10 @@ def build_mock_obs(
             single_select=single_select,
             last_actions=last_actions,
             player=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            score_cumulative=[0] * 13,
+            score_cumulative=score_cumulative,
+            action_result=action_result,
+            alerts=alerts,
+            game_loop=game_loop,
             available_actions=set(available_actions),
         ),
         reward=reward,

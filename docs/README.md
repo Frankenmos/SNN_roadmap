@@ -1,12 +1,23 @@
 # Docs Index
 
-Start here when you want repo context without spelunking through old
-plans.
+Start here when you want repo context without spelunking through old plans.
+
+## Quick Reference
+
+- [SPATIAL_HEADS.md](SPATIAL_HEADS.md) - Spatial target head comparison and quick setup
+- [CLAUDE_INSTRUCTIONS.md](CLAUDE_INSTRUCTIONS.md) - Rules and patterns for AI agents working on this repo
+
+## Current Planning
+
+- [current/observation_expansion_plan.md](current/observation_expansion_plan.md) - Plan for adding action feedback (action_result, alerts, score_cumulative)
+- [current/observation_feedback_investigation.md](current/observation_feedback_investigation.md) - Investigation findings about missing observation fields
+- [current/feedback_diagnostics_note.md](current/feedback_diagnostics_note.md) - Observed feedback JSONL shape, timing semantics, and candidate 24-dim meta shape
 
 ## Current
 
 - Active verification state: `Zero` is the live run (analysis not yet complete on final checkpoints).
 
+- [PHASE2_WORKING_LOG.md](PHASE2_WORKING_LOG.md) - Phase 2 (CoarseToFineTargetHead) implementation complete
 - [current/REPO_STATE.md](current/REPO_STATE.md)
   primary source of truth for what the code does today, what is stable,
   and what is still open; now reflects the semantic click action space,
@@ -53,6 +64,9 @@ plans.
 These are worth reading for historical reasoning, but they are no
 longer the current execution plan.
 
+- [archive/spatial_target_migration_spec_BPTT_test.md](archive/spatial_target_migration_spec_BPTT_test.md)
+  full spatial head migration spec (Phase 0-3); Phases 0-2 complete,
+  Phase 3 (heatmap) pending
 - [archive/NEXT_FIXES_PLAN.md](archive/NEXT_FIXES_PLAN.md)
 - [archive/NEXT_FIXES_PLAN_3.md](archive/NEXT_FIXES_PLAN_3.md)
 - [archive/planned_fixes.md](archive/planned_fixes.md)

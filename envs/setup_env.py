@@ -4,6 +4,10 @@ from Utility.available_actions_wrapper import (
     AvailableActionsDiagnosticsWrapper,
     AvailableActionsPrinter,
 )
+from Utility.feedback_diagnostics_wrapper import (
+    LastActionDiagnosticsWrapper,
+    ScoreDiagnosticsWrapper,
+)
 from Utility.observation_inspector_wrapper import ObservationInspectorWrapper
 from Utility.policy_input_diagnostics_wrapper import PolicyInputDiagnosticsWrapper
 
@@ -15,6 +19,12 @@ def create_env(
     use_available_actions_diagnostics=False,
     available_actions_diagnostics_output_path="analysis_results/available_actions_diagnostics.jsonl",
     available_actions_diagnostics_every_n_steps=1,
+    use_last_action_diagnostics=False,
+    last_action_diagnostics_output_path="analysis_results/last_action_diagnostics.jsonl",
+    last_action_diagnostics_every_n_steps=1,
+    use_score_diagnostics=False,
+    score_diagnostics_output_path="analysis_results/score_diagnostics.jsonl",
+    score_diagnostics_every_n_steps=1,
     use_observation_inspector=False,
     observation_inspector_output_path="analysis_results/observation_space.jsonl",
     observation_inspector_every_n_steps=10,
@@ -49,6 +59,18 @@ def create_env(
             env=env,
             output_path=available_actions_diagnostics_output_path,
             log_every_n_steps=available_actions_diagnostics_every_n_steps,
+        )
+    if use_last_action_diagnostics:
+        env = LastActionDiagnosticsWrapper(
+            env=env,
+            output_path=last_action_diagnostics_output_path,
+            log_every_n_steps=last_action_diagnostics_every_n_steps,
+        )
+    if use_score_diagnostics:
+        env = ScoreDiagnosticsWrapper(
+            env=env,
+            output_path=score_diagnostics_output_path,
+            log_every_n_steps=score_diagnostics_every_n_steps,
         )
     if use_observation_inspector:
         env = ObservationInspectorWrapper(
