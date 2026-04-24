@@ -8,6 +8,7 @@ import numpy as np
 from pysc2.env import base_env_wrapper
 
 from agent_core.policy_protocol import (
+    AGENT_LAST_ACTION_DIM,
     AGENT_LAST_ACTION_OFFSET,
     CURATED_FEATURE_UNIT_FIELDS,
     MAX_ENTITY_TOKENS,
@@ -56,6 +57,7 @@ class PolicyInputDiagnosticsWrapper(base_env_wrapper.BaseEnvWrapper):
     def reset(self, *args, **kwargs):
         timesteps = super(PolicyInputDiagnosticsWrapper, self).reset(*args, **kwargs)
         self.step_index = 0
+        self.extractor.reset()
         self._process_timesteps(timesteps, event="reset", should_log=True)
         self.episode_index += 1
         return timesteps
@@ -104,7 +106,8 @@ class PolicyInputDiagnosticsWrapper(base_env_wrapper.BaseEnvWrapper):
             + META_AVAILABLE_ACTION_DIM
         ]
         bridge_token = meta_vec[
-            AGENT_LAST_ACTION_OFFSET : AGENT_LAST_ACTION_OFFSET + 4
+            AGENT_LAST_ACTION_OFFSET : AGENT_LAST_ACTION_OFFSET
+            + AGENT_LAST_ACTION_DIM
         ]
 
         return {

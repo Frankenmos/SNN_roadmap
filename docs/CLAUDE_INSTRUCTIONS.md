@@ -1,6 +1,6 @@
 # Claude Instructions for SNN+SNN-roadmap
 
-**Last Updated:** 2026-04-23
+**Last Updated:** 2026-04-24
 
 ## Quick Rules
 
@@ -38,7 +38,7 @@ SPATIAL_OBS_SHAPE = (27, 84, 84)      # Screen input
 SPATIAL_TOKEN_COUNT = 49               # 7x7 grid
 MAX_ENTITY_TOKENS = 24
 MAX_SELECTION_TOKENS = 20
-META_VECTOR_DIM = 19                   # Current meta vec size
+META_VECTOR_DIM = 24                   # Current meta vec size
 POLICY_ACTION_DIM = 3                  # NO_OP, LEFT_CLICK, RIGHT_CLICK
 ```
 

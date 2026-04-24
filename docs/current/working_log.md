@@ -5,6 +5,16 @@ Compressed current-memory version.
 Verbose pre-compression snapshot:
 `docs/archive/working_log_2026-04-20_pre_compress.md`
 
+## 2026-04-24
+
+- expanded the live meta protocol to `META_VECTOR_DIM = 24`
+- replaced the old 4-field bridge-only slice with a 9-field one-step
+  action-history bridge:
+  attempted action `[type, x_norm, y_norm, extra]` plus executed-action and
+  score-delta feedback
+- kept `peek_observation()` non-mutating for score-history state so PPO
+  bootstrapping can preview next observations without consuming the delta
+
 ## 2026-04-19
 
 - froze the `PolicyInputBatch` protocol and moved the repo onto the hybrid observation path:
