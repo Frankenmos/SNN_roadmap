@@ -16,7 +16,7 @@ What remains live is much less glamorous and much more semantic:
 
 The practical conclusion is:
 
-- **do not treat the old “Solutions_next-fix” set as the current to-do list anymore**
+- **do not treat the old “review_architectural_fixes_2026-04-23 (formerly `Solutions_next-fix`)” set as the current to-do list anymore**
 - **do treat it as a historical architectural review that already shaped the current branch**
 - **the next meaningful fixes are semantic-contract fixes, not another round of spatial-head surgery**
 
@@ -32,7 +32,7 @@ Second, I needed to verify **what is still unresolved in training semantics**, e
 
 Third, I needed to locate **where the single-action bridge is implemented**, because your newer “causal command-history token group” idea depends on exactly how the current 4-float bridge is threaded through the action space, observation extractor, protocol, and meta encoder. fileciteturn53file4L28-L35 fileciteturn53file5L347-L359 fileciteturn53file2L220-L233
 
-Fourth, I needed to verify **whether current code matches your summary of `Solutions_next-fix.md` and `REPO_STATE.md`**. Those two docs were **not** among the local files supplied here, so that mapping has to be treated as an indirect validation from your quoted claims against the code, not as a direct document audit.
+Fourth, I needed to verify **whether current code matches your summary of `review_architectural_fixes_2026-04-23 (formerly `Solutions_next-fix`).md` and `REPO_STATE.md`**. Those two docs were **not** among the local files supplied here, so that mapping has to be treated as an indirect validation from your quoted claims against the code, not as a direct document audit.
 
 Fifth, I needed to ground the recommendations in **primary literature**, especially on spatial-action prediction, positional encoding, structured action arguments, partially observable RL sequence models, and time-limit handling. ([researchgate.net](https://www.researchgate.net/publication/319151530_StarCraft_II_A_New_Challenge_for_Reinforcement_Learning))
 
@@ -341,7 +341,7 @@ If you later add action-history tokens or true finite-horizon time-awareness, ei
 
 If I compress all of this into one current recommendation:
 
-- keep `Solutions_next-fix` as a **historical architectural review**
+- keep `review_architectural_fixes_2026-04-23 (formerly `Solutions_next-fix`)` as a **historical architectural review**
 - annotate it as “landed: spatial posenc / structured click branch / masked critic / update-before-eval”
 - make the **next real engineering pass** about:
   - timeout semantics
@@ -366,7 +366,7 @@ flowchart LR
 
 ## Open questions and limitations
 
-`Solutions_next-fix.md` and `REPO_STATE.md` themselves were **not** among the local files supplied in this conversation, so I could not directly inspect those documents. The mapping above is therefore a comparison between **your quoted claims about those docs** and the actual local code, not a line-by-line document audit.
+`review_architectural_fixes_2026-04-23 (formerly `Solutions_next-fix`).md` and `REPO_STATE.md` themselves were **not** among the local files supplied in this conversation, so I could not directly inspect those documents. The mapping above is therefore a comparison between **your quoted claims about those docs** and the actual local code, not a line-by-line document audit.
 
 The local files supplied here also did **not** include the current test suite files, so the test plan above is a proposed validation plan rather than a patch against existing local tests.
 

@@ -494,7 +494,7 @@ If Phase 3 is numerically unstable:
 
 ## Part 7: Open Questions
 
-1. **Time-cap semantics**: From `help-needed.md`, need to decide if `steps_per_episode` is a real horizon or just truncation. This affects PPO bootstrap logic.
+1. **Time-cap semantics**: From `open_questions.md`, need to decide if `steps_per_episode` is a real horizon or just truncation. This affects PPO bootstrap logic.
 
 2. **LEFT_CLICK masking**: Should it stay masked or gain a real env mapping? This affects action space design.
 
