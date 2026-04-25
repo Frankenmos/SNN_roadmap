@@ -1,95 +1,84 @@
 # Docs Index
 
-Start here when you want repo context without spelunking through old plans.
+**Navigation:** See [INDEX.md](INDEX.md) for a comprehensive, topic-organized index of all documentation.
 
-## Quick Reference
+---
 
-- [SPATIAL_HEADS.md](SPATIAL_HEADS.md) - Spatial target head comparison and quick setup
-- [CLAUDE_INSTRUCTIONS.md](CLAUDE_INSTRUCTIONS.md) - Rules and patterns for AI agents working on this repo
+## Quick Reference (Start Here)
+
+| Document | Purpose |
+| --- | --- |
+| [INDEX.md](INDEX.md) | **Comprehensive navigation index** - all docs organized by topic |
+| [REPO_STATE.md](current/REPO_STATE.md) | Primary source of truth for what the code does today |
+| [SPATIAL_HEADS.md](SPATIAL_HEADS.md) | Spatial target head comparison and quick setup |
+| [CLAUDE_INSTRUCTIONS.md](CLAUDE_INSTRUCTIONS.md) | Rules and patterns for AI agents working on this repo |
 
 ## Current Planning
 
-- [current/observation_expansion_plan.md](current/observation_expansion_plan.md) - Plan for adding action feedback (action_result, alerts, score_cumulative)
-- [current/observation_feedback_investigation.md](current/observation_feedback_investigation.md) - Investigation findings about missing observation fields
-- [current/feedback_diagnostics_note.md](current/feedback_diagnostics_note.md) - Observed feedback JSONL shape, timing semantics, and candidate 24-dim meta shape
-- [current/action_history_bridge_plan.md](current/action_history_bridge_plan.md) - Current 24-dim action-history bridge protocol
+- [action_history_bridge_plan.md](current/action_history_bridge_plan.md) - Current 24-dim action-history bridge protocol
+- [feedback_diagnostics_note.md](current/feedback_diagnostics_note.md) - Feedback JSONL shape and meta layout
 
-## Current
+## Current State
 
-- Active verification state: `Zero` is the live run (analysis not yet complete on final checkpoints).
+- Active verification state: `Zero` is the live run (analysis not yet complete on final checkpoints)
 
-- [PHASE2_WORKING_LOG.md](PHASE2_WORKING_LOG.md) - Phase 2 (CoarseToFineTargetHead) implementation complete
-- [current/REPO_STATE.md](current/REPO_STATE.md)
-  primary source of truth for what the code does today, what is stable,
-  and what is still open; now reflects the semantic click action space,
-  token-pointer target head, masked-critic semantics, and
-  the update-before-eval trainer ordering
-- [current/action_refactor.md](current/action_refactor.md)
-  status note for the landed action-space work; now covers both the old
-  `MOVE/ATTACK` stage and the later simplification to `SMART`, plus what
-  broader action-space work is still deferred
-- [current/THE_BPTT.md](current/THE_BPTT.md)
-  current staged BPTT/TBPTT reasoning; still relevant because the repo
-  now runs Stage-1 TBPTT and we still need to evaluate the verdict; use
-  this for the historical "why TBPTT was needed" context
-- [current/working_log.md](current/working_log.md)
-  compressed implementation log; now includes the rename-boundary
-  cleanup, semantic-action migration, token-pointer target head,
-  masked-critic decision, and the latest future-branch notes
-- [current/help-needed.md](current/help-needed.md)
-  practical handoff note for what still needs user input, env-backed
-  verification, or tooling support after the semantic-action /
-  token-pointer migration
-- [current/BPTT_test_review_report (1).md](<current/BPTT_test_review_report%20(1).md>)
-  independent review focused on the live branch after TBPTT and SMART;
-  especially useful for understanding why the structured spatial click
-  head and positional encoding were worth landing
-- [current/Claude_rapport.md](current/Claude_rapport.md)
-  independent 2026-04-20 review snapshot; still useful for reward/eval
-  reasoning, but no longer the primary source of truth after the
-  2026-04-21 repo-state refresh
-- [current/urgent.md](current/urgent.md)
-  contains the active BPTT review baseline and the naming/continuity repair
-  checklist; still useful for comparing recommendations against current
-  implementation status
+- [REPO_STATE.md](current/REPO_STATE.md) - What the repo does today (semantic click action space, token-pointer target head, masked-critic, update-before-eval)
+- [working_log.md](current/working_log.md) - Compressed implementation history
+- [open_questions.md](current/open_questions.md) - Open questions and items needing user input or tooling support
+- [action_refactor.md](current/action_refactor.md) - Status note for landed action-space work
+
+## Architecture & Training
+
+- [THE_BPTT.md](current/THE_BPTT.md) - BPTT/TBPTT design notes and historical analysis
+- [review_architectural_fixes_2026-04-23.md](archive/review_architectural_fixes_2026-04-23.md) - Review of what's landed vs. still live (archived from current/)
+
+## Reviews & Analysis
+
+- [deep-research-report.md](deep-research-report.md) - Current-state review of local BPTT_test code
+- [feedback_diagnostics_note.md](current/feedback_diagnostics_note.md) - Feedback diagnostics
 
 ## Tooling
 
-- [tooling/INSPECTOR_SNIPPETS.md](tooling/INSPECTOR_SNIPPETS.md)
-  one-shot probes for observation dumps
-- [tooling/TEST_SNIPPETS.md](tooling/TEST_SNIPPETS.md)
-  reusable command snippets around tests and analysis
+- [TEST_SNIPPETS.md](tooling/TEST_SNIPPETS.md) - Reusable command snippets around tests and analysis
+- [INSPECTOR_SNIPPETS.md](tooling/INSPECTOR_SNIPPETS.md) - One-shot probes for observation dumps
 
 ## Archive
 
-These are worth reading for historical reasoning, but they are no
-longer the current execution plan.
+Historical reasoning and specifications. No longer the current execution plan.
 
-- [archive/spatial_target_migration_spec_BPTT_test.md](archive/spatial_target_migration_spec_BPTT_test.md)
-  full spatial head migration spec (Phase 0-3); Phases 0-2 complete,
-  Phase 3 (heatmap) pending
-- [archive/NEXT_FIXES_PLAN.md](archive/NEXT_FIXES_PLAN.md)
-- [archive/NEXT_FIXES_PLAN_3.md](archive/NEXT_FIXES_PLAN_3.md)
-- [archive/planned_fixes.md](archive/planned_fixes.md)
-- [archive/plan.md](archive/plan.md)
-- [archive/working_log_2026-04-20_pre_compress.md](archive/working_log_2026-04-20_pre_compress.md)
-  verbose implementation history before the current log was compressed
-- [archive/observations_2026-04-20/](archive/observations_2026-04-20)
-  archived external action-space discussion and draft files that
-  informed the Stage-1 refactor
+### Key Archived Specs
+- [spatial_target_migration_spec_BPTT_test.md](archive/spatial_target_migration_spec_BPTT_test.md) - Full spatial head migration spec (Phase 0-3)
+- [phase2_spec_2026-04-23.md](archive/phase2_spec_2026-04-23.md) - Coarse-to-fine target head spec (Phase 2 complete)
+- [action_history_bridge_verification_2026-04-24.md](archive/action_history_bridge_verification_2026-04-24.md) - Bridge verification report
+- [action_refactor.md](archive/action_refactor.md) - Action refactor status
 
-## Ideas
+### Implementation Records (Previously "Plans")
+- [phase2_3_implementation_record_2026-04-23.md](archive/phase2_3_implementation_record_2026-04-23.md) - Phase 2/3 implementation with lessons learned
+- [observation_expansion_record_2026-04-24.md](archive/observation_expansion_record_2026-04-24.md) - 24-dim action-history bridge implementation
+- [observation_feedback_investigation_2026-04-23.md](archive/observation_feedback_investigation_2026-04-23.md) - Observation feedback investigation
 
-Speculative or future-branch documents.
+### Fix Plans (Historical)
+- [planned_fixes.md](archive/planned_fixes.md)
+- [fix_plan_archive_2026-04-18.md](archive/fix_plan_archive_2026-04-18.md) (formerly NEXT_FIXES_PLAN.md)
+- [fix_plan_archive_2026-04-19.md](archive/fix_plan_archive_2026-04-19.md) (formerly NEXT_FIXES_PLAN_3.md)
+- [plan.md](archive/plan.md)
+- [bptt_review_checklist.md](archive/bptt_review_checklist.md) (formerly urgent.md) - BPTT review checklist
 
-- [ideas/WHEN_SHIT_GETS_DONE.md](ideas/WHEN_SHIT_GETS_DONE.md)
-- [ideas/RAYPLAN.md](ideas/RAYPLAN.md)
-- [ideas/WHY_YOLO_BAD.md](ideas/WHY_YOLO_BAD.md)
+### Working Logs & Reviews
+- [working_log_2026-04-20_pre_compress.md](archive/working_log_2026-04-20_pre_compress.md) - Verbose implementation history before compression
+- [independent_review_2026-04-20.md](archive/independent_review_2026-04-20.md) (formerly Claude_rapport.md) - Independent 2026-04-20 review snapshot
+- [observations_2026-04-20/](archive/observations_2026-04-20) - Raw conversation transcripts (see README in that directory)
+
+## Ideas (Speculative)
+
+- [WHEN_SHIT_GETS_DONE.md](ideas/WHEN_SHIT_GETS_DONE.md) - Non-neuromorphic branch plan
+- [RAYPLAN.md](ideas/RAYPLAN.md) - Distributed training plan with Ray
+- [WHY_YOLO_BAD.md](ideas/WHY_YOLO_BAD.md) - Analysis of YOLO approach issues
+- [distributed_roadmap.md](ideas/distributed_roadmap.md) - Distributed training roadmap
 
 ## Notes
 
-Side notes and external takes. Potentially insightful, but not a source
-of truth by themselves.
+Side notes and external takes. Potentially insightful, but not a source of truth.
 
-- [notes/Ai_compatible_testing.md](notes/Ai_compatible_testing.md)
-- [notes/Jules_think.md](notes/Jules_think.md)
+- [Jules_think.md](notes/Jules_think.md)
+- [Ai_compatible_testing.md](notes/Ai_compatible_testing.md)

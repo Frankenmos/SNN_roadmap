@@ -7,13 +7,39 @@ Verbose pre-compression snapshot:
 
 ## 2026-04-24
 
-- expanded the live meta protocol to `META_VECTOR_DIM = 24`
-- replaced the old 4-field bridge-only slice with a 9-field one-step
-  action-history bridge:
-  attempted action `[type, x_norm, y_norm, extra]` plus executed-action and
-  score-delta feedback
-- kept `peek_observation()` non-mutating for score-history state so PPO
-  bootstrapping can preview next observations without consuming the delta
+- implemented action-history bridge expansion (commit e964d27)
+- expanded `META_VECTOR_DIM` from 19 to 24
+- added 5 new feedback fields to meta_vec:
+  - `last_any_action_executed`: 1.0 if `obs.last_actions` is non-empty
+  - `last_smart_executed`: 1.0 if `451 in obs.last_actions`
+  - `score_total_delta`: clipped/normalized delta of `score_cumulative[0]`
+  - `killed_value_delta`: clipped/normalized delta of `score_cumulative[5]`
+  - `score_penalty_bit`: 1.0 if score delta is negative
+- implementation in `obs_space/obs_space_2.py`:
+  - `_extract_action_history_vector()` computes the 5 new fields
+  - `_score_delta()` tracks previous score for delta computation
+  - `update_feedback_state` parameter controls state mutation
+  - `peek_observation()` sets `update_feedback_state=False`
+  - `reset()` clears `_previous_score_cumulative`
+- protocol constants in `agent_core/policy_protocol.py`:
+  - `AGENT_ACTION_TOKEN_DIM = 4`
+  - `ACTION_HISTORY_DIM = 5`
+  - `AGENT_LAST_ACTION_DIM = 9`
+  - New offset constants for each action-history field
+- added 4 new tests in `tests/test_observation_extractor.py`:
+  - empty and smart last-action marking
+  - score delta clipping and penalty bits
+  - score reset between episodes
+  - peek doesn't consume score state
+- verification:
+  - all 9 observation extractor tests pass
+  - all 21 policy/agent tests pass
+  - edge cases reviewed (None scores, short arrays, empty actions, reset, peek)
+  - full verification report saved to `docs/archive/action_history_bridge_verification_2026-04-24.md`
+- documentation:
+  - new `docs/current/action_history_bridge_plan.md` documents the 24-dim layout
+  - `config.yaml` updated to `vector_input_dim: 24`
+- checkpoint compatibility: breaking change; old 19-dim checkpoints cannot load
 
 ## 2026-04-19
 
@@ -150,7 +176,7 @@ Verbose pre-compression snapshot:
   so resume behavior does not silently break exact on-policy continuity
 - verified reward version entrypoint still keeps legacy path:
   `RewardFunctionV2` remains available through `agent_core.rewards.__init__`, while `v3` remains current default
-- updated docs index text to mark `docs/current/urgent.md` as an active historical review source rather than an empty scratchpad
+- updated docs index text to mark `docs/archive/bptt_review_checklist.md` (formerly urgent.md) as an active historical review source rather than an empty scratchpad
 
 ## 2026-04-22 (deep research follow-up)
 

@@ -1,6 +1,6 @@
 # Next Fixes — Planning & Reasoning (Part 3)
 
-Follow-up to `NEXT_FIXES_PLAN.md`, written after inspecting
+Follow-up to `fix_plan_archive_2026-04-18.md` (formerly `NEXT_FIXES_PLAN.md`), written after inspecting
 `analysis_results/run_20260418_224920/`. Fixes 1 and 2 landed and the
 run showed a specific failure mode that Fix 3 targets directly.
 

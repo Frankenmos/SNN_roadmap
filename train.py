@@ -1,9 +1,11 @@
 import json
 import logging
 import os
+import shutil
 import time
 from collections import deque
 from multiprocessing import Manager
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -311,6 +313,24 @@ def write_effective_config(agent):
         json.dump(payload, handle, indent=2, sort_keys=True)
 
 
+def save_initial_config():
+    """Save the raw config.yaml content to the run directory at start."""
+    import shutil
+    from pathlib import Path
+
+    # Find and copy the original config.yaml file
+    project_root = Path(__file__).parent
+    config_files = list(project_root.glob("config.yaml")) + list(project_root.glob("config.yml"))
+
+    if config_files:
+        src_config = config_files[0]
+        dst_config = _run_path("config.yaml")
+        shutil.copy2(src_config, dst_config)
+        print(f"Initial config saved to {dst_config}")
+    else:
+        print(f"Warning: config.yaml not found in project root")
+
+
 def run_eval_sweep(env, agent, episodes, steps_per_episode, deterministic=True):
     rewards = []
     was_training = agent.policy.training
@@ -597,6 +617,7 @@ def main(argv):
 
     db_listener = LogListener(log_queue, _run_path(cfg.environment.db_path))
     print(f"Run directory: {_run_dir()}")
+    save_initial_config()
     db_listener.start()
 
     env = None

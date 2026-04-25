@@ -350,7 +350,7 @@ Once the current run gives us data, answer these before Phase 1 starts:
   why we should not change everything at once
 - [RAYPLAN.md](../ideas/RAYPLAN.md):
   distributed actor-learner roadmap
-- [NEXT_FIXES_PLAN.md](NEXT_FIXES_PLAN.md):
+- [fix_plan_archive_2026-04-18.md](fix_plan_archive_2026-04-18.md) (formerly `NEXT_FIXES_PLAN.md`):
   historical reasoning log for earlier PPO/SNN fixes
 - [action_space/action_plan.md](../../action_space/action_plan.md):
   action-space redesign sketch

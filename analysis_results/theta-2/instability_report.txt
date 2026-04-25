@@ -1,0 +1,60 @@
+======================================================================
+SNN-PPO Training Instability Report
+======================================================================
+
+Summary:
+  episodes:              1090
+  avg episode length:    134.3
+  avg total reward:      -87.62
+  max total reward:      0.00
+  reward std (full run): 9.92
+  final 100-ep avg:      -87.37
+  action semantics:      legacy_v0
+  action labels:         0=attack, 1=move, 2=no-op
+
+Plateau detection: none detected
+Late-stage CoV (last 200 eps): 0.150
+
+----------------------------------------------------------------------
+Data-driven flags:
+----------------------------------------------------------------------
+  [HIGH] Non-finite gradients detected late: 2 update(s) with non-finite grad_norm, 2 skipped optimizer step(s) in the late-update tail.
+        suggested knob: inspect surrogate gradient stability and reward/value scale
+
+  [MED] Optimizer steps were skipped 2 time(s) in the late-update tail due to invalid gradients.
+        suggested knob: check long-rollout batches and log per-batch failure context
+
+  [MED] No-Op dominates: 88.1% of late-training steps are no-op.
+        suggested knob: add step-level penalty; verify reward function
+
+----------------------------------------------------------------------
+Interpretation Notes:
+----------------------------------------------------------------------
+  1. Current code has already fixed two older structural suspects:
+     - state-replay PPO training now uses stored SNN state
+     - entropy bonus is normalized per head instead of favoring move samples
+  2. If you are analyzing a run produced before those fixes landed,
+     older collapse patterns may reflect historical bugs rather than the
+     current trainer.
+
+----------------------------------------------------------------------
+Instrumentation status:
+----------------------------------------------------------------------
+  ppo_updates: 70 rows logged.
+  Late-stage (last 17 updates) means:
+    mean_entropy        = 2.068
+    mean_kl (approx)    = 0.0031
+    clip_fraction       = 0.179
+    explained_variance  = 0.502
+    grad_norm (finite)  = 6.612
+    grad_norm = inf cnt = 2
+    lr                  = 5.00e-05
+    nonfinite_grad_steps= 2
+    skipped_opt_steps   = 2
+    transitions/update  = 2048.0
+    entity_mask_util    = 0.465
+    entity_count_p50    = 12.82
+    entity_count_p99    = 13.00
+    selection_mask_util = 0.358
+  eval_runs: 21 rows logged.
+  latest eval @ ep 1050 (n=5, det=True): mean=0.00, std=0.00
