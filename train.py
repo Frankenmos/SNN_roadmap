@@ -12,7 +12,7 @@ import torch
 from absl import app, flags
 
 from agent import DefeatRoaches
-from agent_core.policy_protocol import POLICY_PROTOCOL_VERSION
+from agent_core.policy_protocol import POLICY_INPUT_SCHEMA, POLICY_PROTOCOL_VERSION
 from Utility.config import cfg
 from Utility.logger_utils import LogListener
 from envs.setup_env import create_env
@@ -195,8 +195,10 @@ def save_checkpoint(
         "eval_reward_at_save": eval_reward,
         "episode_rewards": list(episode_rewards),
         "extractor_state": agent.extractor.state_dict(),
+        "global_update_index": int(getattr(agent.ppo, "update_count", 0)),
+        "policy_version": int(getattr(agent.ppo, "update_count", 0)),
         "policy_protocol_version": POLICY_PROTOCOL_VERSION,
-        "policy_input_schema": "stream_action_feedback_v1",
+        "policy_input_schema": POLICY_INPUT_SCHEMA,
     }
 
     temp_path = checkpoint_path + ".tmp"
@@ -271,11 +273,26 @@ def load_checkpoint(agent, checkpoint_path=None):
                     f"current={POLICY_PROTOCOL_VERSION}. "
                     "Start a fresh run for stream action-feedback tokens.",
                 )
+            checkpoint_schema = checkpoint.get("policy_input_schema")
+            if checkpoint_schema != POLICY_INPUT_SCHEMA:
+                raise CheckpointProtocolMismatch(
+                    "Checkpoint policy input schema mismatch: "
+                    f"checkpoint={checkpoint_schema!r}, "
+                    f"current={POLICY_INPUT_SCHEMA!r}. "
+                    "Start a fresh run for stream action-feedback tokens.",
+                )
             agent.policy.load_state_dict(checkpoint["agent_state"])
             agent.ppo.optimizer.load_state_dict(checkpoint["optimizer_state"])
             sched_state = checkpoint.get("scheduler_state")
             if sched_state is not None and agent.ppo.scheduler is not None:
                 agent.ppo.scheduler.load_state_dict(sched_state)
+            agent.ppo.update_count = int(
+                checkpoint.get(
+                    "global_update_index",
+                    checkpoint.get("policy_version", 0),
+                )
+                or 0
+            )
             agent.extractor.load_state_dict(checkpoint.get("extractor_state", {}))
             episode = checkpoint["episode"]
             best_eval_reward = checkpoint.get("best_eval_reward", float("-inf"))
@@ -389,11 +406,17 @@ def maybe_run_policy_update(agent, log_queue, episode_index):
         return None
     stats = agent.update_policy()
     if stats is not None:
+        policy_version = int(
+            stats.get("policy_version", stats.get("global_update_index", 0)) or 0
+        )
         log_queue.put(
             {
                 "type": "UPDATE",
                 "internal_ep": episode_index - 1,
                 "episode_index": episode_index,
+                "policy_version": policy_version,
+                "policy_protocol_version": POLICY_PROTOCOL_VERSION,
+                "policy_input_schema": POLICY_INPUT_SCHEMA,
                 **stats,
             }
         )
@@ -416,6 +439,7 @@ def train_agent(env, agent, observation_extractor, log_queue):
     helper_steps = 0
 
     for episode in range(start_episode, episode_count):
+        policy_version = int(getattr(agent.ppo, "update_count", 0))
         obs = env.reset()[0]
         agent.reset()
         agent.reward_function.calculate_reward(obs, None)
@@ -424,7 +448,14 @@ def train_agent(env, agent, observation_extractor, log_queue):
         cumulative_reward = 0.0
         step_count = 0
 
-        log_queue.put({"type": "EPISODE_START", "internal_ep": episode})
+        log_queue.put(
+            {
+                "type": "EPISODE_START",
+                "internal_ep": episode,
+                "actor_id": 0,
+                "policy_version": policy_version,
+            }
+        )
 
         while True:
             (
@@ -519,6 +550,10 @@ def train_agent(env, agent, observation_extractor, log_queue):
                 {
                     "type": "STEP",
                     "internal_ep": episode,
+                    "actor_id": 0,
+                    "policy_version": int(getattr(agent.ppo, "update_count", 0)),
+                    "policy_protocol_version": POLICY_PROTOCOL_VERSION,
+                    "policy_input_schema": POLICY_INPUT_SCHEMA,
                     "step": step_count,
                     "act": None if action_id is None else int(action_id),
                     "move_x": None if action_id is None else int(move_x),
@@ -534,6 +569,7 @@ def train_agent(env, agent, observation_extractor, log_queue):
                     {
                         "type": "REWARD_COMP",
                         "internal_ep": episode,
+                        "actor_id": 0,
                         "step": step_count,
                         "h_rew": float(reward_info["health_reward"]),
                         "e_rew": float(reward_info["engagement_reward"]),
@@ -581,6 +617,9 @@ def train_agent(env, agent, observation_extractor, log_queue):
                 {
                     "type": "EVAL",
                     "episode_index": episode + 1,
+                    "policy_version": int(getattr(agent.ppo, "update_count", 0)),
+                    "policy_protocol_version": POLICY_PROTOCOL_VERSION,
+                    "policy_input_schema": POLICY_INPUT_SCHEMA,
                     **eval_summary,
                 }
             )

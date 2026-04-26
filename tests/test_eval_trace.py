@@ -7,6 +7,7 @@ from agent_core.policy_protocol import (
     ACTION_FEEDBACK_TOKEN_COUNT,
     ACTION_FEEDBACK_TOKEN_DIM,
     META_VECTOR_DIM,
+    POLICY_INPUT_SCHEMA,
     POLICY_PROTOCOL_VERSION,
     SPATIAL_OBS_SHAPE,
 )
@@ -130,6 +131,7 @@ def test_eval_play_can_write_episode_trace(tmp_path, monkeypatch):
             "extractor_state": {"dummy": 2},
             "episode": 123,
             "policy_protocol_version": POLICY_PROTOCOL_VERSION,
+            "policy_input_schema": POLICY_INPUT_SCHEMA,
         },
     )
     monkeypatch.setattr(eval_mod.cfg.environment, "steps_per_episode", 10, raising=False)

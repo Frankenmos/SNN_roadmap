@@ -9,8 +9,10 @@ def _safe_add_column(conn, table_name, column_sql):
     try:
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
     except sqlite3.OperationalError as exc:
-        if column_name not in str(exc):
-            pass
+        message = str(exc).lower()
+        if "duplicate column name" in message and column_name.lower() in message:
+            return
+        raise
 
 
 def initialize_db(db_path):
@@ -22,6 +24,8 @@ def initialize_db(db_path):
             """
             CREATE TABLE IF NOT EXISTS episodes (
                 episode_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_id INTEGER,
+                policy_version INTEGER,
                 total_reward REAL,
                 average_reward REAL,
                 steps INTEGER,
@@ -38,6 +42,11 @@ def initialize_db(db_path):
                 action INTEGER,
                 move_x INTEGER,
                 move_y INTEGER,
+                actor_id INTEGER,
+                policy_version INTEGER,
+                fragment_id INTEGER,
+                policy_protocol_version INTEGER,
+                policy_input_schema TEXT,
                 reward REAL,
                 cumulative_reward REAL
             )
@@ -65,6 +74,10 @@ def initialize_db(db_path):
                 update_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 episode_id INTEGER,
                 episode_index INTEGER,
+                global_update_index INTEGER,
+                policy_version INTEGER,
+                policy_protocol_version INTEGER,
+                policy_input_schema TEXT,
                 mean_policy_loss REAL,
                 mean_value_loss REAL,
                 mean_entropy REAL,
@@ -107,14 +120,28 @@ def initialize_db(db_path):
                 min_reward REAL,
                 max_reward REAL,
                 deterministic INTEGER,
+                policy_version INTEGER,
+                policy_protocol_version INTEGER,
+                policy_input_schema TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
 
+        _safe_add_column(conn, "episodes", "actor_id INTEGER")
+        _safe_add_column(conn, "episodes", "policy_version INTEGER")
         _safe_add_column(conn, "steps", "move_x INTEGER")
         _safe_add_column(conn, "steps", "move_y INTEGER")
+        _safe_add_column(conn, "steps", "actor_id INTEGER")
+        _safe_add_column(conn, "steps", "policy_version INTEGER")
+        _safe_add_column(conn, "steps", "fragment_id INTEGER")
+        _safe_add_column(conn, "steps", "policy_protocol_version INTEGER")
+        _safe_add_column(conn, "steps", "policy_input_schema TEXT")
         _safe_add_column(conn, "ppo_updates", "episode_index INTEGER")
+        _safe_add_column(conn, "ppo_updates", "global_update_index INTEGER")
+        _safe_add_column(conn, "ppo_updates", "policy_version INTEGER")
+        _safe_add_column(conn, "ppo_updates", "policy_protocol_version INTEGER")
+        _safe_add_column(conn, "ppo_updates", "policy_input_schema TEXT")
         _safe_add_column(conn, "ppo_updates", "nonfinite_grad_steps INTEGER")
         _safe_add_column(conn, "ppo_updates", "skipped_optimizer_steps INTEGER")
         _safe_add_column(conn, "ppo_updates", "transitions_in_update INTEGER")
@@ -134,6 +161,9 @@ def initialize_db(db_path):
         _safe_add_column(conn, "ppo_updates", "tbptt_group_max_steps INTEGER")
         _safe_add_column(conn, "ppo_updates", "tbptt_group_mean_active_chunks REAL")
         _safe_add_column(conn, "ppo_updates", "tbptt_forward_calls INTEGER")
+        _safe_add_column(conn, "eval_runs", "policy_version INTEGER")
+        _safe_add_column(conn, "eval_runs", "policy_protocol_version INTEGER")
+        _safe_add_column(conn, "eval_runs", "policy_input_schema TEXT")
 
     return conn
 
@@ -161,8 +191,10 @@ class LogListener(multiprocessing.Process):
             if buffer_steps:
                 cursor.executemany(
                     "INSERT INTO steps (episode_id, step_number, action, "
-                    "move_x, move_y, reward, cumulative_reward) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "move_x, move_y, actor_id, policy_version, fragment_id, "
+                    "policy_protocol_version, policy_input_schema, reward, "
+                    "cumulative_reward) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     buffer_steps,
                 )
                 buffer_steps = []
@@ -179,6 +211,8 @@ class LogListener(multiprocessing.Process):
             if buffer_updates:
                 cursor.executemany(
                     "INSERT INTO ppo_updates (episode_id, episode_index, "
+                    "global_update_index, policy_version, "
+                    "policy_protocol_version, policy_input_schema, "
                     "mean_policy_loss, mean_value_loss, mean_entropy, mean_kl, "
                     "clip_fraction, explained_variance, grad_norm, lr, "
                     "nonfinite_grad_steps, skipped_optimizer_steps, "
@@ -189,15 +223,17 @@ class LogListener(multiprocessing.Process):
                     "tbptt_chunks, tbptt_chunk_groups, tbptt_window, "
                     "tbptt_group_max_steps, tbptt_group_mean_active_chunks, "
                     "tbptt_forward_calls) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     buffer_updates,
                 )
                 buffer_updates = []
             if buffer_evals:
                 cursor.executemany(
                     "INSERT INTO eval_runs (episode_index, num_episodes, "
-                    "mean_reward, std_reward, min_reward, max_reward, deterministic) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "mean_reward, std_reward, min_reward, max_reward, "
+                    "deterministic, policy_version, policy_protocol_version, "
+                    "policy_input_schema) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     buffer_evals,
                 )
                 buffer_evals = []
@@ -212,7 +248,13 @@ class LogListener(multiprocessing.Process):
 
                 if record["type"] == "EPISODE_START":
                     cursor.execute(
-                        "INSERT INTO episodes (total_reward, average_reward, steps) VALUES (0, 0, 0)"
+                        "INSERT INTO episodes (actor_id, policy_version, "
+                        "total_reward, average_reward, steps) "
+                        "VALUES (?, ?, 0, 0, 0)",
+                        (
+                            record.get("actor_id"),
+                            record.get("policy_version"),
+                        ),
                     )
                     episode_map[record["internal_ep"]] = cursor.lastrowid
 
@@ -240,6 +282,11 @@ class LogListener(multiprocessing.Process):
                                 record["act"],
                                 record.get("move_x"),
                                 record.get("move_y"),
+                                record.get("actor_id"),
+                                record.get("policy_version"),
+                                record.get("fragment_id"),
+                                record.get("policy_protocol_version"),
+                                record.get("policy_input_schema"),
                                 record["rew"],
                                 record["cum_rew"],
                             )
@@ -251,6 +298,10 @@ class LogListener(multiprocessing.Process):
                         (
                             db_id,
                             record.get("episode_index"),
+                            record.get("global_update_index"),
+                            record.get("policy_version"),
+                            record.get("policy_protocol_version"),
+                            record.get("policy_input_schema"),
                             record.get("mean_policy_loss"),
                             record.get("mean_value_loss"),
                             record.get("mean_entropy"),
@@ -308,6 +359,9 @@ class LogListener(multiprocessing.Process):
                             record.get("min_reward"),
                             record.get("max_reward"),
                             int(bool(record.get("deterministic", False))),
+                            record.get("policy_version"),
+                            record.get("policy_protocol_version"),
+                            record.get("policy_input_schema"),
                         )
                     )
 

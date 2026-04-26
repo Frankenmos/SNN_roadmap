@@ -22,8 +22,9 @@ Start here when you want repo context without spelunking through old plans.
 - [open_questions.md](current/open_questions.md) - Open questions and items needing user input
 
 ### Action History & Observation Protocol
-- [action_history_bridge_plan.md](current/action_history_bridge_plan.md) - Current 24-dim action-history bridge protocol
-- [feedback_diagnostics_note.md](current/feedback_diagnostics_note.md) - Observed feedback JSONL shape, timing semantics, and candidate 24-dim meta shape
+- [ACTION_FEEDBACK_PLAN.md](current/ACTION_FEEDBACK_PLAN.md) - Current stream action-feedback token protocol
+- [action_history_bridge_plan.md](current/action_history_bridge_plan.md) - Historical 24-dim action-history bridge protocol
+- [feedback_diagnostics_note.md](current/feedback_diagnostics_note.md) - Observed feedback JSONL shape and timing semantics from the bridge investigation
 
 ### BPTT & Training Architecture
 - [THE_BPTT.md](current/THE_BPTT.md) - BPTT/TBPTT design notes and historical analysis (699 lines)
@@ -68,7 +69,8 @@ Start here when you want repo context without spelunking through old plans.
 
 ### Future Branches
 - [WHEN_SHIT_GETS_DONE.md](ideas/WHEN_SHIT_GETS_DONE.md) - Non-neuromorphic branch plan (587 lines)
-- [RAYPLAN.md](ideas/RAYPLAN.md) - Distributed training plan with Ray (635 lines)
+- [RAYPLAN.md](ideas/RAYPLAN.md) - Distributed training plan with Ray (824 lines)
+- [THROUGHPUT_PLAN.md](ideas/THROUGHPUT_PLAN.md) - Transport and measurement companion to the Ray plan (470 lines)
 - [distributed_roadmap.md](ideas/distributed_roadmap.md) - Distributed training roadmap (75 lines)
 
 ### Analysis & Critique
@@ -104,7 +106,8 @@ Start here when you want repo context without spelunking through old plans.
 - [spatial_target_migration_spec_BPTT_test.md](archive/spatial_target_migration_spec_BPTT_test.md) - Migration spec
 
 ### Action Spaces & Target Heads
-- [action_history_bridge_plan.md](current/action_history_bridge_plan.md) - 24-dim bridge protocol
+- [ACTION_FEEDBACK_PLAN.md](current/ACTION_FEEDBACK_PLAN.md) - Current stream-token action feedback protocol
+- [action_history_bridge_plan.md](current/action_history_bridge_plan.md) - Historical 24-dim bridge protocol
 - [SPATIAL_HEADS.md](SPATIAL_HEADS.md) - Spatial target head reference
 - [action_refactor.md](archive/action_refactor.md) - Action refactor status
 - [phase2_spec_2026-04-23.md](archive/phase2_spec_2026-04-23.md) - Coarse-to-fine spec (Phase 2 complete)
@@ -120,6 +123,7 @@ Start here when you want repo context without spelunking through old plans.
 
 ### Distributed Training (Future)
 - [RAYPLAN.md](ideas/RAYPLAN.md) - Ray distributed plan
+- [THROUGHPUT_PLAN.md](ideas/THROUGHPUT_PLAN.md) - Ray transport and throughput plan
 - [distributed_roadmap.md](ideas/distributed_roadmap.md) - Roadmap
 
 ---
@@ -132,12 +136,13 @@ Start here when you want repo context without spelunking through old plans.
 | spatial_target_migration_spec_BPTT_test.md | 898 | archive/ |
 | review_architectural_fixes_2026-04-23.md | 857 | archive/ |
 | THE_BPTT.md | 699 | current/ |
-| RAYPLAN.md | 635 | ideas/ |
+| RAYPLAN.md | 824 | ideas/ |
 | WHEN_SHIT_GETS_DONE.md | 587 | ideas/ |
 | phase2_spec_2026-04-23.md | 536 | archive/ |
 | phase2_3_implementation_record_2026-04-23.md | 518 | archive/ |
 | independent_review_2026-04-20.md | 493 | archive/ |
 | planned_fixes.md | 473 | archive/ |
+| THROUGHPUT_PLAN.md | 470 | ideas/ |
 | WHY_YOLO_BAD.md | 460 | ideas/ |
 | deep-research-report.md | 372 | docs/ |
 | TEST_SNIPPETS.md | 367 | tooling/ |
@@ -149,4 +154,4 @@ Start here when you want repo context without spelunking through old plans.
 
 ---
 
-**Last Updated:** 2026-04-24
+**Last Updated:** 2026-04-26
