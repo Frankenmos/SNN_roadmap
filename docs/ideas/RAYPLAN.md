@@ -13,6 +13,28 @@ We want the smallest Ray-based distributed trainer that is actually useful:
 
 This is intentionally **not** "rewrite everything into RLlib" and **not** "jump to IMPALA/V-trace immediately". The safest first win is to keep our current PPO semantics and only distribute rollout collection.
 
+## Implementation Status (2026-04-26)
+
+Phase 0a is now landed in the codebase:
+
+- `distributed/protocol.py` defines `TransitionRecord`, `RolloutFragment`,
+  `EpisodeSummary`, `WeightSnapshot`, and `UpdateSummary`.
+- Fragment objects validate `POLICY_PROTOCOL_VERSION = 2` and
+  `policy_input_schema = "stream_action_feedback_v1"`.
+- `RolloutFragment.as_policy_input_batch()` reconstructs the live
+  `PolicyInputBatch` contract, including `action_feedback_tokens [T, 1, 9]`
+  and `meta_vec [T, 15]`.
+- SQLite logging has actor/version/protocol columns for steps, updates,
+  episodes, and eval rows.
+- `_safe_add_column()` now re-raises real schema errors instead of hiding every
+  `sqlite3.OperationalError`.
+- Local checkpoints now save and validate the policy input schema, plus a
+  learner update/policy version counter.
+
+What is **not** done yet: PPO still consumes its local `memory` list directly.
+The next implementation step is to make PPO consume one or more
+`RolloutFragment`s locally and compute GAE per fragment.
+
 ---
 
 ## 1. What are we actually building?
@@ -249,7 +271,7 @@ These are not all catastrophic today, but they become real blockers once Ray ent
 - `train.py` passes `observation_extractor` into `train_agent()` and immediately deletes it. (Bug/smell: this is harmless but tells us the runtime boundary is still muddy.)
 - `train.py` prints `"Starting Async PPO training..."` even though the current trainer is not async. (Bug/smell: naming drift will get more confusing once we add actual distributed async components.)
 - `train.py::main()` currently forces `visualize=False` even though `config.yaml` has `environment.visualize: true`. That may be intentional for training, but distributed mode should make visual/headless runtime choice explicit.
-- `Utility/logger_utils.py::_safe_add_column()` suppresses every `sqlite3.OperationalError`, not just duplicate-column cases. (Bug: real schema migration failures can be hidden.)
+- Fixed 2026-04-26: `Utility/logger_utils.py::_safe_add_column()` now only ignores duplicate-column migrations and re-raises real schema errors.
 - `maybe_run_policy_update()` logs PPO updates after episode close using `internal_ep = episode_index - 1`, while `LogListener` resolves `episode_id` through a map that is deleted on `EPISODE_END`. (Bug: `ppo_updates.episode_id` can end up `NULL`, and that gets harder to reason about once many actors emit updates.)
 - `run_eval_sweep()` reuses the training env object instead of a dedicated eval env. (Bug/risk: acceptable in the single-process loop because the next training episode resets anyway, but not a good pattern for distributed execution.)
 - `train.py` treats `time_cap` as a non-terminal truncation for value bootstrapping, then resets the env at the outer episode loop. Distributed fragments need an explicit reset/truncation mask so BPTT state is reset at episode boundaries while GAE can still bootstrap.
@@ -317,23 +339,29 @@ And recommended dataflow:
    - `WeightSnapshot`
    - `UpdateSummary`
    - protocol/version metadata for `POLICY_PROTOCOL_VERSION` and `policy_input_schema`
+   - **Status:** landed 2026-04-26 in `distributed/protocol.py`
 
 2. Refactor `PPO.update_policy()` to accept either:
    - a list of fragments, or
    - one already-flattened batch plus fragment boundaries
+   - **Status:** next step
 
 3. Move GAE computation to run **per fragment**, not once over one global flat list.
+   - **Status:** next step
 
 4. Stop making `PPO` own the idea of exactly one tail bootstrap.
+   - **Status:** next step
 
 5. Freeze action-feedback inputs at transition creation time:
    - store the exact policy-input tensors used for acting
    - validate `policy_protocol_version` and `policy_input_schema`
    - do not rebuild action-feedback tokens later on the learner
+   - **Status:** schema validation landed; learner fragment consumption still pending
 
 6. Add a local single-process path that still works without Ray:
    - collect one fragment locally
    - feed it through the same fragment-based learner path
+   - **Status:** next step
 
 ### Why this phase matters
 
@@ -515,15 +543,20 @@ Actors should be treated as disposable. If one dies, the learner respawns it and
 - add `fragment_id`
 - add `global_update_index`
 
-### DB schema changes worth planning now
+### DB schema changes landed in Phase 0a
 
 - `steps.actor_id`
 - `steps.policy_version`
+- `steps.fragment_id`
+- `steps.policy_protocol_version`
+- `steps.policy_input_schema`
 - `episodes.actor_id`
+- `episodes.policy_version`
 - `ppo_updates.global_update_index`
 - `ppo_updates.policy_version`
 - `eval_runs.policy_version`
-- optional `steps.policy_input_schema` if policy-input migrations are compared across runs
+- `eval_runs.policy_protocol_version`
+- `eval_runs.policy_input_schema`
 
 ### Why this matters
 

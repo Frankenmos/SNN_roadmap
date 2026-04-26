@@ -7,6 +7,14 @@ The goal is not to optimize before the distributed trainer exists. The
 goal is to keep the first Ray version from accidentally turning every
 SC2 step into a cloud of tiny Python objects and huge surprise copies.
 
+## Status (2026-04-26)
+
+The first transport-prep slice is in place: typed fragment dataclasses,
+policy protocol/schema validation, actor/version/protocol log fields, and
+checkpoint schema validation. The learner still uses the local `PPO.memory`
+list, so the next correctness step is fragment-based PPO/GAE in the
+single-process trainer before adding Ray workers.
+
 ---
 
 ## 1. The Funny Part

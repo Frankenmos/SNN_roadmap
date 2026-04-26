@@ -59,6 +59,7 @@ class PPO:
 
         self.memory = []
         self.final_next = None
+        self.update_count = 0
         self._policy_accepts_action_feedback = (
             "action_feedback_tokens"
             in inspect.signature(policy_net.encode_step_tensors).parameters
@@ -714,6 +715,8 @@ class PPO:
 
         if self.scheduler is not None:
             self.scheduler.step()
+        self.update_count += 1
+        stats["global_update_index"] = int(self.update_count)
 
         self._clear_rollout_cache()
         return losses, stats

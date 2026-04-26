@@ -74,6 +74,7 @@ Historical reasoning and specifications. No longer the current execution plan.
 
 - [WHEN_SHIT_GETS_DONE.md](ideas/WHEN_SHIT_GETS_DONE.md) - Non-neuromorphic branch plan
 - [RAYPLAN.md](ideas/RAYPLAN.md) - Distributed training plan with Ray
+- [THROUGHPUT_PLAN.md](ideas/THROUGHPUT_PLAN.md) - Transport and measurement companion to the Ray plan
 - [WHY_YOLO_BAD.md](ideas/WHY_YOLO_BAD.md) - Analysis of YOLO approach issues
 - [distributed_roadmap.md](ideas/distributed_roadmap.md) - Distributed training roadmap
 

@@ -1,6 +1,8 @@
 import sqlite3
 
-from Utility.logger_utils import LogListener
+import pytest
+
+from Utility.logger_utils import LogListener, _safe_add_column, initialize_db
 
 
 class _StaticQueue:
@@ -20,9 +22,28 @@ def test_log_listener_persists_tbptt_update_metrics(tmp_path):
         [
             {"type": "EPISODE_START", "internal_ep": 0},
             {
+                "type": "STEP",
+                "internal_ep": 0,
+                "step": 1,
+                "act": 2,
+                "move_x": 10,
+                "move_y": 20,
+                "actor_id": 3,
+                "policy_version": 4,
+                "fragment_id": 5,
+                "policy_protocol_version": 2,
+                "policy_input_schema": "stream_action_feedback_v1",
+                "rew": 1.5,
+                "cum_rew": 1.5,
+            },
+            {
                 "type": "UPDATE",
                 "internal_ep": 0,
                 "episode_index": 12,
+                "global_update_index": 2,
+                "policy_version": 4,
+                "policy_protocol_version": 2,
+                "policy_input_schema": "stream_action_feedback_v1",
                 "mean_policy_loss": 0.1,
                 "mean_value_loss": 0.2,
                 "mean_entropy": 0.3,
@@ -59,11 +80,39 @@ def test_log_listener_persists_tbptt_update_metrics(tmp_path):
     listener.run()
 
     conn = sqlite3.connect(db_path)
-    row = conn.execute(
-        "SELECT update_wall_seconds, tbptt_chunks, tbptt_chunk_groups, "
+    update_row = conn.execute(
+        "SELECT global_update_index, policy_version, policy_protocol_version, "
+        "policy_input_schema, update_wall_seconds, tbptt_chunks, tbptt_chunk_groups, "
         "tbptt_window, tbptt_group_max_steps, tbptt_group_mean_active_chunks, "
         "tbptt_forward_calls FROM ppo_updates",
     ).fetchone()
+    step_row = conn.execute(
+        "SELECT actor_id, policy_version, fragment_id, policy_protocol_version, "
+        "policy_input_schema FROM steps",
+    ).fetchone()
     conn.close()
 
-    assert row == (3.5, 8, 16, 32, 4, 2.5, 24)
+    assert update_row == (
+        2,
+        4,
+        2,
+        "stream_action_feedback_v1",
+        3.5,
+        8,
+        16,
+        32,
+        4,
+        2.5,
+        24,
+    )
+    assert step_row == (3, 4, 5, 2, "stream_action_feedback_v1")
+
+
+def test_safe_add_column_does_not_hide_real_schema_errors(tmp_path):
+    db_path = tmp_path / "schema.db"
+    conn = initialize_db(db_path)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            _safe_add_column(conn, "missing_table", "bad INTEGER")
+    finally:
+        conn.close()
