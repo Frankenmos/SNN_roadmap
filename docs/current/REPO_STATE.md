@@ -25,7 +25,8 @@ The current policy input path is:
 - spatial `feature_screen` -> CNN -> pooled spatial tokens
 - `feature_units` -> entity tokens
 - `multi_select` / `single_select` -> selection tokens
-- `meta_vec[24] = player[11] + semantic_available_actions[3] + pysc2_last_action[1] + action_history_bridge[9]`
+- `action_feedback_tokens[1, 9] = previous bridge action + execution/score feedback`
+- `meta_vec[15] = player[11] + semantic_available_actions[3] + pysc2_last_action[1]`
 - token-type embeddings
 - spiking self-attention
 - fast + slow token-temporal SNN pathways, combined into one latent readout

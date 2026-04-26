@@ -2,6 +2,8 @@ import torch
 import pytest
 
 from agent_core.policy_protocol import (
+    ACTION_FEEDBACK_TOKEN_COUNT,
+    ACTION_FEEDBACK_TOKEN_DIM,
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
     META_VECTOR_DIM,
@@ -27,6 +29,11 @@ def _make_batch(
             SELECTION_FEATURE_DIM,
         ),
         selection_mask=torch.ones(batch_size, MAX_SELECTION_TOKENS, dtype=torch.bool),
+        action_feedback_tokens=torch.randn(
+            batch_size,
+            ACTION_FEEDBACK_TOKEN_COUNT,
+            ACTION_FEEDBACK_TOKEN_DIM,
+        ),
         meta_vec=torch.randn(batch_size, meta_dim),
         state_in=(torch.randn(*state_shape), torch.randn(*state_shape)),
     )
@@ -45,6 +52,11 @@ def test_policy_input_batch_accepts_fix3_protocol_shapes():
         MAX_SELECTION_TOKENS,
         SELECTION_FEATURE_DIM,
     )
+    assert tuple(batch.action_feedback_tokens.shape) == (
+        3,
+        ACTION_FEEDBACK_TOKEN_COUNT,
+        ACTION_FEEDBACK_TOKEN_DIM,
+    )
 
 
 def test_policy_input_batch_index_select_slices_all_fields_consistently():
@@ -59,6 +71,10 @@ def test_policy_input_batch_index_select_slices_all_fields_consistently():
     assert subset.state_in is not None
     assert subset.state_in[0].shape[0] == 2
     assert torch.equal(subset.entity_features[0], batch.entity_features[3])
+    assert torch.equal(
+        subset.action_feedback_tokens[1],
+        batch.action_feedback_tokens[1],
+    )
     assert torch.equal(subset.meta_vec[1], batch.meta_vec[1])
 
 
@@ -71,6 +87,7 @@ def test_policy_input_batch_to_and_detach_preserve_mask_protocol():
     assert moved.spatial_obs.dtype == torch.float16
     assert moved.entity_features.dtype == torch.float16
     assert moved.selection_features.dtype == torch.float16
+    assert moved.action_feedback_tokens.dtype == torch.float16
     assert moved.meta_vec.dtype == torch.float16
     assert moved.entity_mask.dtype == torch.bool
     assert moved.selection_mask.dtype == torch.bool
@@ -89,6 +106,11 @@ def test_policy_input_batch_rejects_non_bool_masks():
                 SELECTION_FEATURE_DIM,
             ),
             selection_mask=torch.ones(1, MAX_SELECTION_TOKENS, dtype=torch.bool),
+            action_feedback_tokens=torch.randn(
+                1,
+                ACTION_FEEDBACK_TOKEN_COUNT,
+                ACTION_FEEDBACK_TOKEN_DIM,
+            ),
             meta_vec=torch.randn(1, META_VECTOR_DIM),
         )
 
@@ -108,6 +130,11 @@ def test_policy_input_batch_rejects_rank2_recurrent_state():
                 SELECTION_FEATURE_DIM,
             ),
             selection_mask=torch.ones(1, MAX_SELECTION_TOKENS, dtype=torch.bool),
+            action_feedback_tokens=torch.randn(
+                1,
+                ACTION_FEEDBACK_TOKEN_COUNT,
+                ACTION_FEEDBACK_TOKEN_DIM,
+            ),
             meta_vec=torch.randn(1, META_VECTOR_DIM),
             state_in=(
                 torch.randn(1, 64),

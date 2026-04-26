@@ -11,9 +11,20 @@ SPATIAL_TOKEN_COUNT: Final[int] = 49
 MAX_ENTITY_TOKENS: Final[int] = 24
 MAX_SELECTION_TOKENS: Final[int] = 20
 SELECTION_FEATURE_DIM: Final[int] = 7
-TOKEN_TYPE_GROUPS: Final[int] = 4
+TOKEN_TYPE_SPATIAL: Final[int] = 0
+TOKEN_TYPE_ENTITY: Final[int] = 1
+TOKEN_TYPE_SELECTION: Final[int] = 2
+TOKEN_TYPE_ACTION_FEEDBACK: Final[int] = 3
+TOKEN_TYPE_META: Final[int] = 4
+TOKEN_TYPE_GROUPS: Final[int] = 5
+ACTION_FEEDBACK_TOKEN_COUNT: Final[int] = 1
+ACTION_FEEDBACK_TOKEN_DIM: Final[int] = 9
 TOTAL_TOKEN_COUNT: Final[int] = (
-    SPATIAL_TOKEN_COUNT + MAX_ENTITY_TOKENS + MAX_SELECTION_TOKENS + 1
+    SPATIAL_TOKEN_COUNT
+    + MAX_ENTITY_TOKENS
+    + MAX_SELECTION_TOKENS
+    + ACTION_FEEDBACK_TOKEN_COUNT
+    + 1
 )
 
 CURATED_FEATURE_UNIT_FIELDS: Final[tuple[str, ...]] = (
@@ -91,9 +102,22 @@ LAST_SMART_EXECUTED_OFFSET: Final[int] = ACTION_HISTORY_OFFSET + 1
 SCORE_TOTAL_DELTA_OFFSET: Final[int] = ACTION_HISTORY_OFFSET + 2
 KILLED_VALUE_DELTA_OFFSET: Final[int] = ACTION_HISTORY_OFFSET + 3
 SCORE_PENALTY_BIT_OFFSET: Final[int] = ACTION_HISTORY_OFFSET + 4
-META_VECTOR_DIM: Final[int] = AGENT_LAST_ACTION_OFFSET + AGENT_LAST_ACTION_DIM
+META_VECTOR_DIM: Final[int] = (
+    META_LAST_ACTION_INDEX_OFFSET + META_LAST_ACTION_INDEX_DIM
+)
+POLICY_PROTOCOL_VERSION: Final[int] = 2
 NO_ACTION_SENTINEL_INDEX: Final[int] = 0
 UNKNOWN_LAST_ACTION_INDEX: Final[int] = RAW_AVAILABLE_ACTION_DIM + 1
+
+ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET: Final[int] = 0
+ACTION_FEEDBACK_X_NORM_OFFSET: Final[int] = 1
+ACTION_FEEDBACK_Y_NORM_OFFSET: Final[int] = 2
+ACTION_FEEDBACK_EXECUTED_SMART_OFFSET: Final[int] = 3
+ACTION_FEEDBACK_ANY_EXECUTED_OFFSET: Final[int] = 4
+ACTION_FEEDBACK_SCORE_DELTA_OFFSET: Final[int] = 5
+ACTION_FEEDBACK_KILL_DELTA_OFFSET: Final[int] = 6
+ACTION_FEEDBACK_PENALTY_BIT_OFFSET: Final[int] = 7
+ACTION_FEEDBACK_RESERVED_OFFSET: Final[int] = 8
 
 POLICY_ACTION_NO_OP: Final[int] = 0
 POLICY_ACTION_LEFT_CLICK: Final[int] = 1
@@ -164,6 +188,7 @@ class PolicyInputBatch:
       entity_mask:        [B, 24]
       selection_features: [B, 20, 7]
       selection_mask:     [B, 20]
+      action_feedback_tokens: [B, 1, 9]
       meta_vec:           [B, F_meta]
       state_in:           optional SNN state tuple
     """
@@ -175,8 +200,24 @@ class PolicyInputBatch:
     selection_mask: torch.Tensor
     meta_vec: torch.Tensor
     state_in: SNNState | None = None
+    action_feedback_tokens: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
+        if self.action_feedback_tokens is None:
+            dtype = (
+                self.spatial_obs.dtype
+                if self.spatial_obs.is_floating_point()
+                else torch.float32
+            )
+            self.action_feedback_tokens = torch.zeros(
+                (
+                    int(self.spatial_obs.shape[0]),
+                    ACTION_FEEDBACK_TOKEN_COUNT,
+                    ACTION_FEEDBACK_TOKEN_DIM,
+                ),
+                dtype=dtype,
+                device=self.spatial_obs.device,
+            )
         self._validate()
 
     @property
@@ -219,6 +260,7 @@ class PolicyInputBatch:
             selection_features=self.selection_features.to(**float_kwargs),
             selection_mask=self.selection_mask.to(**mask_kwargs),
             meta_vec=self.meta_vec.to(**float_kwargs),
+            action_feedback_tokens=self.action_feedback_tokens.to(**float_kwargs),
             state_in=moved_state,
         )
 
@@ -235,6 +277,7 @@ class PolicyInputBatch:
             selection_features=self.selection_features.detach(),
             selection_mask=self.selection_mask.detach(),
             meta_vec=self.meta_vec.detach(),
+            action_feedback_tokens=self.action_feedback_tokens.detach(),
             state_in=detached_state,
         )
 
@@ -246,6 +289,7 @@ class PolicyInputBatch:
             selection_features=self.selection_features,
             selection_mask=self.selection_mask,
             meta_vec=self.meta_vec,
+            action_feedback_tokens=self.action_feedback_tokens,
             state_in=state_in,
         )
 
@@ -277,6 +321,10 @@ class PolicyInputBatch:
                 [batch.selection_mask for batch in batches], dim=0,
             ),
             meta_vec=torch.cat([batch.meta_vec for batch in batches], dim=0),
+            action_feedback_tokens=torch.cat(
+                [batch.action_feedback_tokens for batch in batches],
+                dim=0,
+            ),
             state_in=state_in,
         )
 
@@ -312,6 +360,7 @@ class PolicyInputBatch:
             selection_features=self.selection_features.index_select(0, index),
             selection_mask=self.selection_mask.index_select(0, index),
             meta_vec=self.meta_vec.index_select(0, index),
+            action_feedback_tokens=self.action_feedback_tokens.index_select(0, index),
             state_in=sliced_state,
         )
 
@@ -345,6 +394,12 @@ class PolicyInputBatch:
             expected_shape=(self.batch_size, MAX_SELECTION_TOKENS),
         )
         self._validate_float_tensor(
+            "action_feedback_tokens",
+            self.action_feedback_tokens,
+            expected_ndim=3,
+            expected_tail=(ACTION_FEEDBACK_TOKEN_COUNT, ACTION_FEEDBACK_TOKEN_DIM),
+        )
+        self._validate_float_tensor(
             "meta_vec",
             self.meta_vec,
             expected_ndim=2,
@@ -357,6 +412,7 @@ class PolicyInputBatch:
             ("entity_mask", self.entity_mask),
             ("selection_features", self.selection_features),
             ("selection_mask", self.selection_mask),
+            ("action_feedback_tokens", self.action_feedback_tokens),
             ("meta_vec", self.meta_vec),
         ):
             if int(tensor.shape[0]) != expected_batch:

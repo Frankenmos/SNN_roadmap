@@ -5,8 +5,8 @@ import snntorch as snn
 from snntorch import surrogate
 
 from agent_core.policy_protocol import (
-    AGENT_LAST_ACTION_OFFSET,
-    AGENT_LAST_ACTION_DIM,
+    ACTION_FEEDBACK_TOKEN_COUNT,
+    ACTION_FEEDBACK_TOKEN_DIM,
     BRIDGE_ACTION_VOCAB_SIZE,
     CURATED_FEATURE_UNIT_FIELDS,
     MAX_ENTITY_TOKENS,
@@ -20,7 +20,12 @@ from agent_core.policy_protocol import (
     POLICY_ACTION_NO_OP,
     SELECTION_FEATURE_DIM,
     SELECTION_UNIT_TYPE_INDEX,
+    TOKEN_TYPE_ACTION_FEEDBACK,
+    TOKEN_TYPE_ENTITY,
     TOKEN_TYPE_GROUPS,
+    TOKEN_TYPE_META,
+    TOKEN_TYPE_SELECTION,
+    TOKEN_TYPE_SPATIAL,
     UNKNOWN_LAST_ACTION_INDEX,
     UNIT_TYPE_FEATURE_INDEX,
 )
@@ -163,6 +168,7 @@ class MetaEncoder(nn.Module):
         bridge_action_vocab_size: int = BRIDGE_ACTION_VOCAB_SIZE,
     ):
         super().__init__()
+        del bridge_action_embed_dim, bridge_action_vocab_size
         if meta_input_dim <= 0:
             raise ValueError("meta_input_dim must be positive")
 
@@ -171,29 +177,16 @@ class MetaEncoder(nn.Module):
         self.player_dim = int(player_dim)
         self.available_action_dim = int(available_action_dim)
         self.last_action_offset = int(META_LAST_ACTION_INDEX_OFFSET)
-        self.agent_last_action_offset = int(AGENT_LAST_ACTION_OFFSET)
-        self.agent_last_action_dim = int(AGENT_LAST_ACTION_DIM)
         self.use_structured_meta = self.meta_input_dim >= (
             self.player_dim + self.available_action_dim + META_LAST_ACTION_INDEX_DIM
         )
-        self.use_agent_last_action = (
-            self.meta_input_dim >= self.agent_last_action_offset + self.agent_last_action_dim
-        )
         self.last_action_embed_dim = int(
             last_action_embed_dim or max(8, self.embed_dim // 4),
-        )
-        self.bridge_action_embed_dim = int(
-            bridge_action_embed_dim or max(4, self.embed_dim // 8),
         )
         fused_input_dim = (
             self.player_dim
             + self.available_action_dim
             + self.last_action_embed_dim
-            + (
-                self.bridge_action_embed_dim + (self.agent_last_action_dim - 1)
-                if self.use_agent_last_action
-                else 0
-            )
             if self.use_structured_meta
             else self.meta_input_dim
         )
@@ -201,10 +194,6 @@ class MetaEncoder(nn.Module):
         self.last_action_embedding = nn.Embedding(
             int(last_action_vocab_size),
             self.last_action_embed_dim,
-        )
-        self.bridge_action_embedding = nn.Embedding(
-            int(bridge_action_vocab_size),
-            self.bridge_action_embed_dim,
         )
         self.pre_norm = nn.LayerNorm(fused_input_dim)
         self.mlp = nn.Sequential(
@@ -227,18 +216,6 @@ class MetaEncoder(nn.Module):
             )
             last_action_emb = self.last_action_embedding(last_action_ids)
             fused_parts = [player, available_actions, last_action_emb]
-            if self.use_agent_last_action:
-                agent_token = meta_vec[
-                    ...,
-                    self.agent_last_action_offset : self.agent_last_action_offset
-                    + self.agent_last_action_dim
-                ]
-                agent_type_ids = agent_token[..., 0].round().long().clamp(
-                    0, self.bridge_action_embedding.num_embeddings - 1,
-                )
-                agent_type_emb = self.bridge_action_embedding(agent_type_ids)
-                fused_parts.append(agent_type_emb)
-                fused_parts.append(agent_token[..., 1:])
             fused = torch.cat(fused_parts, dim=-1)
         else:
             fused = meta_vec
@@ -409,9 +386,17 @@ class PolicyNetwork(nn.Module):
         self._entity_end = self._entity_start + MAX_ENTITY_TOKENS
         self._selection_start = self._entity_end
         self._selection_end = self._selection_start + MAX_SELECTION_TOKENS
-        self._meta_start = self._selection_end
+        self._action_feedback_start = self._selection_end
+        self._action_feedback_end = (
+            self._action_feedback_start + ACTION_FEEDBACK_TOKEN_COUNT
+        )
+        self._meta_start = self._action_feedback_end
         self._num_tokens = (
-            self._spatial_tokens + MAX_ENTITY_TOKENS + MAX_SELECTION_TOKENS + 1
+            self._spatial_tokens
+            + MAX_ENTITY_TOKENS
+            + MAX_SELECTION_TOKENS
+            + ACTION_FEEDBACK_TOKEN_COUNT
+            + 1
         )
         self._carry_entity_state = False
         self._carry_selection_state = False
@@ -466,6 +451,8 @@ class PolicyNetwork(nn.Module):
             "local_grid_size": int(self._local_grid_size),
             "target_decode_mode": self._target_decode_mode,
             "meta_input_dim": self._meta_input_dim,
+            "action_feedback_token_count": int(ACTION_FEEDBACK_TOKEN_COUNT),
+            "action_feedback_token_dim": int(ACTION_FEEDBACK_TOKEN_DIM),
             "carry_entity_state": bool(self._carry_entity_state),
             "carry_selection_state": bool(self._carry_selection_state),
             "action_dim": int(action_dim),
@@ -514,6 +501,12 @@ class PolicyNetwork(nn.Module):
         self.meta_encoder = MetaEncoder(
             meta_input_dim=self._meta_input_dim,
             embed_dim=self._embed_dim,
+        )
+        self.action_feedback_encoder = nn.Sequential(
+            nn.LayerNorm(ACTION_FEEDBACK_TOKEN_DIM),
+            nn.Linear(ACTION_FEEDBACK_TOKEN_DIM, self._embed_dim),
+            nn.ReLU(),
+            nn.Linear(self._embed_dim, self._embed_dim),
         )
         self.token_type_embedding = nn.Embedding(
             TOKEN_TYPE_GROUPS,
@@ -724,6 +717,7 @@ class PolicyNetwork(nn.Module):
             (0, self._spatial_tokens),
             (self._entity_start, self._entity_end),
             (self._selection_start, self._selection_end),
+            (self._action_feedback_start, self._action_feedback_end),
             (self._meta_start, self._meta_start + 1),
         )
         summaries = []
@@ -755,6 +749,7 @@ class PolicyNetwork(nn.Module):
         selection_mask: torch.Tensor,
         meta_vec: torch.Tensor,
         state_in: tuple[torch.Tensor, torch.Tensor] | None = None,
+        action_feedback_tokens: torch.Tensor | None = None,
     ):
         spatial_input = spatial_obs
         syn_tok, mem_tok = self._coerce_temporal_state(
@@ -790,15 +785,58 @@ class PolicyNetwork(nn.Module):
             selection_features,
             selection_mask,
         )
+        if action_feedback_tokens is None:
+            action_feedback_tokens = torch.zeros(
+                batch_size,
+                ACTION_FEEDBACK_TOKEN_COUNT,
+                ACTION_FEEDBACK_TOKEN_DIM,
+                dtype=spatial_tokens.dtype,
+                device=device,
+            )
+        else:
+            action_feedback_tokens = action_feedback_tokens.to(
+                dtype=spatial_tokens.dtype,
+                device=device,
+            )
+        action_feedback_tokens = self.action_feedback_encoder(
+            action_feedback_tokens,
+        )
+        action_feedback_mask = torch.ones(
+            batch_size,
+            ACTION_FEEDBACK_TOKEN_COUNT,
+            dtype=torch.bool,
+            device=device,
+        )
         meta_tokens = self.meta_encoder(meta_vec)
         meta_mask = torch.ones(batch_size, 1, dtype=torch.bool, device=device)
 
         tokens = torch.cat(
             (
-                self._add_token_type(spatial_tokens, 0, spatial_mask),
-                self._add_token_type(entity_tokens, 1, entity_mask),
-                self._add_token_type(selection_tokens, 2, selection_mask),
-                self._add_token_type(meta_tokens, 3, meta_mask),
+                self._add_token_type(
+                    spatial_tokens,
+                    TOKEN_TYPE_SPATIAL,
+                    spatial_mask,
+                ),
+                self._add_token_type(
+                    entity_tokens,
+                    TOKEN_TYPE_ENTITY,
+                    entity_mask,
+                ),
+                self._add_token_type(
+                    selection_tokens,
+                    TOKEN_TYPE_SELECTION,
+                    selection_mask,
+                ),
+                self._add_token_type(
+                    action_feedback_tokens,
+                    TOKEN_TYPE_ACTION_FEEDBACK,
+                    action_feedback_mask,
+                ),
+                self._add_token_type(
+                    meta_tokens,
+                    TOKEN_TYPE_META,
+                    meta_mask,
+                ),
             ),
             dim=1,
         )
@@ -807,6 +845,7 @@ class PolicyNetwork(nn.Module):
                 spatial_mask,
                 entity_mask,
                 selection_mask,
+                action_feedback_mask,
                 meta_mask,
             ),
             dim=1,
@@ -951,6 +990,7 @@ class PolicyNetwork(nn.Module):
         meta_vec: torch.Tensor,
         state_in: tuple[torch.Tensor, torch.Tensor] | None,
         action_ids: torch.Tensor | None = None,
+        action_feedback_tokens: torch.Tensor | None = None,
     ):
         latent, state_value, next_state, spatial_context = self.encode_step_tensors(
             spatial_obs=spatial_obs,
@@ -958,6 +998,7 @@ class PolicyNetwork(nn.Module):
             entity_mask=entity_mask,
             selection_features=selection_features,
             selection_mask=selection_mask,
+            action_feedback_tokens=action_feedback_tokens,
             meta_vec=meta_vec,
             state_in=state_in,
         )
@@ -982,6 +1023,7 @@ class PolicyNetwork(nn.Module):
             entity_mask=batch.entity_mask,
             selection_features=batch.selection_features,
             selection_mask=batch.selection_mask,
+            action_feedback_tokens=batch.action_feedback_tokens,
             meta_vec=batch.meta_vec,
             state_in=batch.state_in,
             action_ids=action_ids,

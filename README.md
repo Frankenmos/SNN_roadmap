@@ -92,7 +92,6 @@ python results.py --run-name <your_run_name> --report
 To also export the high-signal panels as separate PNGs for easy sharing
 back into text-only workflows:
 
-<<<<<<< ours
 ```bash
 python results.py --run-name <your_run_name> --report --aismart
 ```
@@ -103,7 +102,6 @@ This writes the usual files under `analysis_results/<run_name>/`, including:
 - `win_rate.png`
 - `training_metrics.csv`
 - `instability_report.txt`
-=======
 Install the Python dependencies before running training scripts or tests:
 
 ```bash
@@ -111,7 +109,6 @@ pip install -r requirements.txt
 ```
 
 This covers the core stack (`numpy`, `torch`), PySC2 tooling (`pysc2`, `absl-py`), and utilities used by the helpers (`pyyaml`, `matplotlib`).
->>>>>>> theirs
 
 When `--aismart` is enabled it also writes:
 - `analysis_results/<run_name>/ai_friendly_results/`

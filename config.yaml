@@ -67,7 +67,7 @@ environment:
 
 model:
   spatial_input_shape: [27, 84, 84]
-  vector_input_dim: 24
+  vector_input_dim: 15
   action_dim: 3
   screen_size: 84
   num_steps: 1

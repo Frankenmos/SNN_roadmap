@@ -38,7 +38,8 @@ SPATIAL_OBS_SHAPE = (27, 84, 84)      # Screen input
 SPATIAL_TOKEN_COUNT = 49               # 7x7 grid
 MAX_ENTITY_TOKENS = 24
 MAX_SELECTION_TOKENS = 20
-META_VECTOR_DIM = 24                   # Current meta vec size
+ACTION_FEEDBACK_TOKEN_DIM = 9          # Stream feedback token size
+META_VECTOR_DIM = 15                   # Current stable meta vec size
 POLICY_ACTION_DIM = 3                  # NO_OP, LEFT_CLICK, RIGHT_CLICK
 ```
 

@@ -16,7 +16,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from agent_core.policy_protocol import PolicyInputBatch
+from agent_core.policy_protocol import (
+    ACTION_FEEDBACK_TOKEN_COUNT,
+    ACTION_FEEDBACK_TOKEN_DIM,
+    PolicyInputBatch,
+)
 
 
 logging.basicConfig(level=logging.INFO)
@@ -500,6 +504,10 @@ class EvalTraceAnalyzer:
             entity_mask=policy_input["entity_mask"].unsqueeze(0),
             selection_features=policy_input["selection_features"].unsqueeze(0).float(),
             selection_mask=policy_input["selection_mask"].unsqueeze(0),
+            action_feedback_tokens=policy_input.get(
+                "action_feedback_tokens",
+                torch.zeros(ACTION_FEEDBACK_TOKEN_COUNT, ACTION_FEEDBACK_TOKEN_DIM),
+            ).unsqueeze(0).float(),
             meta_vec=policy_input["meta_vec"].unsqueeze(0).float(),
             state_in=None,
         )
@@ -534,6 +542,7 @@ class EvalTraceAnalyzer:
                     entity_mask=batch.entity_mask,
                     selection_features=batch.selection_features,
                     selection_mask=batch.selection_mask,
+                    action_feedback_tokens=batch.action_feedback_tokens,
                     meta_vec=batch.meta_vec,
                     state_in=None,
                 )

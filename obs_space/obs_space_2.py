@@ -26,11 +26,8 @@ from pysc2.lib import features  # noqa: E402,F401  (kept for downstream consumer
 import torch  # noqa: E402
 
 from agent_core.policy_protocol import (
-    AGENT_ACTION_TOKEN_DIM,
-    AGENT_LAST_ACTION_OFFSET,
-    BRIDGE_ACTION_LEFT_CLICK,
-    BRIDGE_ACTION_NO_OP,
-    BRIDGE_ACTION_RIGHT_CLICK,
+    ACTION_FEEDBACK_TOKEN_COUNT,
+    ACTION_FEEDBACK_TOKEN_DIM,
     CURATED_FEATURE_UNIT_FIELDS,
     DEFEAT_ROACHES_ACTION_IDS,
     MAX_ENTITY_TOKENS,
@@ -49,6 +46,7 @@ from agent_core.policy_protocol import (
     SPATIAL_OBS_SHAPE,
     UNKNOWN_LAST_ACTION_INDEX,
 )
+from obs_space.action_feedback_encoder import ActionFeedbackEncoder
 
 _PLAYER_FRIENDLY = 1
 _SCORE_CUMULATIVE_DIM = 13
@@ -226,6 +224,9 @@ class ObservationExtractor:
             ),
         )
         self._previous_score_cumulative = None
+        self.feedback_encoder = ActionFeedbackEncoder(
+            screen_size=SPATIAL_OBS_SHAPE[-1],
+        )
 
     def extract_observation(
         self,
@@ -268,11 +269,29 @@ class ObservationExtractor:
             max_rows=MAX_SELECTION_TOKENS,
             width=len(SELECTION_FEATURE_NAMES),
         )
+        last_action_ids = self._as_int_list(
+            getattr(obs.observation, "last_actions", None),
+        )
+        score_delta = self._score_delta(obs)
         meta_vec = self._extract_meta_vector(
             obs,
-            last_action_token=last_action_token,
-            update_feedback_state=update_feedback_state,
+            last_action_ids=last_action_ids,
         )
+        action_feedback = self.feedback_encoder.encode_feedback(
+            last_action_token=last_action_token,
+            last_action_ids=last_action_ids,
+            score_delta=score_delta,
+        )
+        action_feedback_tokens = torch.as_tensor(
+            action_feedback.reshape(
+                ACTION_FEEDBACK_TOKEN_COUNT,
+                ACTION_FEEDBACK_TOKEN_DIM,
+            ),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        if update_feedback_state:
+            self._previous_score_cumulative = self._extract_score_cumulative(obs)
 
         return PolicyInputBatch(
             spatial_obs=spatial_obs,
@@ -280,6 +299,7 @@ class ObservationExtractor:
             entity_mask=entity_mask.unsqueeze(0),
             selection_features=selection_features.unsqueeze(0),
             selection_mask=selection_mask.unsqueeze(0),
+            action_feedback_tokens=action_feedback_tokens.unsqueeze(0),
             meta_vec=meta_vec.unsqueeze(0),
         )
 
@@ -325,8 +345,7 @@ class ObservationExtractor:
     def _extract_meta_vector(
         self,
         obs,
-        last_action_token=None,
-        update_feedback_state=True,
+        last_action_ids,
     ):
         player = getattr(obs.observation, "player", None)
         if player is None:
@@ -355,9 +374,6 @@ class ObservationExtractor:
             SMART_SCREEN_FUNCTION_ID in available_set,
         )
 
-        last_action_ids = self._as_int_list(
-            getattr(obs.observation, "last_actions", None),
-        )
         if not last_action_ids:
             last_action_index = float(NO_ACTION_SENTINEL_INDEX)
         else:
@@ -366,75 +382,17 @@ class ObservationExtractor:
                 _LAST_ACTION_TO_INDEX.get(raw_last_action, UNKNOWN_LAST_ACTION_INDEX),
             )
 
-        agent_last = self._normalize_last_action_token(last_action_token)
-        action_history = self._extract_action_history_vector(
-            obs,
-            last_action_ids=last_action_ids,
-            update_feedback_state=update_feedback_state,
-        )
         full = np.concatenate(
             (
                 player_vec,
                 available_mask,
                 np.asarray([last_action_index], dtype=np.float32),
-                agent_last,
-                action_history,
             ),
         )
         return torch.as_tensor(
             full,
             dtype=torch.float32,
             device=self.device,
-        )
-
-    def _normalize_last_action_token(self, token):
-        if token is None:
-            token = np.asarray(
-                [BRIDGE_ACTION_NO_OP, 0, 0, 0],
-                dtype=np.float32,
-            )
-        else:
-            token = np.asarray(token, dtype=np.float32).reshape(-1)
-        if token.size < AGENT_ACTION_TOKEN_DIM:
-            token = np.pad(
-                token,
-                (0, AGENT_ACTION_TOKEN_DIM - token.size),
-                mode="constant",
-            )
-        else:
-            token = token[:AGENT_ACTION_TOKEN_DIM]
-
-        max_coord = float(SPATIAL_OBS_SHAPE[-1] - 1)
-        out = token.astype(np.float32, copy=True)
-        out[0] = float(max(0.0, out[0]))
-        out[1] = float(np.clip(out[1], 0.0, max_coord) / max_coord)
-        out[2] = float(np.clip(out[2], 0.0, max_coord) / max_coord)
-        out[3] = float(out[3])
-        return out
-
-    def _extract_action_history_vector(
-        self,
-        obs,
-        last_action_ids,
-        update_feedback_state=True,
-    ):
-        raw_score_delta = self._score_delta(obs)
-        if update_feedback_state:
-            self._previous_score_cumulative = self._extract_score_cumulative(obs)
-
-        score_total_delta = float(np.clip(raw_score_delta[0], -10.0, 10.0) / 10.0)
-        killed_value_delta = float(np.clip(raw_score_delta[5], 0.0, 100.0) / 100.0)
-        score_penalty_bit = 1.0 if float(raw_score_delta[0]) < 0.0 else 0.0
-
-        return np.asarray(
-            [
-                1.0 if last_action_ids else 0.0,
-                1.0 if SMART_SCREEN_FUNCTION_ID in set(last_action_ids) else 0.0,
-                score_total_delta,
-                killed_value_delta,
-                score_penalty_bit,
-            ],
-            dtype=np.float32,
         )
 
     def _score_delta(self, obs):

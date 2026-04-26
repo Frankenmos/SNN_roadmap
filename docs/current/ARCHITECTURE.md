@@ -1,7 +1,14 @@
 # SNN-PPO Architecture
 
-**Last Updated:** 2026-04-25
+**Last Updated:** 2026-04-26
 **Status:** Active Development
+
+> **Stream Token Migration Status**
+>
+> ✅ Token stream docs show 95 tokens, with action feedback at index 93 and meta at index 94.
+> ✅ Token type docs show ACTION_FEEDBACK=3, META=4, and TOKEN_TYPE_GROUPS=5.
+> ✅ PolicyInputBatch docs include `action_feedback_tokens [B, 1, 9]`, `meta_vec [B, 15]`, and `state_in` as `syn/mem [B, 2, 95, 64]`.
+> ✅ PolicyNetwork docs include the action-feedback encoder, the reduced meta encoder, 95-token attention/SNN flow, and config-matching SNN alpha/beta values.
 
 This document ties together the complete architecture of the SNN+PPO DefeatRoaches agent.
 
@@ -15,7 +22,7 @@ This document ties together the complete architecture of the SNN+PPO DefeatRoach
 4. [Token Streams](#token-streams)
 5. [Policy Network](#policy-network)
 6. [Action Space & Dispatch](#action-space--dispatch)
-7. [Action Feedback Bridge](#action-feedback-bridge)
+7. [Action Feedback Tokens](#action-feedback-tokens)
 8. [Reward Function](#reward-function)
 9. [Training Loop (TBPTT-PPO)](#training-loop-tbptt-ppo)
 10. [Configuration](#configuration)
@@ -91,7 +98,8 @@ This document ties together the complete architecture of the SNN+PPO DefeatRoach
 │  │  • Spatial: CNN features → pooled to 49 tokens                       │    │
 │  │  • Entity: feature_units → up to 24 tokens                          │    │
 │  │  • Selection: selected units → up to 20 tokens                      │    │
-│  │  • Meta: player + available + bridge[9] → 24-dim vector             │    │
+│  │  • Action feedback: previous action + outcome → 1 stream token      │    │
+│  │  • Meta: player + available + PySC2 last-action → 15-dim vector     │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                 │                                            │
 │                                 ▼                                            │
@@ -103,15 +111,16 @@ This document ties together the complete architecture of the SNN+PPO DefeatRoach
 │  │  entity_mask:       [B, 24]                                           │    │
 │  │  selection_features:[B, 20, 7]                                       │    │
 │  │  selection_mask:    [B, 20]                                           │    │
-│  │  meta_vec:          [B, 24] ← contains action feedback bridge         │    │
-│  │  state_in:          (syn[B, 94, 2, 64], mem[B, 94, 2, 64])           │    │
+│  │  action_feedback_tokens: [B, 1, 9]                                   │    │
+│  │  meta_vec:          [B, 15]                                           │    │
+│  │  state_in:          (syn[B, 2, 95, 64], mem[B, 2, 95, 64])           │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                 │                                            │
 │                                 ▼                                            │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │              PolicyNetwork (spiking_policy.py)                        │    │
 │  ├─────────────────────────────────────────────────────────────────────┤    │
-│  │  1. Token encoders (spatial/entity/selection/meta)                    │    │
+│  │  1. Token encoders (spatial/entity/selection/action_feedback/meta)     │    │
 │  │  2. Token type embeddings                                             │    │
 │  │  3. SDPA self-attention (all tokens)                                  │    │
 │  │  4. Fast + slow token-temporal SNN pathways                           │    │
@@ -179,17 +188,18 @@ This document ties together the complete architecture of the SNN+PPO DefeatRoach
 │                                                                              │
 │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐                 │
 │  │ entity_mask    │  │ selection_mask │  │   meta_vec     │                 │
-│  │    [B, 24]     │  │    [B, 20]     │  │    [B, 24]     │                 │
+│  │    [B, 24]     │  │    [B, 20]     │  │    [B, 15]     │                 │
 │  │                │  │                │  │                │                 │
 │  │ which valid    │  │ which valid    │  │ player[11]     │                 │
 │  │                │  │                │  │ avail[3]      │                 │
 │  │                │  │                │  │ last_idx[1]   │                 │
-│  │                │  │                │  │ bridge[9]     │                 │
+│  │                │  │                │  │ (bridge moved  │                 │
+│  │                │  │                │  │  to stream)    │                 │
 │  └────────────────┘  └────────────────┘  └────────────────┘                 │
 │                                                                              │
 │  ┌────────────────┐                                                           │
 │  │    state_in    │  SNN recurrent state (optional)                          │
-│  │ (syn, mem)     │  syn: [B, 94, 2, 64], mem: [B, 94, 2, 64]               │
+│  │ (syn, mem)     │  syn/mem: [B, 2, 95, 64] (pathways, tokens, dims)      │
 │  └────────────────┘                                                           │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -213,18 +223,18 @@ Entity and selection features are normalized using `RunningFeatureNormalizer`:
 │                              TOKEN STREAM                                    │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  Index:  0─48 │ 49─72 │ 73─92 │ 93                                           │
-│          │     │      │      │                                              │
-│          ▼     ▼      ▼      ▼                                              │
-│  ┌────────────┬───────────┬──────────┬─────────────────────────────────────┐ │
-│  │  Spatial   │  Entity  │Selection │              Meta                    │ │
-│  │  (49)      │   (24)   │  (20)    │              (1)                     │ │
-│  │            │          │          │                                      │ │
-│  │ CNN pooled │ feature_ │ selected │ meta_vec (24-dim)                    │ │
-│  │ 7×7 grid  │  units   │  units   │                                      │ │
-│  └────────────┴───────────┴──────────┴─────────────────────────────────────┘ │
+│  Index:  0─48 │ 49─72 │ 73─92 │ 93    │ 94                                  │
+│          │     │      │      │       │                                     │
+│          ▼     ▼      ▼      ▼       ▼                                     │
+│  ┌────────────┬───────────┬──────────┬───────┬─────────────────────────────┐ │
+│  │  Spatial   │  Entity  │Selection │Action │          Meta                │ │
+│  │  (49)      │   (24)   │  (20)    │ (1)   │           (1)               │ │
+│  │            │          │          │       │                             │ │
+│  │ CNN pooled │ feature_ │ selected │feedback│ meta_vec (15-dim)          │ │
+│  │ 7×7 grid  │  units   │  units   │ token │                             │ │
+│  └────────────┴───────────┴──────────┴───────┴─────────────────────────────┘ │
 │                                                                              │
-│  Total: 94 tokens per observation                                            │
+│  Total: 95 tokens per observation                                            │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -232,12 +242,13 @@ Entity and selection features are normalized using `RunningFeatureNormalizer`:
 ### Token Type Embeddings
 
 Each token gets a type embedding:
-- `SPATIAL_TOKEN = 0`
-- `ENTITY_TOKEN = 1`
-- `SELECTION_TOKEN = 2`
-- `META_TOKEN = 3`
+- `TOKEN_TYPE_SPATIAL = 0`
+- `TOKEN_TYPE_ENTITY = 1`
+- `TOKEN_TYPE_SELECTION = 2`
+- `TOKEN_TYPE_ACTION_FEEDBACK = 3`
+- `TOKEN_TYPE_META = 4`
 
-Future: `ACTION_FEEDBACK_TOKEN = 4` (planned)
+`TOKEN_TYPE_GROUPS = 5` (for embedding table size)
 
 ### Temporal Processing
 
@@ -267,8 +278,9 @@ Combine: mean(mode) or concatenation
 │    ├─ entity_features [B, 24, 21]                                           │
 │    ├─ selection_features [B, 20, 7]                                         │
 │    ├─ entity/selection masks                                                 │
-│    ├─ meta_vec [B, 24]                                                      │
-│    └─ state_in (syn, mem)                                                   │
+│    ├─ action_feedback_tokens [B, 1, 9]                                      │
+│    ├─ meta_vec [B, 15]                                                      │
+│    └─ state_in syn/mem [B, 2, 95, 64]                                      │
 │                                                                              │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
 │  │                         TOKEN ENCODERS                                 │  │
@@ -276,17 +288,17 @@ Combine: mean(mode) or concatenation
 │  │  Spatial: CNN(27→128→64) → flatten to 49 tokens                         │  │
 │  │  Entity: Linear(21→64) per token                                        │  │
 │  │  Selection: Linear(7→64) per token                                      │  │
-│  │  Meta: Linear(24→64)                                                    │  │
-│  │  Type Embeddings: learned embeddings for token types                   │  │
+│  │  Action Feedback: Linear(9→64) per token                               │  │
+│  │  Meta: Linear(15→64)                                                    │  │
+│  │  Type Embeddings: learned embeddings for 5 token types                 │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                                 │                                            │
 │                                 ▼                                            │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
 │  │                      SELF-ATTENTION (SDPA)                              │  │
 │  ├────────────────────────────────────────────────────────────────────────┤  │
-│  │  Input: 94 tokens × 64 dims                                             │  │
+│  │  Input: 95 tokens × 64 dims (49+24+20+1+1)                             │  │
 │  │  QK projection: attention_embed_dim=64                                 │  │
-│  │  Pooling: attention_pool_size=7 (outputs 7 pooled tokens)               │  │
 │  │  Attention β: 0.5 (soft clamping)                                       │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                                 │                                            │
@@ -294,12 +306,12 @@ Combine: mean(mode) or concatenation
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
 │  │              DUAL PATHWAY TOKEN-TEMPORAL SNN                            │  │
 │  ├────────────────────────────────────────────────────────────────────────┤  │
-│  │  Each of 94 pooled tokens → separate SNN state                         │  │
+│  │  Each of 95 tokens → separate SNN state                                │  │
 │  │  Fast pathway: α=0.55, β=0.65                                          │  │
 │  │  Slow pathway: α=0.92, β=0.97                                          │  │
 │  │  Combine: temporal_combine_mode="mean"                                 │  │
-│  │  Output: 94 tokens × 64 dims                                            │  │
-│  │  State: syn[94, 2, 64], mem[94, 2, 64] per pathway                     │  │
+│  │  Output: 95 tokens × 64 dims                                            │  │
+│  │  State: syn/mem [B, 2, 95, 64]                                         │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                                 │                                            │
 │                                 ▼                                            │
@@ -336,7 +348,7 @@ Combine: mean(mode) or concatenation
 | `slow_token_snn_alpha` | 0.92 | Slow SNN decay |
 | `slow_token_snn_beta` | 0.97 | Slow SNN reset |
 | `attention_embed_dim` | 64 | Attention QK dimension |
-| `attention_pool_size` | 7 | Output pooled tokens |
+| `attention_pool_size` | 7 | Spatial token grid side (7×7 = 49 tokens) |
 | `spatial_head_type` | "coarse_to_fine" \| "token_pointer" | Target head architecture |
 
 ---
@@ -365,43 +377,38 @@ On episode start, `select_army` is called automatically (outside PPO memory) to 
 
 ---
 
-## Action Feedback Bridge
+## Action Feedback Tokens
 
-### Current Layout (24-dim meta_vec)
+### Current Layout
+
+Action feedback is a first-class stream token. The stable meta vector remains
+small and carries only player features, semantic action availability, and the
+PySC2 last-action id.
+
+`meta_vec [15]`:
 
 | Slice | Dim | Field | Source |
 |-------|-----|-------|--------|
 | 0:11 | 11 | Player features | `obs.observation.player` |
 | 11:14 | 3 | Available action mask | Computed |
-| 14:15 | 1 | PySC2 last_action index | `obs.observation.last_actions[0]` |
-| 15:19 | 4 | **Attempted action** | `action_space.get_last_token()` |
-| 19:20 | 1 | Any action executed? | `len(last_actions) > 0` |
-| 20:21 | 1 | Smart_screen executed? | `451 in last_actions` |
-| 21:22 | 1 | Score delta | `score_cumulative[0]` delta |
-| 22:23 | 1 | Killed value delta | `score_cumulative[5]` delta |
-| 23:24 | 1 | Score penalty bit | `score_delta < 0` |
+| 14:15 | 1 | PySC2 last-action index | `obs.observation.last_actions[0]` |
 
-### The "Smell" Problem
+`action_feedback_tokens [B, 1, 9]`:
 
-The action feedback lives in meta_vec as a **side-channel**, not as proper stream tokens.
+| Offset | Field | Source |
+|--------|-------|--------|
+| 0 | Bridge action type | `action_space.get_last_token()` |
+| 1 | Normalized x | `action_space.get_last_token()` |
+| 2 | Normalized y | `action_space.get_last_token()` |
+| 3 | Smart_screen executed? | `451 in last_actions` |
+| 4 | Any action executed? | `len(last_actions) > 0` |
+| 5 | Score delta | `score_cumulative[0]` delta |
+| 6 | Killed value delta | `score_cumulative[5]` delta |
+| 7 | Score penalty bit | `score_delta < 0` |
+| 8 | Reserved | Future use |
 
-```
-Current:  meta_vec[15:24] = 9 dims of feedback glued onto meta
-Desired:  action_feedback_tokens[N, ~9] in the token stream
-```
-
-### Planned Stream Token Architecture
-
-See [`ACTION_FEEDBACK_PLAN.md`](ACTION_FEEDBACK_PLAN.md) for details.
-
-Proposed action feedback token:
-
-```
-[ACTION_EVENT, bridge_type, x_norm, y_norm, executed_smart,
- any_executed, score_delta, kill_delta, penalty_bit]
-```
-
-This would become a first-class token type with its own embedding, attendable alongside spatial/entity/selection tokens.
+The token has its own type embedding and attends alongside spatial, entity,
+selection, and meta tokens.
 
 ---
 

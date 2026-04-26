@@ -1,4 +1,5 @@
 import math
+import inspect
 import time
 from types import SimpleNamespace
 
@@ -58,6 +59,10 @@ class PPO:
 
         self.memory = []
         self.final_next = None
+        self._policy_accepts_action_feedback = (
+            "action_feedback_tokens"
+            in inspect.signature(policy_net.encode_step_tensors).parameters
+        )
 
     NO_OP_ACTION_ID = POLICY_ACTION_NO_OP
     LEFT_CLICK_ACTION_ID = POLICY_ACTION_LEFT_CLICK
@@ -138,6 +143,31 @@ class PPO:
             "move_x_logits": move_x_logits,
             "move_y_logits": move_y_logits,
         }
+
+    def _encode_step_tensors(
+        self,
+        *,
+        spatial_obs: torch.Tensor,
+        entity_features: torch.Tensor,
+        entity_mask: torch.Tensor,
+        selection_features: torch.Tensor,
+        selection_mask: torch.Tensor,
+        meta_vec: torch.Tensor,
+        state_in: tuple[torch.Tensor, torch.Tensor] | None,
+        action_feedback_tokens: torch.Tensor | None = None,
+    ):
+        kwargs = {
+            "spatial_obs": spatial_obs,
+            "entity_features": entity_features,
+            "entity_mask": entity_mask,
+            "selection_features": selection_features,
+            "selection_mask": selection_mask,
+            "meta_vec": meta_vec,
+            "state_in": state_in,
+        }
+        if self._policy_accepts_action_feedback:
+            kwargs["action_feedback_tokens"] = action_feedback_tokens
+        return self.policy_net.encode_step_tensors(**kwargs)
 
     def _sample_target(
         self,
@@ -227,12 +257,13 @@ class PPO:
             enabled=self.policy_net.use_amp,
         ):
             latent, state_value, next_state, spatial_context = (
-                self.policy_net.encode_step_tensors(
+                self._encode_step_tensors(
                     spatial_obs=batch.spatial_obs,
                     entity_features=batch.entity_features,
                     entity_mask=batch.entity_mask,
                     selection_features=batch.selection_features,
                     selection_mask=batch.selection_mask,
+                    action_feedback_tokens=batch.action_feedback_tokens,
                     meta_vec=batch.meta_vec,
                     state_in=batch.state_in,
                 )
@@ -782,6 +813,7 @@ class PPO:
         entity_mask: torch.Tensor,
         selection_features: torch.Tensor,
         selection_mask: torch.Tensor,
+        action_feedback_tokens: torch.Tensor | None,
         meta_vec: torch.Tensor,
         action_ids: torch.Tensor | None,
         move_x: torch.Tensor,
@@ -792,12 +824,13 @@ class PPO:
         state_in: tuple[torch.Tensor, torch.Tensor] | None,
     ):
         latent, state_value, next_state, spatial_context = (
-            self.policy_net.encode_step_tensors(
+            self._encode_step_tensors(
                 spatial_obs=spatial_obs,
                 entity_features=entity_features,
                 entity_mask=entity_mask,
                 selection_features=selection_features,
                 selection_mask=selection_mask,
+                action_feedback_tokens=action_feedback_tokens,
                 meta_vec=meta_vec,
                 state_in=state_in,
             )
@@ -876,6 +909,11 @@ class PPO:
             (max_len, group_size, sample_obs.selection_mask.shape[-1]),
             device=self.device,
             dtype=torch.bool,
+        )
+        action_feedback_tokens = torch.zeros(
+            (max_len, group_size, *sample_obs.action_feedback_tokens.shape[1:]),
+            device=self.device,
+            dtype=torch.float32,
         )
         meta_vec = torch.zeros(
             (max_len, group_size, sample_obs.meta_vec.shape[-1]),
@@ -980,6 +1018,7 @@ class PPO:
             entity_mask[:length, column] = obs.entity_mask
             selection_features[:length, column] = obs.selection_features
             selection_mask[:length, column] = obs.selection_mask
+            action_feedback_tokens[:length, column] = obs.action_feedback_tokens
             meta_vec[:length, column] = obs.meta_vec
             actions[:length, column] = chunk["actions"]
             move_x[:length, column] = chunk["move_x"]
@@ -1008,6 +1047,7 @@ class PPO:
             "entity_mask": entity_mask,
             "selection_features": selection_features,
             "selection_mask": selection_mask,
+            "action_feedback_tokens": action_feedback_tokens,
             "meta_vec": meta_vec,
             "actions": actions,
             "move_x": move_x,
@@ -1069,6 +1109,9 @@ class PPO:
                         step_index
                     ].index_select(0, active_indices),
                     selection_mask=packed_group["selection_mask"][
+                        step_index
+                    ].index_select(0, active_indices),
+                    action_feedback_tokens=packed_group["action_feedback_tokens"][
                         step_index
                     ].index_select(0, active_indices),
                     meta_vec=packed_group["meta_vec"][step_index].index_select(
@@ -1266,6 +1309,7 @@ class PPO:
                     entity_mask=step_batch.entity_mask,
                     selection_features=step_batch.selection_features,
                     selection_mask=step_batch.selection_mask,
+                    action_feedback_tokens=step_batch.action_feedback_tokens,
                     meta_vec=step_batch.meta_vec,
                     action_ids=action_ids,
                     move_x=torch.stack(
@@ -1385,6 +1429,13 @@ class PPO:
             selection_mask=torch.cat(
                 [
                     obs.selection_mask[step_index : step_index + 1]
+                    for obs in observations
+                ],
+                dim=0,
+            ),
+            action_feedback_tokens=torch.cat(
+                [
+                    obs.action_feedback_tokens[step_index : step_index + 1]
                     for obs in observations
                 ],
                 dim=0,

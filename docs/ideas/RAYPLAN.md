@@ -9,7 +9,7 @@ We want the smallest Ray-based distributed trainer that is actually useful:
 - multiple rollout actors collecting experience in parallel
 - optional separate evaluation actor
 - the current PPO + SNN + reward shaping stack kept intact
-- the resolved bridge-token / action-history input contract treated as a stable policy-input protocol
+- the current stream action-feedback input contract treated as a stable policy-input protocol
 
 This is intentionally **not** "rewrite everything into RLlib" and **not** "jump to IMPALA/V-trace immediately". The safest first win is to keep our current PPO semantics and only distribute rollout collection.
 
@@ -67,7 +67,7 @@ That gives us most of the CPU scaling benefit without changing the algorithm cla
 - one `PySC2` environment
 - one inference-only copy of the policy
 - one `ObservationExtractor`
-- one `RewardFunctionV2`
+- one `RewardFunctionV3`
 - one local `snn_state`
 - one episode lifecycle (`reset`, `step`, timeout handling)
 
@@ -106,19 +106,26 @@ So the first real refactor is:
 
 That is the key data-model change that unlocks Ray cleanly.
 
-### Bridge-token status assumption
+### Action-feedback protocol status
 
-This plan now assumes the bridge-token work will be resolved before Ray implementation starts. In other words, the local trainer should already have one agreed contract for the executed-action bridge or its action-history replacement.
+The previous bridge work is now resolved as a first-class action-feedback stream token.
+The local trainer contract is:
+
+- `POLICY_PROTOCOL_VERSION = 2`
+- `policy_input_schema = "stream_action_feedback_v1"`
+- `meta_vec [15]`
+- `action_feedback_tokens [B, 1, 9]`
+- token stream total = 95 tokens
 
 That changes the Ray plan in a useful way:
 
-- Ray actors do not interpret, redesign, or mutate bridge-token semantics
-- each actor owns the per-env bridge/action-history state needed to build the next observation
+- Ray actors do not interpret, redesign, or mutate action-feedback semantics
+- each actor owns the per-env action-feedback state needed to build the next observation
 - the learner replays exactly the tensors stored in each transition
-- rollout fragments carry enough protocol metadata to reject stale actors or incompatible checkpoints
-- any protocol-width change from the bridge-token resolution is handled before distributed checkpoints are considered compatible
+- rollout fragments carry `policy_protocol_version` and `policy_input_schema`
+- any protocol-width change is handled before distributed checkpoints are considered compatible
 
-So bridge-token resolution is a **pre-Ray protocol dependency**, not a distributed-systems problem. Once it is resolved locally, Ray should only preserve that contract across process boundaries.
+So action-feedback protocol stability is a **pre-Ray protocol dependency**, not a distributed-systems problem. Ray should only preserve that contract across process boundaries.
 
 ---
 
@@ -132,29 +139,32 @@ Recommended fragment payload:
 
 - `actor_id`
 - `policy_version`
-- `policy_input_version`
-- `bridge_schema_version`
+- `policy_protocol_version`
+- `policy_input_schema`
 - `fragment_id`
 - `num_learnable_steps`
 - `episode_count_crossed`
 - `terminated` / `truncated`
+- `episode_reset_mask` or `episode_start_mask`
 - `spatial_obs`
 - `entity_features`
 - `entity_mask`
 - `selection_features`
 - `selection_mask`
 - `meta_vec`
-- resolved bridge/action-history inputs, if they are no longer fully embedded in `meta_vec`
+- `action_feedback_tokens`
 - `actions`
 - `move_x`
 - `move_y`
 - `target_index`
 - `coarse_index`
 - `fine_index`
-- `log_probs`
+- `old_log_probs`
 - `rewards`
 - `values`
 - `dones`
+- `truncateds`
+- `sample_mask`
 - `pre_step_snn_state`
 - `tail_next_policy_input`
 - `tail_next_snn_state`
@@ -168,16 +178,63 @@ Recommended fragment payload:
 - the learner needs pre-step SNN state for replay
 - the learner needs one tail bootstrap per fragment
 - the current `coarse_to_fine` spatial head needs stored target-head indices, not only decoded click coordinates
-- the learner and actors need a cheap way to fail fast if their bridge/action-history protocol versions disagree
+- the learner and actors need a cheap way to fail fast if their policy input protocol versions disagree
 - the logger needs episode/step/reward metadata without reconstructing it later
+- truncation is not the same as terminal `done`: a time cap can bootstrap value, but the next episode still needs fresh actor-local SNN, extractor, reward, and action-feedback state
 
 **What should not cross the boundary?**
 
 - live `PySC2` env objects
 - raw action function objects
-- actor-local bridge/action-history mutable buffers
+- actor-local action-feedback mutable buffers
 - optimizer state
 - full learner object
+
+---
+
+## 4.1. What live contracts must the fragment mirror?
+
+The first fragment schema should be a transport-shaped version of the actual
+objects used today, not a new semantic interface.
+
+### `PolicyInputBatch`
+
+Current fields to preserve:
+
+- `spatial_obs [B, 27, 84, 84]`
+- `entity_features [B, 24, 21]`
+- `entity_mask [B, 24]`
+- `selection_features [B, 20, 7]`
+- `selection_mask [B, 20]`
+- `action_feedback_tokens [B, 1, 9]`
+- `meta_vec [B, 15]`
+- `state_in` as `syn/mem [B, 2, 95, 64]`
+
+### `PPO.memory` transition dict
+
+Current keys that need a fragment equivalent:
+
+- `observation_batch`
+- `action`
+- `move_x`, `move_y`
+- `target_index`, `coarse_index`, `fine_index`
+- `log_prob`
+- `reward`
+- `value`
+- `done`
+- `sample_mask`
+- `policy_mask`
+
+### Checkpoint / run metadata
+
+Current compatibility metadata:
+
+- checkpoint uses `policy_protocol_version = 2`
+- checkpoint uses `policy_input_schema = "stream_action_feedback_v1"`
+- `effective_config.json` records resolved policy/PPO/reward dicts
+
+Distributed mode should extend these, not invent parallel names for the same
+contract.
 
 ---
 
@@ -186,13 +243,16 @@ Recommended fragment payload:
 These are not all catastrophic today, but they become real blockers once Ray enters the picture:
 
 - `Utility/config.py` loads `config.yaml` using the current working directory, not an absolute repo-relative path. (Bug/risk: Ray workers often start from a different working directory, so config loading can silently fail or pick up the wrong file.)
-- `envs/setup_env.py` hardcodes `screen=84` even though the config now exposes `model.screen_size`. (Bug: model/env geometry can drift if we ever change screen size in config.)
+- `envs/setup_env.py` hardcodes `screen=84` even though the config exposes `model.screen_size`. (Bug: model/env geometry can drift if we ever change screen size in config.)
 - `envs/setup_env.py` defaults to `"DefeatZerglingsAndBanelings"` while the project config targets `"DefeatRoaches"`. (Bug/risk: a future direct call to `create_env()` without config wiring can spawn the wrong map.)
-- `PPO_CNN_run.py` passes `observation_extractor` into `train_agent()` and immediately deletes it. (Bug/smell: this is harmless but tells us the runtime boundary is still muddy.)
-- `PPO_CNN_run.py` prints `"Starting Async PPO training..."` even though the current trainer is not async. (Bug/smell: naming drift will get more confusing once we add actual distributed async components.)
+- `envs/setup_env.py` now uses `use_raw_units=False`, which is good for WSL stability, but that should become an explicit runtime/config choice before Ray workers are spawned.
+- `train.py` passes `observation_extractor` into `train_agent()` and immediately deletes it. (Bug/smell: this is harmless but tells us the runtime boundary is still muddy.)
+- `train.py` prints `"Starting Async PPO training..."` even though the current trainer is not async. (Bug/smell: naming drift will get more confusing once we add actual distributed async components.)
+- `train.py::main()` currently forces `visualize=False` even though `config.yaml` has `environment.visualize: true`. That may be intentional for training, but distributed mode should make visual/headless runtime choice explicit.
 - `Utility/logger_utils.py::_safe_add_column()` suppresses every `sqlite3.OperationalError`, not just duplicate-column cases. (Bug: real schema migration failures can be hidden.)
 - `maybe_run_policy_update()` logs PPO updates after episode close using `internal_ep = episode_index - 1`, while `LogListener` resolves `episode_id` through a map that is deleted on `EPISODE_END`. (Bug: `ppo_updates.episode_id` can end up `NULL`, and that gets harder to reason about once many actors emit updates.)
 - `run_eval_sweep()` reuses the training env object instead of a dedicated eval env. (Bug/risk: acceptable in the single-process loop because the next training episode resets anyway, but not a good pattern for distributed execution.)
+- `train.py` treats `time_cap` as a non-terminal truncation for value bootstrapping, then resets the env at the outer episode loop. Distributed fragments need an explicit reset/truncation mask so BPTT state is reset at episode boundaries while GAE can still bootstrap.
 
 ---
 
@@ -242,9 +302,9 @@ And recommended dataflow:
 
 ### Files to touch
 
-- `PPO_CNN/PPO.py`
-- `PPO_CNN_agent.py`
-- `PPO_CNN_run.py`
+- `agent_core/ppo_trainer.py`
+- `agent.py`
+- `train.py`
 - `Utility/logger_utils.py`
 - new module: `distributed/protocol.py`
 
@@ -256,7 +316,7 @@ And recommended dataflow:
    - `EpisodeSummary`
    - `WeightSnapshot`
    - `UpdateSummary`
-   - protocol/version metadata for the resolved bridge/action-history input contract
+   - protocol/version metadata for `POLICY_PROTOCOL_VERSION` and `policy_input_schema`
 
 2. Refactor `PPO.update_policy()` to accept either:
    - a list of fragments, or
@@ -266,10 +326,10 @@ And recommended dataflow:
 
 4. Stop making `PPO` own the idea of exactly one tail bootstrap.
 
-5. Freeze bridge/action-history inputs at transition creation time:
+5. Freeze action-feedback inputs at transition creation time:
    - store the exact policy-input tensors used for acting
-   - validate `policy_input_version` and `bridge_schema_version`
-   - do not rebuild bridge tokens later on the learner
+   - validate `policy_protocol_version` and `policy_input_schema`
+   - do not rebuild action-feedback tokens later on the learner
 
 6. Add a local single-process path that still works without Ray:
    - collect one fragment locally
@@ -325,8 +385,9 @@ class RolloutActor:
 - policy replica is inference-only
 - policy weights are copied from learner snapshots
 - actor keeps its own local `snn_state`, extractor history, and reward state
-- actor keeps its own local resolved bridge/action-history state and resets it with the episode lifecycle
+- actor keeps its own local action-feedback state and resets it with the episode lifecycle
 - actor can cross episode boundaries while collecting a fragment
+- actor records terminal `done`, timeout `truncated`, and episode-reset boundaries separately
 - actor returns only CPU tensors / NumPy arrays / plain metadata
 
 ### Important design choice
@@ -409,14 +470,15 @@ Because stale policy data is much harder to reason about, and our current PPO im
 - global environment step count
 - best eval reward
 - current policy version
-- policy input / bridge schema version
+- `policy_protocol_version`
+- `policy_input_schema`
 - run config snapshot
 
 ### Checkpoint should not depend on
 
 - live actor object IDs
 - actor-local episode counters
-- actor-local bridge/action-history buffers
+- actor-local action-feedback buffers
 - actor-local env instances
 
 ### Practical rule
@@ -461,7 +523,7 @@ Actors should be treated as disposable. If one dies, the learner respawns it and
 - `ppo_updates.global_update_index`
 - `ppo_updates.policy_version`
 - `eval_runs.policy_version`
-- optional `steps.bridge_schema_version` if bridge/action-history migrations are compared across runs
+- optional `steps.policy_input_schema` if policy-input migrations are compared across runs
 
 ### Why this matters
 
@@ -524,19 +586,19 @@ distributed:
   actor_cpus: 1
   learner_gpus: 1
   eval_every_updates: 50
-  required_policy_input_version: 1
-  required_bridge_schema_version: 1
+  required_policy_protocol_version: 2
+  required_policy_input_schema: "stream_action_feedback_v1"
 ```
 
 ### Current config reality check
 
 The current `config.yaml` is already a pretty serious little beast:
 
-- PPO uses `rollout_steps: 2048`, `batch_size: 128`, `epochs: 8`, `tbptt_window: 128`, `clip_eps: 0.10`, `target_kl: 0.03`, and `reward_scale: 0.1`
+- PPO uses `rollout_steps: 2048`, `batch_size: 128`, `epochs: 8`, `tbptt_window: 128`, `clip_eps: 0.10`, `target_kl: 0.03`, and `reward_scale: 1.0`
 - episodes can run for `steps_per_episode: 3600`, so rollout/update cadence must be step-budget based, not episode-boundary based
-- the model contract is `spatial_input_shape: [27, 84, 84]`, `vector_input_dim: 19`, `action_dim: 3`, `attention_pool_size: 7`, and `spatial_head_type: "coarse_to_fine"`
+- the model contract is `spatial_input_shape: [27, 84, 84]`, `vector_input_dim: 15`, `action_dim: 3`, `attention_pool_size: 7`, `spatial_head_type: "coarse_to_fine"`, `coarse_grid_size: 7`, `local_grid_size: 12`, `action_feedback_tokens: [B, 1, 9]`, and 95 total tokens
 - the SNN is dual-timescale, with fast `0.55/0.65` and slow `0.92/0.97` alpha/beta settings
-- `visualize: true` should not be treated as a casual Ray actor toggle; for this project it belongs to the Windows/visual SC2 distribution path, with the nice wrapper for watching the PySC2/DeepMind spatial feature layers
+- `config.yaml` says `visualize: true`, but the current `train.py::main()` calls `create_env(... visualize=False)`. Distributed mode should make this explicit rather than inheriting that split by accident.
 - `eval_frequency: 50` should become `eval_every_updates` in distributed mode, because actor episode counts stop being a stable global clock
 - there is no `distributed:` section yet
 
@@ -555,7 +617,7 @@ For the current defaults, `num_rollout_actors: 4`, `fragment_steps: 512`, and `g
 
 - Ray run can be launched from any working directory
 - actor count and fragment size are config-driven
-- actors fail fast if their policy-input or bridge schema version does not match the learner
+- actors fail fast if their `policy_protocol_version` or `policy_input_schema` does not match the learner
 - local single-process mode still works from the same config
 
 ---
@@ -604,6 +666,7 @@ My recommendation:
 - fragment schema preserves `PolicyInputBatch` tensors and spatial-head indices
 - multi-fragment GAE correctness
 - bootstrap handling for terminal vs truncated fragment tails
+- reset-mask handling for BPTT across time-cap episode boundaries
 - policy-version tagging
 
 ### Layer B: local integration tests without Ray
@@ -624,6 +687,32 @@ My recommendation:
 - measure steps/sec vs current single-process baseline
 - measure learner idle time waiting for actors
 - measure object payload size
+
+---
+
+## 15.1. What should we research before coding the Ray layer?
+
+These are not reasons to avoid Ray. They are the things that can waste days if
+we guess wrong:
+
+- Verify that the chosen runtime can run multiple PySC2 headless instances
+  without SC2 crashes, port collisions, or map-cache path issues. For this
+  repo, this probably means settling the WSL/Linux SC2 crash path before
+  scaling actors.
+- Check Ray object-store behavior for 100s of MiB fragment objects on the
+  target machine: object-store memory, spilling location, max object size, and
+  whether large tensor payloads are copied more than expected.
+- Decide whether actor inference runs on CPU or GPU. CPU actors keep GPU memory
+  learner-owned; GPU actors can improve inference speed but make resource
+  scheduling much easier to get wrong.
+- Confirm the exact weight-broadcast path: publish one CPU `state_dict` object
+  per `policy_version`, have actors pull it once per fragment/update boundary,
+  and never let actors mutate optimizer state.
+- Decide the timeout semantics before implementation: `done` means terminal for
+  GAE; `truncated`/episode reset means reset actor-local recurrent/reward/
+  extractor/action-feedback state before the next episode.
+- Check whether SQLite remains acceptable with a Ray logger actor, or whether
+  an append-only JSONL/parquet event sink is safer for early distributed runs.
 
 ---
 
@@ -648,7 +737,7 @@ Each of those can be a later milestone, but they should not be coupled to the fi
 If I were implementing this myself, I would do it in exactly this order:
 
 1. make PPO consume `RolloutFragment` locally
-2. freeze the resolved bridge/action-history protocol in the fragment schema
+2. freeze the action-feedback protocol in the fragment schema
 3. move config loading to an explicit path-based API
 4. make env creation fully config-driven
 5. introduce a learner-owned global update counter
@@ -673,7 +762,7 @@ The first distributed milestone is done when all of this is true:
 - deterministic eval still works
 - checkpoint/resume works
 - logger records actor-aware metrics
-- actor/learner protocol checks cover the resolved bridge/action-history contract
+- actor/learner protocol checks cover the action-feedback protocol contract
 - throughput is meaningfully higher than the single-process trainer
 - the code still supports the old single-process path as a fallback
 
@@ -699,4 +788,4 @@ That path gives us:
 
 The one architectural change we absolutely should not dodge is the fragment refactor. That is the bridge from "one local memory list" to "many actor rollouts", and everything downstream gets easier once that is done.
 
-The bridge-token work should be settled before that Ray branch starts. Once it is, the distributed layer should treat it as a frozen input contract: version it, validate it, serialize the resulting tensors, and avoid making Ray responsible for action semantics.
+The action-feedback stream-token work is settled enough for this branch. The distributed layer should treat it as a frozen input contract: version it, validate it, serialize the resulting tensors, and avoid making Ray responsible for action semantics.

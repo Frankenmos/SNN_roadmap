@@ -5,6 +5,18 @@ Compressed current-memory version.
 Verbose pre-compression snapshot:
 `docs/archive/working_log_2026-04-20_pre_compress.md`
 
+## 2026-04-26
+
+- moved the 9-dim action feedback bridge out of `meta_vec` and into
+  `action_feedback_tokens [B, 1, 9]`
+- reduced `META_VECTOR_DIM` from 24 to 15:
+  `player[11] + semantic_available_actions[3] + pysc2_last_action[1]`
+- added `ActionFeedbackEncoder` in `obs_space/action_feedback_encoder.py`
+- added action feedback token type embedding and policy token-stream plumbing
+- updated TBPTT packing, eval trace serialization, and policy input diagnostics
+- checkpoint protocol bumped to `POLICY_PROTOCOL_VERSION = 2`; old checkpoints
+  are intentionally incompatible with the stream-token policy
+
 ## 2026-04-24
 
 - implemented action-history bridge expansion (commit e964d27)

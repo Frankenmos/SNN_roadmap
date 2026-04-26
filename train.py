@@ -12,6 +12,7 @@ import torch
 from absl import app, flags
 
 from agent import DefeatRoaches
+from agent_core.policy_protocol import POLICY_PROTOCOL_VERSION
 from Utility.config import cfg
 from Utility.logger_utils import LogListener
 from envs.setup_env import create_env
@@ -35,6 +36,11 @@ def _run_path(filename: str) -> str:
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class CheckpointProtocolMismatch(RuntimeError):
+    pass
+
 
 FLAGS = flags.FLAGS
 if "run_name" not in FLAGS:
@@ -189,6 +195,8 @@ def save_checkpoint(
         "eval_reward_at_save": eval_reward,
         "episode_rewards": list(episode_rewards),
         "extractor_state": agent.extractor.state_dict(),
+        "policy_protocol_version": POLICY_PROTOCOL_VERSION,
+        "policy_input_schema": "stream_action_feedback_v1",
     }
 
     temp_path = checkpoint_path + ".tmp"
@@ -255,6 +263,14 @@ def load_checkpoint(agent, checkpoint_path=None):
             checkpoint = torch.load(
                 checkpoint_path, map_location=torch.device("cpu"),
             )
+            checkpoint_protocol = checkpoint.get("policy_protocol_version")
+            if checkpoint_protocol != POLICY_PROTOCOL_VERSION:
+                raise CheckpointProtocolMismatch(
+                    "Checkpoint policy protocol mismatch: "
+                    f"checkpoint={checkpoint_protocol!r}, "
+                    f"current={POLICY_PROTOCOL_VERSION}. "
+                    "Start a fresh run for stream action-feedback tokens.",
+                )
             agent.policy.load_state_dict(checkpoint["agent_state"])
             agent.ppo.optimizer.load_state_dict(checkpoint["optimizer_state"])
             sched_state = checkpoint.get("scheduler_state")
@@ -269,6 +285,9 @@ def load_checkpoint(agent, checkpoint_path=None):
             )
             print(f"Checkpoint loaded from episode {episode}.")
             return episode, best_eval_reward, episode_rewards
+        except CheckpointProtocolMismatch as exc:
+            print(f"Skipping incompatible checkpoint '{checkpoint_path}': {exc}")
+            return 0, float("-inf"), deque(maxlen=cfg.environment.reward_window)
         except (EOFError, RuntimeError, Exception) as exc:
             print(
                 f"Warning: Failed to load checkpoint '{checkpoint_path}': {exc}",
