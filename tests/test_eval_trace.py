@@ -3,7 +3,13 @@ import torch
 import eval as eval_mod
 
 from MockedEnv.policy_batch import make_policy_batch
-from agent_core.policy_protocol import META_VECTOR_DIM, SPATIAL_OBS_SHAPE
+from agent_core.policy_protocol import (
+    ACTION_FEEDBACK_TOKEN_COUNT,
+    ACTION_FEEDBACK_TOKEN_DIM,
+    META_VECTOR_DIM,
+    POLICY_PROTOCOL_VERSION,
+    SPATIAL_OBS_SHAPE,
+)
 
 
 class _DummyPolicy:
@@ -123,6 +129,7 @@ def test_eval_play_can_write_episode_trace(tmp_path, monkeypatch):
             "agent_state": {"dummy": 1},
             "extractor_state": {"dummy": 2},
             "episode": 123,
+            "policy_protocol_version": POLICY_PROTOCOL_VERSION,
         },
     )
     monkeypatch.setattr(eval_mod.cfg.environment, "steps_per_episode", 10, raising=False)
@@ -155,6 +162,10 @@ def test_eval_play_can_write_episode_trace(tmp_path, monkeypatch):
     assert records[0]["action"] == 1
     assert records[0]["dispatched_action"]["function_name"] == "Smart_screen"
     assert tuple(records[0]["policy_input"]["spatial_obs"].shape) == SPATIAL_OBS_SHAPE
+    assert tuple(records[0]["policy_input"]["action_feedback_tokens"].shape) == (
+        ACTION_FEEDBACK_TOKEN_COUNT,
+        ACTION_FEEDBACK_TOKEN_DIM,
+    )
     assert tuple(records[0]["policy_input"]["meta_vec"].shape) == (META_VECTOR_DIM,)
     assert records[1]["action"] == 0
     assert records[1]["dispatched_action"]["function_name"] == "no_op"

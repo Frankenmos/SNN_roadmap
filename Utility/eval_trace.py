@@ -52,6 +52,10 @@ def serialize_policy_input_batch(
         "selection_mask": batch.selection_mask[0].detach().to(
             device="cpu",
         ).contiguous(),
+        "action_feedback_tokens": _to_cpu_tensor(
+            batch.action_feedback_tokens[0],
+            float_dtype=float_dtype,
+        ),
         "meta_vec": _to_cpu_tensor(batch.meta_vec[0], float_dtype=float_dtype),
     }
 

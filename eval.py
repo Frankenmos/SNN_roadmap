@@ -7,6 +7,7 @@ import torch
 from absl import app, flags
 
 from agent import DefeatRoaches
+from agent_core.policy_protocol import POLICY_PROTOCOL_VERSION
 from Utility.config import cfg
 from Utility.eval_trace import EpisodeTraceRecorder
 from envs.setup_env import create_env
@@ -278,6 +279,14 @@ def play(
         )
 
         state = _load_checkpoint_state(checkpoint_path, agent.policy.device)
+        checkpoint_protocol = state.get("policy_protocol_version")
+        if checkpoint_protocol != POLICY_PROTOCOL_VERSION:
+            raise RuntimeError(
+                "Checkpoint policy protocol mismatch: "
+                f"checkpoint={checkpoint_protocol!r}, "
+                f"current={POLICY_PROTOCOL_VERSION}. "
+                "This evaluator expects stream action-feedback token checkpoints.",
+            )
         agent.policy.load_state_dict(state["agent_state"])
         agent.extractor.load_state_dict(state.get("extractor_state", {}))
         agent.policy.eval()

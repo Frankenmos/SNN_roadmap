@@ -1,7 +1,7 @@
 # Action Feedback Architecture Plan
 
 **Date:** 2026-04-25
-**Status:** Proposed
+**Status:** Implemented 2026-04-26
 **Related:** `action_history_bridge_plan.md`, `theta-2/bug_report_theta2.md`
 
 ---
@@ -10,11 +10,17 @@
 
 After verifying bridge documentation and analyzing theta-1/theta-2 diagnostic outputs, **Gipity's assessment is correct**: the current bridge has two separate sources, but the architecture is "smelly" — action feedback lives as a compact meta side-channel while the policy is token/stream-based.
 
-**Recommendation:** Fix reward coefficients first (urgent), then replace the meta bridge with proper stream tokens.
+**Implementation note:** The meta bridge has been replaced with first-class
+`action_feedback_tokens` in `PolicyInputBatch`. `meta_vec` is now the 15-dim
+stable vector: player features, semantic action availability, and PySC2
+last-action index.
+
+**Recommendation:** Treat the previous 24-dim bridge as historical context when
+reading this plan.
 
 ---
 
-## Current Bridge Layout (Verified)
+## Previous Bridge Layout (Verified Before Migration)
 
 From `policy_protocol.py` and `action_history_bridge_plan.md`:
 
@@ -253,20 +259,20 @@ class PolicyInputBatch:
 ## Open Questions
 
 1. **Feedback token dimensionality:** How large should each feedback token be?
-   - Suggested: 16-32 dims (enough to encode action_type + 2D coords + outcome)
+   - Implemented: 9 raw fields, projected to policy embedding dimension
 
 2. **History length:** How many past actions to keep as tokens?
-   - Current: 1 (in meta bridge)
-   - Suggested: Start with 1, expand to 3-5 if needed
+   - Current: 1 stream token
+   - Future: expand to 3-5 if longer action memory becomes useful
 
 3. **Checkpoint migration:** Old checkpoints will be incompatible with META_VECTOR_DIM change
-   - Need adapter or fresh training
+   - Implemented as fresh-training-only via `POLICY_PROTOCOL_VERSION = 2`
 
 ---
 
 ## References
 
-- `docs/current/action_history_bridge_plan.md` — Current 24-dim protocol
+- `docs/current/action_history_bridge_plan.md` — Historical 24-dim protocol
 - `docs/current/THE_BPTT.md` — TBPTT architecture
 - `analysis_results/theta-1/last_action_diagnostics.jsonl` — Wrapper output format
 - `analysis_results/theta-2/bug_report_theta2.md` — Bug analysis

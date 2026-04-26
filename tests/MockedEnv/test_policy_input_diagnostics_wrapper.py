@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from agent_core.policy_protocol import AGENT_LAST_ACTION_DIM, META_VECTOR_DIM
+from agent_core.policy_protocol import ACTION_FEEDBACK_TOKEN_DIM, META_VECTOR_DIM
 from MockedEnv.fake_pysc2 import build_mock_obs
 from Utility.policy_input_diagnostics_wrapper import PolicyInputDiagnosticsWrapper
 
@@ -79,4 +79,5 @@ def test_policy_input_diagnostics_wrapper_logs_raw_and_batch_fields(
     assert second["batch"]["selection_count"] == 2
     assert second["batch"]["meta_available_action_mask_active"] == 2
     assert second["batch"]["meta_dim"] == META_VECTOR_DIM
-    assert len(second["batch"]["meta_agent_last_action_token"]) == AGENT_LAST_ACTION_DIM
+    assert second["batch"]["action_feedback_token_dim"] == ACTION_FEEDBACK_TOKEN_DIM
+    assert len(second["batch"]["action_feedback_token"]) == ACTION_FEEDBACK_TOKEN_DIM

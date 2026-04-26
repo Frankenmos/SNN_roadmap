@@ -2,17 +2,19 @@ import numpy as np
 import pytest
 
 from agent_core.policy_protocol import (
-    AGENT_ACTION_TOKEN_DIM,
-    AGENT_LAST_ACTION_OFFSET,
+    ACTION_FEEDBACK_ANY_EXECUTED_OFFSET,
+    ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET,
+    ACTION_FEEDBACK_EXECUTED_SMART_OFFSET,
+    ACTION_FEEDBACK_KILL_DELTA_OFFSET,
+    ACTION_FEEDBACK_PENALTY_BIT_OFFSET,
+    ACTION_FEEDBACK_SCORE_DELTA_OFFSET,
+    ACTION_FEEDBACK_TOKEN_DIM,
+    ACTION_FEEDBACK_X_NORM_OFFSET,
+    ACTION_FEEDBACK_Y_NORM_OFFSET,
     BRIDGE_ACTION_SMART,
-    KILLED_VALUE_DELTA_OFFSET,
-    LAST_ANY_ACTION_EXECUTED_OFFSET,
-    LAST_SMART_EXECUTED_OFFSET,
     META_VECTOR_DIM,
     META_LAST_ACTION_INDEX_OFFSET,
     NO_ACTION_SENTINEL_INDEX,
-    SCORE_PENALTY_BIT_OFFSET,
-    SCORE_TOTAL_DELTA_OFFSET,
     UNKNOWN_LAST_ACTION_INDEX,
 )
 from obs_space import obs_space_2
@@ -87,22 +89,19 @@ def test_last_action_indices_keep_no_action_no_op_and_unknown_distinct(make_obs)
     assert len({int(no_action), int(no_op), int(unknown)}) == 3
 
 
-def test_observation_extractor_appends_last_action_bridge_token(make_obs):
+def test_observation_extractor_emits_action_feedback_token(make_obs):
     extractor = obs_space_2.ObservationExtractor()
     batch = extractor.peek_observation(
         make_obs(),
         last_action_token=np.asarray([BRIDGE_ACTION_SMART, 42, 21, 0], dtype=np.int32),
     )
 
-    token = batch.meta_vec[
-        0,
-        AGENT_LAST_ACTION_OFFSET : AGENT_LAST_ACTION_OFFSET + AGENT_ACTION_TOKEN_DIM,
-    ]
+    token = batch.action_feedback_tokens[0, 0]
     assert batch.meta_vec.shape[-1] == META_VECTOR_DIM
-    assert float(token[0].item()) == pytest.approx(float(BRIDGE_ACTION_SMART))
-    assert float(token[1].item()) == pytest.approx(42.0 / 83.0)
-    assert float(token[2].item()) == pytest.approx(21.0 / 83.0)
-    assert float(token[3].item()) == pytest.approx(0.0)
+    assert batch.action_feedback_tokens.shape[-1] == ACTION_FEEDBACK_TOKEN_DIM
+    assert float(token[ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET].item()) == pytest.approx(float(BRIDGE_ACTION_SMART))
+    assert float(token[ACTION_FEEDBACK_X_NORM_OFFSET].item()) == pytest.approx(42.0 / 83.0)
+    assert float(token[ACTION_FEEDBACK_Y_NORM_OFFSET].item()) == pytest.approx(21.0 / 83.0)
 
 
 def test_action_history_marks_empty_and_smart_last_actions(make_obs, fake_actions):
@@ -115,10 +114,10 @@ def test_action_history_marks_empty_and_smart_last_actions(make_obs, fake_action
         make_obs(last_actions=np.asarray([fake_actions.Smart_screen.id], dtype=np.int32)),
     )
 
-    assert float(empty_batch.meta_vec[0, LAST_ANY_ACTION_EXECUTED_OFFSET].item()) == 0.0
-    assert float(empty_batch.meta_vec[0, LAST_SMART_EXECUTED_OFFSET].item()) == 0.0
-    assert float(smart_batch.meta_vec[0, LAST_ANY_ACTION_EXECUTED_OFFSET].item()) == 1.0
-    assert float(smart_batch.meta_vec[0, LAST_SMART_EXECUTED_OFFSET].item()) == 1.0
+    assert float(empty_batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_ANY_EXECUTED_OFFSET].item()) == 0.0
+    assert float(empty_batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_EXECUTED_SMART_OFFSET].item()) == 0.0
+    assert float(smart_batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_ANY_EXECUTED_OFFSET].item()) == 1.0
+    assert float(smart_batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_EXECUTED_SMART_OFFSET].item()) == 1.0
 
 
 def test_action_history_encodes_score_delta_clipping_and_penalty(make_obs):
@@ -134,9 +133,9 @@ def test_action_history_encodes_score_delta_clipping_and_penalty(make_obs):
         make_obs(score_cumulative=score_up),
     )
 
-    assert float(up_batch.meta_vec[0, SCORE_TOTAL_DELTA_OFFSET].item()) == pytest.approx(1.0)
-    assert float(up_batch.meta_vec[0, KILLED_VALUE_DELTA_OFFSET].item()) == pytest.approx(1.0)
-    assert float(up_batch.meta_vec[0, SCORE_PENALTY_BIT_OFFSET].item()) == 0.0
+    assert float(up_batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_SCORE_DELTA_OFFSET].item()) == pytest.approx(1.0)
+    assert float(up_batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_KILL_DELTA_OFFSET].item()) == pytest.approx(1.0)
+    assert float(up_batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_PENALTY_BIT_OFFSET].item()) == 0.0
 
     score_down = list(score_up)
     score_down[0] = 5
@@ -144,9 +143,9 @@ def test_action_history_encodes_score_delta_clipping_and_penalty(make_obs):
         make_obs(score_cumulative=score_down),
     )
 
-    assert float(down_batch.meta_vec[0, SCORE_TOTAL_DELTA_OFFSET].item()) == pytest.approx(-1.0)
-    assert float(down_batch.meta_vec[0, KILLED_VALUE_DELTA_OFFSET].item()) == pytest.approx(0.0)
-    assert float(down_batch.meta_vec[0, SCORE_PENALTY_BIT_OFFSET].item()) == 1.0
+    assert float(down_batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_SCORE_DELTA_OFFSET].item()) == pytest.approx(-1.0)
+    assert float(down_batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_KILL_DELTA_OFFSET].item()) == pytest.approx(0.0)
+    assert float(down_batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_PENALTY_BIT_OFFSET].item()) == 1.0
 
 
 def test_action_history_score_delta_resets_between_episodes(make_obs):
@@ -160,8 +159,8 @@ def test_action_history_score_delta_resets_between_episodes(make_obs):
         make_obs(score_cumulative=[30] + [0] * 12),
     )
 
-    assert float(batch.meta_vec[0, SCORE_TOTAL_DELTA_OFFSET].item()) == pytest.approx(0.0)
-    assert float(batch.meta_vec[0, SCORE_PENALTY_BIT_OFFSET].item()) == 0.0
+    assert float(batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_SCORE_DELTA_OFFSET].item()) == pytest.approx(0.0)
+    assert float(batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_PENALTY_BIT_OFFSET].item()) == 0.0
 
 
 def test_peek_observation_does_not_consume_action_history_score_delta(make_obs):
@@ -180,7 +179,7 @@ def test_peek_observation_does_not_consume_action_history_score_delta(make_obs):
         make_obs(score_cumulative=next_score),
     )
 
-    assert float(peek_batch.meta_vec[0, SCORE_TOTAL_DELTA_OFFSET].item()) == pytest.approx(1.0)
-    assert float(peek_batch.meta_vec[0, KILLED_VALUE_DELTA_OFFSET].item()) == pytest.approx(1.0)
-    assert float(actual_batch.meta_vec[0, SCORE_TOTAL_DELTA_OFFSET].item()) == pytest.approx(1.0)
-    assert float(actual_batch.meta_vec[0, KILLED_VALUE_DELTA_OFFSET].item()) == pytest.approx(1.0)
+    assert float(peek_batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_SCORE_DELTA_OFFSET].item()) == pytest.approx(1.0)
+    assert float(peek_batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_KILL_DELTA_OFFSET].item()) == pytest.approx(1.0)
+    assert float(actual_batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_SCORE_DELTA_OFFSET].item()) == pytest.approx(1.0)
+    assert float(actual_batch.action_feedback_tokens[0, 0, ACTION_FEEDBACK_KILL_DELTA_OFFSET].item()) == pytest.approx(1.0)

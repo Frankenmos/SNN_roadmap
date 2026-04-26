@@ -1,6 +1,8 @@
 import torch
 
 from agent_core.policy_protocol import (
+    ACTION_FEEDBACK_TOKEN_COUNT,
+    ACTION_FEEDBACK_TOKEN_DIM,
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
     META_AVAILABLE_ACTION_DIM,
@@ -10,6 +12,7 @@ from agent_core.policy_protocol import (
     PolicyInputBatch,
     SELECTION_FEATURE_DIM,
     SPATIAL_OBS_SHAPE,
+    TOTAL_TOKEN_COUNT,
 )
 
 
@@ -58,7 +61,7 @@ def make_policy_batch(
     state_in = None
     if with_state:
         if state_shape is None:
-            state_shape = (batch_size, 94, 64)
+            state_shape = (batch_size, TOTAL_TOKEN_COUNT, 64)
         fill_value = 0.0 if zeros else 1.0
         if len(state_shape) == 3:
             state_in = make_dummy_state(
@@ -85,6 +88,11 @@ def make_policy_batch(
             SELECTION_FEATURE_DIM,
         ),
         selection_mask=torch.ones(batch_size, MAX_SELECTION_TOKENS, dtype=torch.bool),
+        action_feedback_tokens=tensor_factory(
+            batch_size,
+            ACTION_FEEDBACK_TOKEN_COUNT,
+            ACTION_FEEDBACK_TOKEN_DIM,
+        ),
         meta_vec=meta_vec,
         state_in=state_in,
     )

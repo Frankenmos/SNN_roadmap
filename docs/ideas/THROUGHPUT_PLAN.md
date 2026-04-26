@@ -2,7 +2,7 @@
 
 Less dramatic name for the "need for speed" doc.
 
-This is the performance companion to `RAYPLAN.md` and `arhitecture.md`.
+This is the performance companion to `RAYPLAN.md` and `ARCHITECTURE.md`.
 The goal is not to optimize before the distributed trainer exists. The
 goal is to keep the first Ray version from accidentally turning every
 SC2 step into a cloud of tiny Python objects and huge surprise copies.
@@ -44,15 +44,21 @@ So the speed plan is not "rewrite the model." It is:
 
 ## 2. Payload Reality
 
-Current config:
+Current model/effective config:
 
 ```yaml
 model:
   spatial_input_shape: [27, 84, 84]
-  vector_input_dim: 19
+  vector_input_dim: 15
   attention_pool_size: 7
   attention_embed_dim: 64
   spatial_head_type: "coarse_to_fine"
+  coarse_grid_size: 7
+  local_grid_size: 12
+
+derived_policy_protocol:
+  action_feedback_tokens: [1, 9]
+  total_tokens: 95
 
 hyperparameters:
   rollout_steps: 2048
@@ -88,11 +94,14 @@ The other inputs are smaller:
     20 * 7 float32 ~= 0.55 KiB / step
 
   meta_vec:
-    19 float32 ~= 76 bytes / step
+    15 float32 ~= 60 bytes / step
+
+  action_feedback_tokens:
+    1 * 9 float32 ~= 36 bytes / step
 
   one full SNN state snapshot:
-    syn + mem, 2 pathways, 94 tokens, 64 dims
-    ~= 94 KiB float32
+    syn + mem, 2 pathways, 95 tokens, 64 dims
+    ~= 95 KiB float32
 ```
 
 Conclusion: spatial transport and recurrent-state snapshots are the
@@ -141,15 +150,16 @@ RolloutFragment:
   actor_id: int
   fragment_id: int
   policy_version: int
-  policy_input_version: int
-  bridge_schema_version: int
+  policy_protocol_version: int
+  policy_input_schema: str
 
   spatial_obs: Tensor[T, 27, 84, 84]
   entity_features: Tensor[T, 24, 21]
   entity_mask: Tensor[T, 24]
   selection_features: Tensor[T, 20, 7]
   selection_mask: Tensor[T, 20]
-  meta_vec: Tensor[T, 19]
+  action_feedback_tokens: Tensor[T, 1, 9]
+  meta_vec: Tensor[T, 15]
 
   actions: Tensor[T]
   move_x: Tensor[T]
@@ -161,6 +171,8 @@ RolloutFragment:
   values: Tensor[T]
   rewards: Tensor[T]
   dones: Tensor[T]
+  truncateds: Tensor[T]
+  episode_reset_mask: Tensor[T]
   sample_mask: Tensor[T]
 
   recurrent_state: packed state plan
@@ -220,10 +232,32 @@ Acceptance criteria:
 - 1 actor and 2 actor smoke tests pass
 - fragment payload has no raw PySC2 objects
 - all target-head indices survive transport
-- bridge schema and policy input versions are validated
+- `policy_protocol_version` and `policy_input_schema` are validated
 - throughput counters exist
 
 This phase can still be float32. Correct first.
+
+---
+
+## 6.1. Correctness Traps While Chasing Throughput
+
+The dangerous optimizations are the ones that look like transport tweaks but
+change the learning problem:
+
+- Do not drop `action_feedback_tokens`; they are no longer embedded in
+  `meta_vec`.
+- Do not collapse `done`, `truncated`, and episode reset into one flag. Terminal
+  `done` controls GAE bootstrapping; reset boundaries control recurrent and
+  reward/extractor/action-feedback state.
+- Do not ship only decoded `move_x/move_y` for spatial actions. The PPO update
+  also needs the sampled target-head indices (`target_index`, `coarse_index`,
+  `fine_index`) to recompute the correct old action log-prob path.
+- Do not send actor-side CNN/spatial-token outputs in v1. That removes or
+  changes learner-side gradients through the encoder unless the model is
+  deliberately redesigned.
+- Do not let actors continue collecting under stale weights while the learner
+  performs multiple PPO epochs unless we intentionally move to an off-policy
+  correction algorithm.
 
 ---
 
@@ -302,7 +336,7 @@ Current PPO storage keeps pre-step recurrent state in each stored
 
 ```text
 state shape per row:
-  [2 pathways, 94 tokens, 64 dims]
+  [2 pathways, 95 tokens, 64 dims]
 
 state tensors:
   syn and mem
@@ -382,11 +416,14 @@ distributed:
   fragment_steps: 512
   global_rollout_steps: 2048
   sc2_runtime_profile: "linux_headless"
+  required_policy_protocol_version: 2
+  required_policy_input_schema: "stream_action_feedback_v1"
 
 throughput:
   fragment_float_dtype: "float32"      # later: "float16"
   spatial_transport: "normalized_float" # later: "uint8_feature_layer"
   recurrent_state_transport: "per_step" # later: "tbptt_initial"
+  episode_boundary_transport: "done_truncated_reset_masks"
   emit_timing_metrics: true
   emit_fragment_size_metrics: true
 ```

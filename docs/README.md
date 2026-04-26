@@ -15,7 +15,8 @@
 
 ## Current Planning
 
-- [action_history_bridge_plan.md](current/action_history_bridge_plan.md) - Current 24-dim action-history bridge protocol
+- [ACTION_FEEDBACK_PLAN.md](current/ACTION_FEEDBACK_PLAN.md) - Current stream-token action feedback protocol
+- [action_history_bridge_plan.md](current/action_history_bridge_plan.md) - Historical 24-dim action-history bridge protocol
 - [feedback_diagnostics_note.md](current/feedback_diagnostics_note.md) - Feedback JSONL shape and meta layout
 
 ## Current State

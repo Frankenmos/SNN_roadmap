@@ -8,8 +8,7 @@ import numpy as np
 from pysc2.env import base_env_wrapper
 
 from agent_core.policy_protocol import (
-    AGENT_LAST_ACTION_DIM,
-    AGENT_LAST_ACTION_OFFSET,
+    ACTION_FEEDBACK_TOKEN_DIM,
     CURATED_FEATURE_UNIT_FIELDS,
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
@@ -105,10 +104,9 @@ class PolicyInputDiagnosticsWrapper(base_env_wrapper.BaseEnvWrapper):
             META_AVAILABLE_ACTION_OFFSET : META_AVAILABLE_ACTION_OFFSET
             + META_AVAILABLE_ACTION_DIM
         ]
-        bridge_token = meta_vec[
-            AGENT_LAST_ACTION_OFFSET : AGENT_LAST_ACTION_OFFSET
-            + AGENT_LAST_ACTION_DIM
-        ]
+        action_feedback_token = (
+            batch.action_feedback_tokens[0, 0].detach().cpu().float()
+        )
 
         return {
             "event": event,
@@ -148,7 +146,8 @@ class PolicyInputDiagnosticsWrapper(base_env_wrapper.BaseEnvWrapper):
                     round(float(meta_vec[META_LAST_ACTION_INDEX_OFFSET].item()))
                 ),
                 "meta_available_action_mask_active": int(round(float(avail_slice.sum().item()))),
-                "meta_agent_last_action_token": bridge_token.tolist(),
+                "action_feedback_token_dim": ACTION_FEEDBACK_TOKEN_DIM,
+                "action_feedback_token": action_feedback_token.tolist(),
                 "entity_feature_sample": batch.entity_features[
                     0, : min(entity_count, self.max_entity_samples)
                 ].detach().cpu().tolist(),

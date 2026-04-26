@@ -3,9 +3,9 @@ import torch
 
 from MockedEnv.policy_batch import make_policy_batch
 from agent_core.policy_protocol import (
-    AGENT_LAST_ACTION_OFFSET,
     BRIDGE_ACTION_BOOTSTRAP_SELECT,
     META_VECTOR_DIM,
+    META_LAST_ACTION_INDEX_OFFSET,
     POLICY_ACTION_DIM,
     POLICY_ACTION_RIGHT_CLICK,
     PolicyInputBatch,
@@ -53,7 +53,7 @@ def _policy_batch(
         state_shape=(
             batch_size,
             2,
-            4 * 4 + 24 + 20 + 1,
+            4 * 4 + 24 + 20 + 1 + 1,
             32,
         ),
     )
@@ -91,6 +91,7 @@ def test_agent_step_returns_current_training_tuple(make_obs):
     assert tuple(policy_input.spatial_obs.shape) == (1, 27, 84, 84)
     assert tuple(policy_input.entity_features.shape) == (1, 24, 21)
     assert tuple(policy_input.selection_features.shape) == (1, 20, 7)
+    assert tuple(policy_input.action_feedback_tokens.shape) == (1, 1, 9)
     assert tuple(policy_input.meta_vec.shape) == (1, META_VECTOR_DIM)
     assert policy_input.state_in is not None
     assert isinstance(learnable, bool)
@@ -273,7 +274,7 @@ def test_encode_step_tensors_returns_structured_spatial_context():
 
     assert latent.shape == (2, 64)
     assert state_value.shape == (2,)
-    assert next_state[0].shape == (2, 2, 4 * 4 + 24 + 20 + 1, 32)
+    assert next_state[0].shape == (2, 2, 4 * 4 + 24 + 20 + 1 + 1, 32)
     assert spatial_context.shape == (2, 32, 4, 4)
 
 
@@ -340,7 +341,7 @@ def test_policy_accepts_legacy_single_timescale_state():
         spatial_shape=SPATIAL_OBS_SHAPE,
         meta_dim=META_VECTOR_DIM,
         with_state=True,
-        state_shape=(1, 4 * 4 + 24 + 20 + 1, 32),
+        state_shape=(1, 4 * 4 + 24 + 20 + 1 + 1, 32),
         zeros=True,
     )
 
@@ -350,7 +351,7 @@ def test_policy_accepts_legacy_single_timescale_state():
     assert target_head_state.primary_logits.shape == (1, 16)
     assert target_head_state.secondary_logits is None
     assert state_value.shape == (1,)
-    assert next_state[0].shape == (1, 2, 4 * 4 + 24 + 20 + 1, 32)
+    assert next_state[0].shape == (1, 2, 4 * 4 + 24 + 20 + 1 + 1, 32)
     assert next_state[1].shape == next_state[0].shape
 
 
@@ -364,7 +365,7 @@ def test_policy_forward_handles_batch_size_not_equal_temporal_pathways():
     assert target_head_state.primary_logits.shape == (4, 16)
     assert target_head_state.secondary_logits is None
     assert state_value.shape == (4,)
-    assert next_state[0].shape == (4, 2, 4 * 4 + 24 + 20 + 1, 32)
+    assert next_state[0].shape == (4, 2, 4 * 4 + 24 + 20 + 1 + 1, 32)
     assert next_state[1].shape == next_state[0].shape
 
 
@@ -434,7 +435,7 @@ def test_selection_encoder_zeroes_padded_slots():
 def test_meta_encoder_returns_single_token():
     encoder = MetaEncoder(meta_input_dim=META_VECTOR_DIM, embed_dim=32)
     meta_vec = torch.randn(4, META_VECTOR_DIM)
-    meta_vec[:, AGENT_LAST_ACTION_OFFSET] = torch.tensor([0.0, 1.0, 2.0, 3.0])
+    meta_vec[:, META_LAST_ACTION_INDEX_OFFSET] = torch.tensor([0.0, 1.0, 2.0, 3.0])
 
     encoded = encoder(meta_vec)
 
