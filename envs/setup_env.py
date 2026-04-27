@@ -45,7 +45,7 @@ def create_env(
         agent_interface_format=features.AgentInterfaceFormat(
             feature_dimensions=features.Dimensions(screen=84, minimap=64),
             use_feature_units=True,
-            use_raw_units = False,
+            use_raw_units = True,
         ),
         step_mul=6,
         realtime=False,
