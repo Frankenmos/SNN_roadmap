@@ -25,7 +25,8 @@ This document ties together the complete architecture of the SNN+PPO DefeatRoach
 7. [Action Feedback Tokens](#action-feedback-tokens)
 8. [Reward Function](#reward-function)
 9. [Training Loop (TBPTT-PPO)](#training-loop-tbptt-ppo)
-10. [Configuration](#configuration)
+10. [Fragment-Based Rollouts](#fragment-based-rollouts)
+11. [Configuration](#configuration)
 
 ---
 
@@ -505,7 +506,96 @@ For each chunk:
 | Value | `0.5 × mean((return - value)²)` | Masked by sample_mask |
 | Entropy | `-0.01 × mean(entropy)` | Normalized per head |
 
-### Hyperparameters
+---
+
+## Fragment-Based Rollouts
+
+### Why Fragments?
+
+The current implementation uses a **fragment-based rollout memory** design to prepare for distributed training with Ray:
+
+```
+Single-process path (current):
+  store_transition() → memory (list)
+  finalize_fragment() → RolloutFragment
+  consume_pending_fragments() → list[RolloutFragment]
+  update_policy(fragments) → per-fragment GAE → PPO loss
+
+Distributed path (future):
+  RolloutActor.collect_fragment() → RolloutFragment
+  Learner aggregates fragments from N actors
+  update_policy(fragments) → same method as local
+```
+
+### RolloutFragment Structure
+
+[`RolloutFragment`](../../distributed/protocol.py) carries all rollout data with its own bootstrap tail:
+
+| Field | Shape | Purpose |
+|-------|-------|---------|
+| `actor_id` | scalar | Which actor produced this fragment |
+| `fragment_id` | scalar | Monotonic fragment index per actor |
+| `policy_version` | scalar | Learner update count when collected |
+| `spatial_obs` | `[T, 27, 84, 84]` | Screen features |
+| `entity_features` | `[T, 24, 21]` | Unit features |
+| `entity_mask` | `[T, 24]` | Valid entity slots |
+| `selection_features` | `[T, 20, 7]` | Selected units |
+| `selection_mask` | `[T, 20]` | Valid selection slots |
+| `action_feedback_tokens` | `[T, 1, 9]` | Previous action + outcome |
+| `meta_vec` | `[T, 15]` | Player + available + last-action |
+| `actions`, `rewards`, `values`, ... | `[T]` | PPO data |
+| `tail_next_policy_input` | `PolicyInputBatch` | Bootstrap for GAE |
+| `tail_next_snn_state` | `(syn, mem)` | SNN state after tail |
+| `policy_protocol_version` | scalar | Must equal 2 |
+| `policy_input_schema` | scalar | Must equal "stream_action_feedback_v1" |
+
+### Per-Fragment GAE
+
+With multi-actor collection, each fragment needs its own bootstrap value:
+
+```python
+for fragment in fragments:
+    tail_value = _bootstrap_fragment_tail_value(fragment.tail_next_policy_input)
+    advantages = _compute_advantages(
+        fragment.rewards,
+        fragment.values,
+        fragment.dones,
+        tail_value,  # Fragment-specific bootstrap
+    )
+    returns = (advantages + fragment.values).detach()
+```
+
+### Protocol Validation
+
+Every fragment validates protocol compatibility before training:
+
+```python
+validate_policy_protocol(
+    policy_protocol_version=2,
+    policy_input_schema="stream_action_feedback_v1",
+)
+```
+
+This prevents silent corruption from stale actors or incompatible checkpoints.
+
+### Migration Path to Ray
+
+**What stays the same:**
+- `RolloutFragment` structure
+- `PPO.update_policy(fragments)` method
+- Per-fragment GAE computation
+- TBPTT chunking and PPO loss
+
+**What changes:**
+- Fragment production: Actor emits directly vs `finalize_fragment()` from memory
+- Fragment transport: Ray object ref vs in-memory list
+- Weight distribution: Learner → actors via Ray
+
+See [`FRAGMENT_PPO.md`](FRAGMENT_PPO.md) for complete fragment documentation.
+
+---
+
+## Hyperparameters
 
 | Parameter | Value | Meaning |
 |-----------|-------|---------|
@@ -576,7 +666,8 @@ model:               # Policy network config
 |----------|-------------|
 | [`REPO_STATE.md`](REPO_STATE.md) | Current repo status and what's done/not done |
 | [`THE_BPTT.md`](THE_BPTT.md) | TBPTT design and historical analysis |
-| [`action_history_bridge_plan.md`](action_history_bridge_plan.md) | 24-dim bridge protocol |
+| [`FRAGMENT_PPO.md`](FRAGMENT_PPO.md) | Fragment-based memory management |
+| [`RAY_STATUS.md`](RAY_STATUS.md) | Ray implementation phases and status |
 | [`ACTION_FEEDBACK_PLAN.md`](ACTION_FEEDBACK_PLAN.md) | Stream token migration plan |
 | [`SPATIAL_HEADS.md`](../SPATIAL_HEADS.md) | Spatial target head comparison |
 

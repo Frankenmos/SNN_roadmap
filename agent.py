@@ -300,8 +300,9 @@ class DefeatRoaches(base_agent.BaseAgent):
         self.last_action_token = self.action_space.get_last_token()
         self.last_action_sample = None
 
-    def update_policy(self):
+    def update_policy(self, fragments=None):
         _, stats = self.ppo.update_policy(
+            fragments=fragments,
             batch_size=cfg.hyperparameters.batch_size,
             epochs=cfg.hyperparameters.epochs,
         )

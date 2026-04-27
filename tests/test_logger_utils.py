@@ -55,6 +55,8 @@ def test_log_listener_persists_tbptt_update_metrics(tmp_path):
                 "nonfinite_grad_steps": 0,
                 "skipped_optimizer_steps": 0,
                 "transitions_in_update": 64,
+                "learnable_transitions_in_update": 60,
+                "fragments_in_update": 3,
                 "return_mean": 1.0,
                 "return_std": 2.0,
                 "return_p10": 0.1,
@@ -82,9 +84,11 @@ def test_log_listener_persists_tbptt_update_metrics(tmp_path):
     conn = sqlite3.connect(db_path)
     update_row = conn.execute(
         "SELECT global_update_index, policy_version, policy_protocol_version, "
-        "policy_input_schema, update_wall_seconds, tbptt_chunks, tbptt_chunk_groups, "
-        "tbptt_window, tbptt_group_max_steps, tbptt_group_mean_active_chunks, "
-        "tbptt_forward_calls FROM ppo_updates",
+        "policy_input_schema, transitions_in_update, "
+        "learnable_transitions_in_update, fragments_in_update, "
+        "update_wall_seconds, tbptt_chunks, tbptt_chunk_groups, tbptt_window, "
+        "tbptt_group_max_steps, tbptt_group_mean_active_chunks, tbptt_forward_calls "
+        "FROM ppo_updates",
     ).fetchone()
     step_row = conn.execute(
         "SELECT actor_id, policy_version, fragment_id, policy_protocol_version, "
@@ -97,6 +101,9 @@ def test_log_listener_persists_tbptt_update_metrics(tmp_path):
         4,
         2,
         "stream_action_feedback_v1",
+        64,
+        60,
+        3,
         3.5,
         8,
         16,

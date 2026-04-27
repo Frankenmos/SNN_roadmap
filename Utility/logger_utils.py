@@ -89,6 +89,8 @@ def initialize_db(db_path):
                 nonfinite_grad_steps INTEGER,
                 skipped_optimizer_steps INTEGER,
                 transitions_in_update INTEGER,
+                learnable_transitions_in_update INTEGER,
+                fragments_in_update INTEGER,
                 return_mean REAL,
                 return_std REAL,
                 return_p10 REAL,
@@ -145,6 +147,8 @@ def initialize_db(db_path):
         _safe_add_column(conn, "ppo_updates", "nonfinite_grad_steps INTEGER")
         _safe_add_column(conn, "ppo_updates", "skipped_optimizer_steps INTEGER")
         _safe_add_column(conn, "ppo_updates", "transitions_in_update INTEGER")
+        _safe_add_column(conn, "ppo_updates", "learnable_transitions_in_update INTEGER")
+        _safe_add_column(conn, "ppo_updates", "fragments_in_update INTEGER")
         _safe_add_column(conn, "ppo_updates", "return_mean REAL")
         _safe_add_column(conn, "ppo_updates", "return_std REAL")
         _safe_add_column(conn, "ppo_updates", "return_p10 REAL")
@@ -216,14 +220,15 @@ class LogListener(multiprocessing.Process):
                     "mean_policy_loss, mean_value_loss, mean_entropy, mean_kl, "
                     "clip_fraction, explained_variance, grad_norm, lr, "
                     "nonfinite_grad_steps, skipped_optimizer_steps, "
-                    "transitions_in_update, return_mean, return_std, "
-                    "return_p10, return_p50, return_p90, "
+                    "transitions_in_update, learnable_transitions_in_update, "
+                    "fragments_in_update, return_mean, return_std, return_p10, "
+                    "return_p50, return_p90, "
                     "entity_mask_utilization, entity_count_p50, entity_count_p99, "
                     "selection_mask_utilization, update_wall_seconds, "
                     "tbptt_chunks, tbptt_chunk_groups, tbptt_window, "
                     "tbptt_group_max_steps, tbptt_group_mean_active_chunks, "
                     "tbptt_forward_calls) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     buffer_updates,
                 )
                 buffer_updates = []
@@ -313,6 +318,8 @@ class LogListener(multiprocessing.Process):
                             record.get("nonfinite_grad_steps"),
                             record.get("skipped_optimizer_steps"),
                             record.get("transitions_in_update"),
+                            record.get("learnable_transitions_in_update"),
+                            record.get("fragments_in_update"),
                             record.get("return_mean"),
                             record.get("return_std"),
                             record.get("return_p10"),

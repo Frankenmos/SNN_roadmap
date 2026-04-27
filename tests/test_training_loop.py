@@ -31,6 +31,8 @@ class DummyPPO:
     def __init__(self):
         self.memory = []
         self.final_next = None
+        self.pending_fragments = []
+        self.update_count = 0
         self.store_calls = 0
         self.final_next_calls = 0
 
@@ -41,6 +43,30 @@ class DummyPPO:
     def set_final_next(self, *args, **kwargs):
         self.final_next_calls += 1
         self.final_next = True
+
+    def finalize_fragment(self, **kwargs):
+        del kwargs
+        if not self.memory:
+            return None
+        fragment = list(self.memory)
+        self.pending_fragments.append(fragment)
+        self.memory.clear()
+        self.final_next = None
+        return fragment
+
+    def consume_pending_fragments(self):
+        fragments = list(self.pending_fragments)
+        self.pending_fragments.clear()
+        return fragments
+
+    def pending_rollout_steps(self, include_current=True):
+        steps = sum(len(fragment) for fragment in self.pending_fragments)
+        if include_current:
+            steps += len(self.memory)
+        return steps
+
+    def has_pending_rollout(self):
+        return bool(self.memory or self.pending_fragments)
 
 
 class DummyPolicy:
@@ -88,9 +114,12 @@ class DummyAgent:
             True,
         )
 
-    def update_policy(self):
+    def update_policy(self, fragments=None):
+        del fragments
         self.update_calls += 1
         self.ppo.memory.clear()
+        self.ppo.pending_fragments.clear()
+        self.ppo.update_count += 1
         return {
             "mean_policy_loss": 0.0,
             "mean_value_loss": 0.0,
@@ -103,6 +132,8 @@ class DummyAgent:
             "nonfinite_grad_steps": 0,
             "skipped_optimizer_steps": 0,
             "transitions_in_update": 4,
+            "learnable_transitions_in_update": 4,
+            "fragments_in_update": 1,
             "return_mean": 0.0,
             "return_std": 0.0,
             "return_p10": 0.0,

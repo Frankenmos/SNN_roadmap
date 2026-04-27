@@ -172,7 +172,7 @@ def save_checkpoint(
     require_rollout_clear=True,
 ):
     saved = False
-    if require_rollout_clear and len(agent.ppo.memory) > 0:
+    if require_rollout_clear and agent.ppo.has_pending_rollout():
         print(
             "Skipping checkpoint save (PPO rollout cache not empty; "
             "waiting for update to preserve continuity).",
@@ -322,6 +322,13 @@ def load_checkpoint(agent, checkpoint_path=None):
 
 
 def write_effective_config(agent):
+    distributed_cfg = getattr(cfg, "distributed", None)
+    distributed_payload = None
+    if distributed_cfg is not None:
+        try:
+            distributed_payload = dict(distributed_cfg.items())
+        except Exception:
+            distributed_payload = None
     payload = {
         "run_name": getattr(cfg.environment, "run_name", ""),
         "environment": {
@@ -344,6 +351,7 @@ def write_effective_config(agent):
         ),
         "reward_scale": float(agent.reward_scale),
         "total_updates_estimate": int(agent.total_updates_estimate),
+        "distributed": distributed_payload,
     }
     with open(_run_path("effective_config.json"), "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
@@ -351,20 +359,13 @@ def write_effective_config(agent):
 
 def save_initial_config():
     """Save the raw config.yaml content to the run directory at start."""
-    import shutil
-    from pathlib import Path
-
-    # Find and copy the original config.yaml file
-    project_root = Path(__file__).parent
-    config_files = list(project_root.glob("config.yaml")) + list(project_root.glob("config.yml"))
-
-    if config_files:
-        src_config = config_files[0]
+    src_config = Path(getattr(cfg, "config_path", Path(__file__).parent / "config.yaml"))
+    if src_config.exists():
         dst_config = _run_path("config.yaml")
         shutil.copy2(src_config, dst_config)
         print(f"Initial config saved to {dst_config}")
     else:
-        print(f"Warning: config.yaml not found in project root")
+        print(f"Warning: config.yaml not found at {src_config}")
 
 
 def run_eval_sweep(env, agent, episodes, steps_per_episode, deterministic=True):
@@ -402,9 +403,15 @@ def run_eval_sweep(env, agent, episodes, steps_per_episode, deterministic=True):
 
 
 def maybe_run_policy_update(agent, log_queue, episode_index):
-    if not agent.ppo.memory:
+    if agent.ppo.memory:
+        agent.ppo.finalize_fragment(
+            actor_id=0,
+            policy_version=int(getattr(agent.ppo, "update_count", 0)),
+        )
+    fragments = agent.ppo.consume_pending_fragments()
+    if not fragments:
         return None
-    stats = agent.update_policy()
+    stats = agent.update_policy(fragments=fragments)
     if stats is not None:
         policy_version = int(
             stats.get("policy_version", stats.get("global_update_index", 0)) or 0
@@ -507,6 +514,16 @@ def train_agent(env, agent, observation_extractor, log_queue):
                         dtype=torch.float32,
                         device=agent.policy.device,
                     ),
+                    truncated=torch.tensor(
+                        bool(time_cap and not terminal),
+                        dtype=torch.float32,
+                        device=agent.policy.device,
+                    ),
+                    episode_reset=torch.tensor(
+                        bool(env_done or time_cap),
+                        dtype=torch.bool,
+                        device=agent.policy.device,
+                    ),
                     target_index=(
                         None
                         if action_sample is None or action_sample.target_index is None
@@ -581,7 +598,7 @@ def train_agent(env, agent, observation_extractor, log_queue):
                     }
                 )
 
-            if len(agent.ppo.memory) >= rollout_steps:
+            if agent.ppo.pending_rollout_steps() >= rollout_steps:
                 maybe_run_policy_update(agent, log_queue, episode + 1)
 
             # Exit on true terminal or time cap (but cap is truncation, not terminal)
@@ -602,7 +619,13 @@ def train_agent(env, agent, observation_extractor, log_queue):
             }
         )
 
-        if len(agent.ppo.memory) >= rollout_steps:
+        if agent.ppo.memory:
+            agent.ppo.finalize_fragment(
+                actor_id=0,
+                policy_version=int(getattr(agent.ppo, "update_count", 0)),
+            )
+
+        if agent.ppo.pending_rollout_steps(include_current=False) >= rollout_steps:
             maybe_run_policy_update(agent, log_queue, episode + 1)
 
         if eval_frequency > 0 and eval_episodes > 0 and (episode + 1) % eval_frequency == 0:
@@ -655,11 +678,16 @@ def train_agent(env, agent, observation_extractor, log_queue):
                 "Ep %s | Avg: %.2f | Rollout: %s | Helper: %.1f%%",
                 episode + 1,
                 avg_reward,
-                len(agent.ppo.memory),
+                agent.ppo.pending_rollout_steps(),
                 helper_pct,
             )
 
     if agent.ppo.memory:
+        agent.ppo.finalize_fragment(
+            actor_id=0,
+            policy_version=int(getattr(agent.ppo, "update_count", 0)),
+        )
+    if agent.ppo.pending_fragments:
         maybe_run_policy_update(agent, log_queue, episode_count)
 
     return best_eval_reward

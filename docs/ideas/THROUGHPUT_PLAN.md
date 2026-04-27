@@ -9,11 +9,19 @@ SC2 step into a cloud of tiny Python objects and huge surprise copies.
 
 ## Status (2026-04-26)
 
-The first transport-prep slice is in place: typed fragment dataclasses,
-policy protocol/schema validation, actor/version/protocol log fields, and
-checkpoint schema validation. The learner still uses the local `PPO.memory`
-list, so the next correctness step is fragment-based PPO/GAE in the
-single-process trainer before adding Ray workers.
+The first transport-prep slices and the initial Ray path are in place: typed
+fragment dataclasses, policy protocol/schema validation, actor/version/protocol
+log fields, checkpoint schema validation, fragment-based PPO/GAE in the
+single-process trainer, a Ray-free `LocalRolloutWorker`, a Ray `RolloutActor`,
+and a synchronous learner entrypoint. The learner consumes
+`list[RolloutFragment]`; the first live smoke target is now:
+
+```bash
+python -m distributed.ray_train --num-actors 4 --max-updates 1
+```
+
+Still not solved: payload size, extractor-normalizer aggregation, actor
+respawn, EvalActor, and step-level distributed logging.
 
 ---
 
@@ -25,10 +33,12 @@ The current data structures are both good and extremely honest:
   validation, stacking, slicing, device transfer, and recurrent state.
 - `ActionSample` is a clean scalar acting result with action id, click
   target, target-head indices, log-prob, value, and next SNN state.
-- `PPO.memory` is a `list[dict]` where each transition stores a
-  `PolicyInputBatch` plus many small CPU tensors.
-- `PPO.update_policy()` later stacks those small tensors, builds another
-  `list[dict]` of TBPTT chunks, then packs chunk groups into dense
+- `PPO.memory` is now only a local current-fragment staging buffer where each
+  transition stores a `PolicyInputBatch` plus small CPU tensors.
+- Before learner updates, that staging buffer is finalized into
+  `RolloutFragment` objects.
+- `PPO.update_policy()` consumes `list[RolloutFragment]`, computes GAE per
+  fragment, builds TBPTT chunks, then packs chunk groups into dense
   `[T, group, ...]` tensors for replay.
 
 Locally, this is fine. It is easy to inspect and hard to be confused by.
@@ -135,7 +145,7 @@ Then measure. Then optimize.
 
 ## 4. Target Transport Shape
 
-Current local shape:
+Current local staging shape before fragment finalization:
 
 ```text
 PPO.memory:
@@ -151,7 +161,7 @@ PPO.memory:
   ]
 ```
 
-Distributed shape should be columnar:
+Learner/Ray transport shape should be columnar:
 
 ```text
 RolloutFragment:
