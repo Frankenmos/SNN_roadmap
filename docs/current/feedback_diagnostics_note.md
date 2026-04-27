@@ -191,9 +191,9 @@ invocations. Prefer a fresh output path, delete the old diagnostic file before a
 new run, or add a future `run_id` / truncate mode before relying on
 episode-step uniqueness.
 
-## Current Action-History Meta Shape
+## Historical Action-History Meta Shape
 
-Previous `meta_vec[19]`:
+Previous `meta_vec[19]` before the 24-dim bridge expansion:
 
 | Slice | Dim | Meaning |
 |-------|-----|---------|
@@ -202,7 +202,7 @@ Previous `meta_vec[19]`:
 | `14:15` | 1 | PySC2 last-action index |
 | `15:19` | 4 | agent bridge token `[type, x_norm, y_norm, extra]` |
 
-Implemented evidence-backed feedback extension:
+The evidence-backed feedback extension then produced a 24-dim `meta_vec`:
 
 | New field | Dim | Encoding |
 |-----------|-----|----------|
@@ -212,9 +212,17 @@ Implemented evidence-backed feedback extension:
 | `killed_value_delta` | 1 | clipped/normalized delta of `score_cumulative[5]` |
 | `score_penalty_bit` | 1 | `1.0` if `score_total_delta < 0` |
 
-Current target: `META_VECTOR_DIM = 24`; see
-[action_history_bridge_plan.md](action_history_bridge_plan.md) for the source of
-truth.
+That 24-dim layout is now historical. The current protocol is
+`POLICY_INPUT_SCHEMA = "stream_action_feedback_v1"`:
+
+| Tensor | Shape | Meaning |
+|--------|-------|---------|
+| `meta_vec` | `[B, 15]` | player features, semantic action availability, PySC2 last-action index |
+| `action_feedback_tokens` | `[B, 1, 9]` | attempted action, click coordinates, execution bits, score-delta feedback |
+
+For the source of truth, use `agent_core/policy_protocol.py` and
+`docs/current/ACTION_FEEDBACK_PLAN.md`. The old 24-dim bridge plan lives at
+`docs/archive/action_history_bridge_plan.md`.
 
 Deferred until it earns space:
 
@@ -233,5 +241,5 @@ Inspect analysis_results/<run_name>/last_action_diagnostics.jsonl and score_diag
 2. frequency and values of alerts
 3. how often dispatched actions appear in current_frame.last_action_ids
 4. which score_cumulative indices change, with example deltas
-5. candidate compact encodings for meta_vec, without implementing them yet
+5. candidate compact encodings for future action-feedback tokens, without implementing them yet
 ```

@@ -20,9 +20,9 @@ This is currently an SNN + PPO DefeatRoaches project with:
 - dual-timescale token memory:
   fast + slow token-temporal SNN pathways feeding one shared control latent
 - explicit 2D positional encoding on the spatial token grid
-- a generic conditional target-head interface with a token-pointer default:
-  the live policy now predicts one categorical distribution over pooled spatial
-  tokens and decodes token centers back to screen clicks
+- a generic conditional target-head interface:
+  `coarse_to_fine` is the current `config.yaml` default, while `token_pointer`
+  remains an efficient lower-precision fallback/comparison head
 
 The current policy input path is:
 
@@ -71,16 +71,15 @@ The active verification run is now `Zero` (not yet ready for full post-run analy
 Current interpretation:
 
 - reward refactor / rebalance is still urgent
-- the new semantic-action + token-pointer stack now needs env-backed judgment
-  before training runs with the implemented `coarse_to_fine` spatial head
-  (Phase 3 `heatmap` head and larger action-space work are still deferred)
+- the new semantic-action + `coarse_to_fine` stack now needs env-backed
+  judgment before pulling the `heatmap` head or larger action-space work forward
 
 ## What Is Considered Current
 
 - `docs/current/REPO_STATE.md`
   short repo truth and open questions
-- `docs/current/action_refactor.md`
-  what the Stage-1 action refactor landed and what remains
+- `docs/current/ACTION_FEEDBACK_PLAN.md`
+  current stream-token action-feedback protocol and bridge history
 - `docs/current/THE_BPTT.md`
   still current because Stage-1 TBPTT is implemented and its long-term verdict is still open
 - `docs/current/working_log.md`
@@ -119,8 +118,11 @@ Current interpretation:
   the policy exposes build/sample/evaluate/decode target hooks and PPO now
   stores richer target payload fields without breaking external `(x, y)` logs
 - token-pointer target head:
-  current default spatial targeting is one categorical over pooled spatial
-  tokens rather than factorized `x` and `y` logits
+  available lower-precision fallback/comparison head that predicts one
+  categorical distribution over pooled spatial tokens
+- coarse-to-fine target head:
+  implemented and selected by the current `config.yaml`; live env validation
+  is still pending
 - eval-side trace tooling:
   `--trace_episodes`, `analyze_eval_trace.py`, and checkpoint/activation inspection on saved eval episodes
 - multi-timescale token memory:
@@ -141,15 +143,15 @@ Current interpretation:
 ## What Is Not Done
 
 - reward refactor / rebalance based on the newer wrapper-driven env read
-- terminal win/loss detection cleanup in `RewardFunctionV2`
+- env-backed verification / tuning of `RewardFunctionV3` terminal and outcome
+  semantics
 - refreshed current-run analysis bundle for the **current** checkpoint instead of relying on the old best-checkpoint snapshots
-- explicit time-cap semantics decision:
-  whether `steps_per_episode` is a true task horizon or only a training
-  truncation for PPO bootstrap
+- env-backed validation that timeout-as-truncation behaves as intended in the
+  current single-process and Ray rollout paths
 - env-backed validation that keeping `LEFT_CLICK` masked is still the correct
   no-alias choice on the current wrapper
 - broader action-history token groups beyond the current one-step 9-field bridge
-- `coarse_to_fine` spatial head (implemented, ready for testing) - see [../SPATIAL_HEADS.md](../SPATIAL_HEADS.md)
+- env-backed validation of the current `coarse_to_fine` spatial head - see [../SPATIAL_HEADS.md](../SPATIAL_HEADS.md)
 - selection actions and broader learnable action vocabulary beyond the current
   semantic click scaffold
 - tag-pinned entity identity via `raw_units.tag`
@@ -213,9 +215,10 @@ be treated as incompatible:
 - initial Ray trainer added: rollout actors collect fragments, one learner owns
   optimizer/scheduler/checkpoints, stale `policy_version` fragments are rejected
 
-**Note (2026-04-23)**: The `coarse_to_fine` spatial head is now implemented
-and ready for testing. To use it, set `model.spatial_head_type: "coarse_to_fine"`
-in `config.yaml`. See [../SPATIAL_HEADS.md](../SPATIAL_HEADS.md) for details.
+**Note (2026-04-27)**: The `coarse_to_fine` spatial head is implemented and
+selected in `config.yaml`. `token_pointer` remains available as the lower-cost
+fallback/comparison head. See [../SPATIAL_HEADS.md](../SPATIAL_HEADS.md) for
+details.
 
 ## Explicit Deferrals
 
@@ -233,10 +236,11 @@ Reason:
 ## Immediate Priorities
 
 1. Finalize reward semantics for `Zero` using wrapper-derived terminal and outcome signals.
-2. Env-verify the new semantic action mask and token-pointer clicks on the live wrapper.
-3. Fix the terminal win/loss check in `agent_core/rewards/defeat_roaches_v2.py`.
+2. Env-verify the new semantic action mask and `coarse_to_fine` clicks on the live wrapper.
+3. Verify and tune `RewardFunctionV3` terminal/outcome semantics against live
+   traces.
 4. Regenerate the main `Zero` analysis bundle once the run reaches a stable checkpoint block.
-5. Test `coarse_to_fine` spatial head with a short training run (implementation complete, see [../SPATIAL_HEADS.md](../SPATIAL_HEADS.md)).
+5. Compare `coarse_to_fine` against `token_pointer` only after a short live training/eval pass establishes current behavior.
 6. Re-evaluate deterministic vs stochastic behavior before pulling Stage-2 action work forward.
 
 ## Future Branch Candidates

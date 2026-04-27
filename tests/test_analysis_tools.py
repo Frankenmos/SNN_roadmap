@@ -126,6 +126,15 @@ def test_training_analyzer_loads_tbptt_and_phase_metrics(tmp_path):
         "tbptt_group_max_steps",
         "tbptt_group_mean_active_chunks",
         "tbptt_forward_calls",
+        "rollout_wall_seconds",
+        "ray_get_wall_seconds",
+        "cpu_to_gpu_transfer_wall_seconds",
+        "chunk_pack_wall_seconds",
+        "replay_forward_wall_seconds",
+        "backward_optimizer_wall_seconds",
+        "payload_total_mib",
+        "cuda_peak_allocated_bytes",
+        "learner_transitions_per_second",
     }.issubset(set(updates_df.columns))
     assert set(phase_mix_df["phase"].astype(str).unique()) == {"early", "mid", "late"}
     probs = phase_mix_df.groupby(["phase", "bin"], observed=False)["prob"].sum()
@@ -248,6 +257,7 @@ def test_training_analyzer_exports_ai_friendly_panels(tmp_path):
     assert "01_reward_trajectory.png" in exported
     assert "07_phase_action_mix.png" in exported
     assert "09_tbptt_speed.png" in exported
+    assert "13_learner_timing_breakdown.png" in exported
     assert "10_eval_split.png" in exported
     assert "11_eval_gap.png" in exported
     assert (out_dir / "manifest.txt").exists()
@@ -358,6 +368,57 @@ def test_training_analyzer_uses_smart_action_semantics_from_effective_config(tmp
     assert diagnosis["action_semantics"] == "smart_screen_v2"
     assert diagnosis["action_labels"][1] == "smart"
     assert diagnosis["noop_action_id"] == 0
+
+
+def test_training_analyzer_uses_stream_action_feedback_semantics(tmp_path):
+    run_dir = tmp_path / "STREAM-1"
+    run_dir.mkdir()
+    db_path = run_dir / "training_logs.db"
+    conn = initialize_db(str(db_path))
+    with conn:
+        conn.execute(
+            "INSERT INTO episodes (episode_id, total_reward, average_reward, steps) "
+            "VALUES (1, 10.0, 1.0, 10)",
+        )
+        step_rows = [
+            (1, idx, 2 if idx < 7 else 0, 10, 11, 1.0, float(idx + 1))
+            for idx in range(10)
+        ]
+        conn.executemany(
+            "INSERT INTO steps "
+            "(episode_id, step_number, action, move_x, move_y, reward, cumulative_reward) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            step_rows,
+        )
+    conn.close()
+    (run_dir / "effective_config.json").write_text(
+        json.dumps(
+            {
+                "distributed": {
+                    "required_policy_input_schema": "stream_action_feedback_v1",
+                },
+                "model": {
+                    "action_dim": 3,
+                    "vector_input_dim": 15,
+                    "spatial_head_type": "coarse_to_fine",
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    analyzer = TrainingAnalyzer(str(db_path))
+    try:
+        diagnosis = analyzer.diagnose(window=2, num_bins=2)
+        spatial_steps = analyzer._spatial_target_steps(analyzer.get_step_metrics())
+    finally:
+        analyzer.close()
+
+    assert diagnosis["action_semantics"] == "stream_action_feedback_v1"
+    assert diagnosis["action_labels"][0] == "no-op"
+    assert diagnosis["action_labels"][2] == "right_click"
+    assert diagnosis["noop_action_id"] == 0
+    assert set(spatial_steps["action"].unique()) == {2}
 
 
 def test_checkpoint_helpers_surface_metadata_extractor_state_and_time_constants():

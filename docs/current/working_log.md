@@ -49,8 +49,10 @@ Verbose pre-compression snapshot:
   - edge cases reviewed (None scores, short arrays, empty actions, reset, peek)
   - full verification report saved to `docs/archive/action_history_bridge_verification_2026-04-24.md`
 - documentation:
-  - new `docs/current/action_history_bridge_plan.md` documents the 24-dim layout
-  - `config.yaml` updated to `vector_input_dim: 24`
+  - the 24-dim layout is documented historically at
+    `docs/archive/action_history_bridge_plan.md`
+  - `config.yaml` was updated to `vector_input_dim: 24` for that intermediate
+    protocol, before the later stream-token migration reduced it to 15
 - checkpoint compatibility: breaking change; old 19-dim checkpoints cannot load
 
 ## 2026-04-19
@@ -285,15 +287,18 @@ Verbose pre-compression snapshot:
 ## Next Checks
 
 - refactor / rebalance the reward function using the newer wrapper-driven env understanding
-- decide and document time-cap semantics:
-  task horizon vs training truncation for PPO bootstrap
+- env-verify timeout-as-truncation behavior:
+  `steps_per_episode` is treated as a cap/truncation for PPO bootstrap, not a
+  true terminal task horizon
 - env-verify the new semantic action mask:
   confirm `RIGHT_CLICK` behaves as intended and keeping `LEFT_CLICK` masked is
   still the right no-alias choice on the live wrapper
-- decide whether the next spatial-head step is actually ready:
-  `coarse_to_fine` should come next only after a short live training/eval pass
-  confirms the token-pointer version is stable
-- fix terminal win/loss detection in `RewardFunctionV2`
+- validate the current spatial-head step:
+  `coarse_to_fine` is implemented and selected in `config.yaml`; it still needs
+  a short live training/eval pass before we draw conclusions or move toward
+  `heatmap`
+- verify and tune `RewardFunctionV3` terminal/outcome semantics against live
+  traces
 - regenerate the main `Zero` report bundle against the live DB/checkpoint state
 - keep `analysis_results/BPTT-1` as historical context only (same obs function shape, but older action-space version)
 - re-run deterministic and stochastic eval after the reward pass

@@ -466,6 +466,40 @@ def _speed_scatter_figure(
     return fig
 
 
+def _timing_breakdown_figure(ppo_updates_df: pd.DataFrame) -> go.Figure:
+    x_axis = "update_id" if "update_id" in ppo_updates_df.columns else ppo_updates_df.index
+    timing_cols = [
+        column
+        for column in [
+            "rollout_wall_seconds",
+            "ray_get_wall_seconds",
+            "update_wall_seconds",
+            "cpu_to_gpu_transfer_wall_seconds",
+            "chunk_pack_wall_seconds",
+            "replay_forward_wall_seconds",
+            "backward_optimizer_wall_seconds",
+            "checkpoint_wall_seconds",
+        ]
+        if column in ppo_updates_df.columns and ppo_updates_df[column].notna().any()
+    ]
+    if not timing_cols:
+        return go.Figure()
+    plot_df = ppo_updates_df[[*([x_axis] if isinstance(x_axis, str) else []), *timing_cols]].copy()
+    if not isinstance(x_axis, str):
+        plot_df = plot_df.assign(update_index=np.asarray(x_axis))
+        x_axis = "update_index"
+    melted = plot_df.melt(id_vars=x_axis, value_vars=timing_cols)
+    fig = px.line(
+        melted,
+        x=x_axis,
+        y="value",
+        color="variable",
+        title="Ray / learner timing breakdown",
+    )
+    fig.update_layout(xaxis_title="PPO update", yaxis_title="seconds")
+    return fig
+
+
 def _eval_figure(eval_runs_df: pd.DataFrame) -> go.Figure:
     if eval_runs_df.empty:
         return go.Figure()
@@ -937,6 +971,31 @@ def render_dashboard() -> None:
                 "tbptt_group_max_steps",
                 "tbptt_group_mean_active_chunks",
                 "tbptt_forward_calls",
+                "rollout_wall_seconds",
+                "ray_get_wall_seconds",
+                "ray_submit_wall_seconds",
+                "rollout_collect_overhead_wall_seconds",
+                "rollout_steps_collected",
+                "rollout_actor_count",
+                "rollout_fragments_collected",
+                "fragment_validation_wall_seconds",
+                "learner_update_from_fragments_wall_seconds",
+                "fragment_tensor_build_wall_seconds",
+                "cpu_to_gpu_transfer_wall_seconds",
+                "bootstrap_value_wall_seconds",
+                "gae_wall_seconds",
+                "tbptt_chunk_build_wall_seconds",
+                "chunk_pack_wall_seconds",
+                "replay_forward_wall_seconds",
+                "loss_eval_wall_seconds",
+                "backward_optimizer_wall_seconds",
+                "ppo_epoch_wall_seconds",
+                "payload_total_mib",
+                "cuda_peak_allocated_gib",
+                "cuda_peak_reserved_gib",
+                "learner_transitions_per_second",
+                "rollout_steps_per_second",
+                "forward_calls_per_second",
             ]
             present_metrics = [
                 metric for metric in metrics_to_plot if metric in ppo_updates_df.columns
@@ -973,9 +1032,18 @@ def render_dashboard() -> None:
                 "tbptt_chunks",
                 "tbptt_chunk_groups",
                 "tbptt_group_mean_active_chunks",
+                "rollout_wall_seconds",
+                "ray_get_wall_seconds",
+                "replay_forward_wall_seconds",
+                "backward_optimizer_wall_seconds",
+                "learner_transitions_per_second",
+                "rollout_steps_per_second",
+                "forward_calls_per_second",
+                "payload_total_mib",
+                "cuda_peak_allocated_gib",
             }
             if speed_fields.intersection(set(ppo_updates_df.columns)):
-                st.markdown("#### TBPTT / speed")
+                st.markdown("#### Ray / learner throughput")
                 tail = ppo_updates_df.tail(max(1, len(ppo_updates_df) // 4)).copy()
                 if {
                     "transitions_in_update",
@@ -993,6 +1061,14 @@ def render_dashboard() -> None:
                         tail["tbptt_forward_calls"] /
                         tail["update_wall_seconds"].clip(lower=1.0e-6)
                     )
+                if {
+                    "rollout_steps_collected",
+                    "rollout_wall_seconds",
+                }.issubset(set(tail.columns)):
+                    tail["rollout_steps_per_second"] = (
+                        tail["rollout_steps_collected"] /
+                        tail["rollout_wall_seconds"].clip(lower=1.0e-6)
+                    )
                 summary_cols = st.columns(4)
                 if "update_wall_seconds" in tail.columns:
                     summary_cols[0].metric(
@@ -1001,10 +1077,20 @@ def render_dashboard() -> None:
                     )
                 if "transitions_per_second" in tail.columns:
                     summary_cols[1].metric(
-                        "Late transitions / s",
+                        "Learner steps / s",
                         f"{float(tail['transitions_per_second'].mean()):.1f}",
                     )
-                if "tbptt_forward_calls" in tail.columns:
+                elif "learner_transitions_per_second" in tail.columns:
+                    summary_cols[1].metric(
+                        "Learner steps / s",
+                        f"{float(tail['learner_transitions_per_second'].mean()):.1f}",
+                    )
+                if "rollout_steps_per_second" in tail.columns:
+                    summary_cols[2].metric(
+                        "Rollout steps / s",
+                        f"{float(tail['rollout_steps_per_second'].mean()):.1f}",
+                    )
+                elif "tbptt_forward_calls" in tail.columns:
                     summary_cols[2].metric(
                         "Late forward calls",
                         f"{float(tail['tbptt_forward_calls'].mean()):.1f}",
@@ -1014,6 +1100,10 @@ def render_dashboard() -> None:
                         "Active chunks",
                         f"{float(tail['tbptt_group_mean_active_chunks'].mean()):.2f}",
                     )
+
+                timing_fig = _timing_breakdown_figure(ppo_updates_df)
+                if timing_fig.data:
+                    st.plotly_chart(timing_fig, use_container_width=True)
 
                 speed_left, speed_right = st.columns(2)
                 if {

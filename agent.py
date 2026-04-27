@@ -180,6 +180,11 @@ class DefeatRoaches(base_agent.BaseAgent):
             lr_min=lr_min,
             target_kl=getattr(cfg.hyperparameters, "target_kl", None),
             tbptt_window=getattr(cfg.hyperparameters, "tbptt_window", 32),
+            rollout_cache_spatial_dtype=getattr(
+                cfg.hyperparameters,
+                "rollout_cache_spatial_dtype",
+                "float32",
+            ),
         )
 
         self.bootstrap_pending = True

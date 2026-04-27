@@ -73,6 +73,20 @@ def test_log_listener_persists_tbptt_update_metrics(tmp_path):
                 "tbptt_group_max_steps": 4,
                 "tbptt_group_mean_active_chunks": 2.5,
                 "tbptt_forward_calls": 24,
+                "rollout_wall_seconds": 9.0,
+                "ray_get_wall_seconds": 8.0,
+                "fragment_validation_wall_seconds": 0.01,
+                "cpu_to_gpu_transfer_wall_seconds": 0.25,
+                "chunk_pack_wall_seconds": 0.5,
+                "replay_forward_wall_seconds": 1.5,
+                "backward_optimizer_wall_seconds": 2.5,
+                "payload_spatial_bytes": 1024,
+                "payload_state_bytes": 256,
+                "payload_total_bytes": 2048,
+                "payload_total_mib": 2.0 / 1024.0,
+                "cuda_peak_allocated_bytes": 4096,
+                "cuda_peak_reserved_bytes": 8192,
+                "rollout_cache_spatial_dtype": "float32",
             },
             {"type": "KILL"},
         ],
@@ -87,7 +101,11 @@ def test_log_listener_persists_tbptt_update_metrics(tmp_path):
         "policy_input_schema, transitions_in_update, "
         "learnable_transitions_in_update, fragments_in_update, "
         "update_wall_seconds, tbptt_chunks, tbptt_chunk_groups, tbptt_window, "
-        "tbptt_group_max_steps, tbptt_group_mean_active_chunks, tbptt_forward_calls "
+        "tbptt_group_max_steps, tbptt_group_mean_active_chunks, tbptt_forward_calls, "
+        "ray_get_wall_seconds, cpu_to_gpu_transfer_wall_seconds, "
+        "chunk_pack_wall_seconds, replay_forward_wall_seconds, "
+        "backward_optimizer_wall_seconds, payload_total_bytes, "
+        "cuda_peak_allocated_bytes, rollout_cache_spatial_dtype "
         "FROM ppo_updates",
     ).fetchone()
     step_row = conn.execute(
@@ -111,6 +129,14 @@ def test_log_listener_persists_tbptt_update_metrics(tmp_path):
         4,
         2.5,
         24,
+        8.0,
+        0.25,
+        0.5,
+        1.5,
+        2.5,
+        2048,
+        4096,
+        "float32",
     )
     assert step_row == (3, 4, 5, 2, "stream_action_feedback_v1")
 

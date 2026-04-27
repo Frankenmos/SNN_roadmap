@@ -1,14 +1,15 @@
 # Spatial Target Heads
 
-Current state: **Phase 2 Complete** - `CoarseToFineTargetHead` implemented.
+Current state: **Phase 2 Complete** - `CoarseToFineTargetHead` implemented and
+selected by the current `config.yaml`.
 
 ## Available Heads
 
 | Head | Precision | Status | Config Value |
 |------|-----------|--------|--------------|
 | `FactorizedXYTargetHead` | 84×84 (factorized) | ✅ Legacy | `factorized_xy` |
-| `TokenPointerTargetHead` | 7×7 (49 cells) | ✅ Current default | `token_pointer` |
-| `CoarseToFineTargetHead` | 7×7×12×12 = 7056 positions | ✅ Implemented | `coarse_to_fine` |
+| `TokenPointerTargetHead` | 7×7 (49 cells) | ✅ Available fallback | `token_pointer` |
+| `CoarseToFineTargetHead` | 7×7×12×12 = 7056 positions | ✅ Current config default | `coarse_to_fine` |
 | `HeatmapHead` | 84×84 = 7056 positions | 🚧 Future | `heatmap` |
 
 ## Quick Reference
@@ -18,12 +19,12 @@ Current state: **Phase 2 Complete** - `CoarseToFineTargetHead` implemented.
 - Legacy compatibility head
 - Independent distributions (no joint modeling)
 
-### TokenPointerTargetHead (current default)
+### TokenPointerTargetHead
 - Single `token_logits[B, 49]` over 7×7 pooled grid
 - Returns cell centers (e.g., pixel 6, 18, 30, ...)
 - Lower precision but efficient
 
-### CoarseToFineTargetHead (Phase 2)
+### CoarseToFineTargetHead (current config default)
 - **Coarse**: `primary_logits[B, 49]` (7×7 grid)
 - **Fine**: `secondary_logits[B, 49, 144]` (12×12 per cell)
 - Full 84×84 precision = 7056 unique positions
@@ -47,5 +48,5 @@ model:
 
 ## Test Coverage
 
-- `CoarseToFineTargetHead`: 19 tests (encode/decode, build, sample, evaluate, integration)
-- Full test suite: 82 tests pass
+- `CoarseToFineTargetHead` has dedicated encode/decode, build, sample, evaluate, and policy-integration coverage.
+- Run `pytest tests/test_coarse_to_fine_head.py -q` for focused verification, or `pytest tests -q` before landing broader changes.

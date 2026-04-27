@@ -1,6 +1,6 @@
 # Claude Instructions for SNN+SNN-roadmap
 
-**Last Updated:** 2026-04-24
+**Last Updated:** 2026-04-27
 
 ## Quick Rules
 
@@ -16,7 +16,7 @@
 agent_core/          # Core ML components
   ├─ spiking_policy.py      # SNN + attention policy
   ├─ ppo_trainer.py         # PPO with TBPTT
-  ├─ target_heads.py        # Spatial target heads (Phase 2 here!)
+  ├─ target_heads.py        # Spatial target heads
   └─ policy_protocol.py     # Protocol & constants
 
 agent.py            # Main agent orchestrator
@@ -54,13 +54,13 @@ POLICY_ACTION_DIM = 3                  # NO_OP, LEFT_CLICK, RIGHT_CLICK
 | Head Type | Positions | Status |
 |-----------|-----------|--------|
 | `factorized_xy` | 84×84 | Legacy |
-| `token_pointer` | 49 (7×7) | ✅ Current |
-| `coarse_to_fine` | 7056 (7×7 × 12×12) | 🚧 Phase 2 |
+| `token_pointer` | 49 (7×7) | ✅ Available fallback |
+| `coarse_to_fine` | 7056 (7×7 × 12×12) | ✅ Current config default |
 | `heatmap` | 7056 (84×84) | Future |
 
-## Phase 2 Task
+## Coarse-To-Fine Status
 
-Implement `CoarseToFineTargetHead` in `agent_core/target_heads.py`:
+`CoarseToFineTargetHead` is implemented in `agent_core/target_heads.py`:
 
 1. **Stage 1 (Coarse)**: 7×7 tokens → categorical → 49 cells
 2. **Stage 2 (Fine)**: Selected cell → 12×12 local → 144 offsets
@@ -92,14 +92,18 @@ net.to("cpu")
 - After implementation phase: Update working log
 - If stuck > 15 min: Ask user for help
 
-## Current Config
+## Current Config Snapshot
 
 ```yaml
+hyperparameters:
+  batch_size: 512
+  epochs: 4
+
 model:
-  spatial_head_type: "token_pointer"  # Change to "coarse_to_fine" for Phase 2
+  spatial_head_type: "coarse_to_fine"
   tbptt_window: 128                    # Just increased from 32
   action_dim: 3
-  meta_input_dim: 19
+  vector_input_dim: 15
 
 environment:
   steps_per_episode: 3600              # Just increased from 600

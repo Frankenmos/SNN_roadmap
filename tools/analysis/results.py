@@ -41,8 +41,49 @@ LEGACY_ACTION_LABELS = {0: "attack", 1: "move", 2: "no-op"}
 CONDITIONED_ACTION_LABELS = {0: "no-op", 1: "move", 2: "attack"}
 SMART_SCREEN_ACTION_LABELS = {0: "no-op", 1: "smart"}
 SEMANTIC_CLICK_ACTION_LABELS = {0: "no-op", 1: "left_click", 2: "right_click"}
+STREAM_ACTION_FEEDBACK_LABELS = SEMANTIC_CLICK_ACTION_LABELS.copy()
 ACTION_LABELS = CONDITIONED_ACTION_LABELS.copy()
 PHASE_LABELS = ("early", "mid", "late")
+SEMANTIC_CLICK_SEMANTICS = {"semantic_pointer_v1", "stream_action_feedback_v1"}
+RAY_THROUGHPUT_FIELDS = [
+    "rollout_wall_seconds",
+    "ray_get_wall_seconds",
+    "ray_submit_wall_seconds",
+    "rollout_collect_overhead_wall_seconds",
+    "rollout_collect_waves",
+    "rollout_empty_waves",
+    "rollout_steps_collected",
+    "rollout_actor_count",
+    "rollout_fragments_collected",
+    "fragment_validation_wall_seconds",
+    "learner_update_from_fragments_wall_seconds",
+]
+LEARNER_TIMING_FIELDS = [
+    "fragment_tensor_build_wall_seconds",
+    "cpu_to_gpu_transfer_wall_seconds",
+    "bootstrap_value_wall_seconds",
+    "gae_wall_seconds",
+    "tbptt_chunk_build_wall_seconds",
+    "chunk_pack_wall_seconds",
+    "replay_forward_wall_seconds",
+    "loss_eval_wall_seconds",
+    "backward_optimizer_wall_seconds",
+    "ppo_epoch_wall_seconds",
+    "checkpoint_wall_seconds",
+    "episode_log_enqueue_wall_seconds",
+]
+PAYLOAD_FIELDS = [
+    "learnable_transitions_in_update",
+    "fragments_in_update",
+    "payload_spatial_bytes",
+    "payload_state_bytes",
+    "payload_total_bytes",
+    "payload_total_mib",
+    "cuda_peak_allocated_bytes",
+    "cuda_peak_reserved_bytes",
+    "rollout_cache_spatial_dtype",
+    "episodes_logged_in_update",
+]
 
 
 class TrainingAnalyzer:
@@ -54,7 +95,7 @@ class TrainingAnalyzer:
         if self.action_semantics == "smart_screen_v2":
             self.action_labels = SMART_SCREEN_ACTION_LABELS.copy()
             self.noop_action_id = 0
-        elif self.action_semantics == "semantic_pointer_v1":
+        elif self.action_semantics in SEMANTIC_CLICK_SEMANTICS:
             self.action_labels = SEMANTIC_CLICK_ACTION_LABELS.copy()
             self.noop_action_id = 0
         elif self.action_semantics == "conditioned_spatial_v1":
@@ -74,11 +115,25 @@ class TrainingAnalyzer:
     # ------------------------------------------------------------------
     def _connect(self):
         try:
-            self.conn = sqlite3.connect(self.db_path)
+            self.conn = sqlite3.connect(self.db_path, timeout=30.0)
+            self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' LIMIT 1",
+            ).fetchall()
             logger.info(f"Connected to database: {self.db_path}")
         except sqlite3.Error as e:
-            logger.error(f"Database connection failed: {e}")
-            raise
+            if self.conn:
+                self.conn.close()
+                self.conn = None
+            try:
+                uri = f"file:{Path(self.db_path).resolve()}?mode=ro&immutable=1"
+                self.conn = sqlite3.connect(uri, uri=True)
+                self.conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' LIMIT 1",
+                ).fetchall()
+                logger.info(f"Connected to immutable database snapshot: {self.db_path}")
+            except sqlite3.Error:
+                logger.error(f"Database connection failed: {e}")
+                raise e
 
     def close(self):
         if self.conn:
@@ -98,16 +153,29 @@ class TrainingAnalyzer:
         config = self._load_effective_config()
         if isinstance(config, dict):
             model_cfg = config.get("model", {})
+            distributed_cfg = config.get("distributed", {})
+            configured_schema = str(
+                config.get("policy_input_schema")
+                or distributed_cfg.get("required_policy_input_schema", "")
+            ).lower()
             if isinstance(model_cfg, dict):
                 # Check action_dim first (preferred signal)
                 value = model_cfg.get("action_dim")
                 try:
                     if int(value) == 2:
                         return "smart_screen_v2"
-                    if int(value) == 3 and str(
-                        model_cfg.get("spatial_head_type", ""),
-                    ).lower() == "token_pointer":
-                        return "semantic_pointer_v1"
+                    if int(value) == 3:
+                        spatial_head = str(
+                            model_cfg.get("spatial_head_type", ""),
+                        ).lower()
+                        if (
+                            configured_schema == "stream_action_feedback_v1"
+                            or spatial_head == "coarse_to_fine"
+                            or int(model_cfg.get("vector_input_dim", 0) or 0) == 15
+                        ):
+                            return "stream_action_feedback_v1"
+                        if spatial_head == "token_pointer":
+                            return "semantic_pointer_v1"
                 except (TypeError, ValueError):
                     pass
 
@@ -191,6 +259,10 @@ class TrainingAnalyzer:
             "update_id",
             "episode_id",
             "episode_index",
+            "global_update_index",
+            "policy_version",
+            "policy_protocol_version",
+            "policy_input_schema",
             "mean_policy_loss",
             "mean_value_loss",
             "mean_entropy",
@@ -202,6 +274,8 @@ class TrainingAnalyzer:
             "nonfinite_grad_steps",
             "skipped_optimizer_steps",
             "transitions_in_update",
+            "learnable_transitions_in_update",
+            "fragments_in_update",
             "return_mean",
             "return_std",
             "return_p10",
@@ -219,16 +293,66 @@ class TrainingAnalyzer:
             "tbptt_group_mean_active_chunks",
             "tbptt_forward_calls",
         ]
+        wanted.extend(RAY_THROUGHPUT_FIELDS)
+        wanted.extend(LEARNER_TIMING_FIELDS)
+        wanted.extend(PAYLOAD_FIELDS)
         present = [name for name in wanted if name in cols]
         if not present:
             return pd.DataFrame()
         try:
-            return pd.read_sql_query(
+            updates = pd.read_sql_query(
                 f"SELECT {', '.join(present)} FROM ppo_updates ORDER BY update_id",
                 self.conn,
             )
+            return self._with_update_derived_metrics(updates)
         except Exception:
             return pd.DataFrame()
+
+    @staticmethod
+    def _with_update_derived_metrics(updates: pd.DataFrame) -> pd.DataFrame:
+        if updates.empty:
+            return updates
+        updates = updates.copy()
+        if {
+            "transitions_in_update",
+            "update_wall_seconds",
+        }.issubset(set(updates.columns)):
+            updates["learner_transitions_per_second"] = (
+                updates["transitions_in_update"]
+                / updates["update_wall_seconds"].clip(lower=1.0e-6)
+            )
+        if {
+            "rollout_steps_collected",
+            "rollout_wall_seconds",
+        }.issubset(set(updates.columns)):
+            updates["rollout_steps_per_second"] = (
+                updates["rollout_steps_collected"]
+                / updates["rollout_wall_seconds"].clip(lower=1.0e-6)
+            )
+        elif {
+            "transitions_in_update",
+            "rollout_wall_seconds",
+        }.issubset(set(updates.columns)):
+            updates["rollout_steps_per_second"] = (
+                updates["transitions_in_update"]
+                / updates["rollout_wall_seconds"].clip(lower=1.0e-6)
+            )
+        if {
+            "tbptt_forward_calls",
+            "update_wall_seconds",
+        }.issubset(set(updates.columns)):
+            updates["forward_calls_per_second"] = (
+                updates["tbptt_forward_calls"]
+                / updates["update_wall_seconds"].clip(lower=1.0e-6)
+            )
+        for source, dest in [
+            ("cuda_peak_allocated_bytes", "cuda_peak_allocated_gib"),
+            ("cuda_peak_reserved_bytes", "cuda_peak_reserved_gib"),
+            ("payload_total_bytes", "payload_total_gib"),
+        ]:
+            if source in updates.columns:
+                updates[dest] = updates[source] / float(1024**3)
+        return updates
 
     def get_eval_metrics(self) -> pd.DataFrame:
         cols = self._table_columns("eval_runs")
@@ -461,7 +585,9 @@ class TrainingAnalyzer:
         required = {"action", "move_x", "move_y"}
         if steps.empty or not required.issubset(set(steps.columns)):
             return pd.DataFrame()
-        if self.action_semantics == "smart_screen_v2":
+        if self.action_semantics in {"smart_screen_v2", *SEMANTIC_CLICK_SEMANTICS}:
+            action_mask = steps["action"] != self.noop_action_id
+        elif self.action_semantics == "conditioned_spatial_v1":
             action_mask = steps["action"] != self.noop_action_id
         else:
             action_mask = steps["action"] == 1
@@ -498,9 +624,13 @@ class TrainingAnalyzer:
         if not updates.empty:
             # Use the last quarter of updates as "sustained" late-stage.
             tail = updates.tail(max(1, len(updates) // 4))
-            mean_clip = tail["clip_fraction"].mean()
-            mean_kl = tail["mean_kl"].mean()
-            mean_ev = tail["explained_variance"].mean()
+            mean_clip = tail["clip_fraction"].mean() if "clip_fraction" in tail else None
+            mean_kl = tail["mean_kl"].mean() if "mean_kl" in tail else None
+            mean_ev = (
+                tail["explained_variance"].mean()
+                if "explained_variance" in tail
+                else None
+            )
             inf_grad_updates = 0
             if "grad_norm" in tail.columns:
                 inf_grad_updates = int(sum(
@@ -515,21 +645,21 @@ class TrainingAnalyzer:
             if "skipped_optimizer_steps" in tail.columns:
                 skipped_optimizer_steps = int(tail["skipped_optimizer_steps"].fillna(0).sum())
 
-            if mean_clip > 0.3 and len(tail) >= 10:
+            if mean_clip is not None and mean_clip > 0.3 and len(tail) >= 10:
                 flags.append((
                     "HIGH",
                     f"PPO clip fraction sustained high: {mean_clip:.2%} of "
                     f"samples clipped in last {len(tail)} updates.",
                     "clip_eps: 0.18 -> 0.10; lr: 1e-4 -> 5e-5",
                 ))
-            if mean_kl > 0.05:
+            if mean_kl is not None and mean_kl > 0.05:
                 flags.append((
                     "HIGH",
                     f"Approx KL(old||new) sustained high: {mean_kl:.3f} over "
                     f"last {len(tail)} updates. Policy moving too fast.",
                     "epochs: 20 -> 8; lower lr",
                 ))
-            if mean_ev < 0.0:
+            if mean_ev is not None and mean_ev < 0.0:
                 flags.append((
                     "HIGH",
                     f"Critic worse than mean: explained_variance = "
@@ -551,6 +681,41 @@ class TrainingAnalyzer:
                     f"in the late-update tail due to invalid gradients.",
                     "check long-rollout batches and log per-batch failure context",
                 ))
+            if {
+                "tbptt_group_mean_active_chunks",
+                "tbptt_forward_calls",
+                "update_wall_seconds",
+            }.issubset(set(tail.columns)):
+                mean_active_chunks = tail["tbptt_group_mean_active_chunks"].mean()
+                mean_forward_calls = tail["tbptt_forward_calls"].mean()
+                mean_update_seconds = tail["update_wall_seconds"].mean()
+                if (
+                    mean_active_chunks <= 1.25
+                    and mean_forward_calls >= 1000
+                    and mean_update_seconds >= 60.0
+                ):
+                    flags.append((
+                        "MED",
+                        "Learner is replaying mostly one TBPTT chunk at a time "
+                        f"(active_chunks={mean_active_chunks:.2f}, "
+                        f"forward_calls/update={mean_forward_calls:.0f}).",
+                        "increase hyperparameters.batch_size above tbptt_window",
+                    ))
+            if {
+                "replay_forward_wall_seconds",
+                "update_wall_seconds",
+            }.issubset(set(tail.columns)):
+                replay_share = (
+                    tail["replay_forward_wall_seconds"]
+                    / tail["update_wall_seconds"].clip(lower=1.0e-6)
+                ).mean()
+                if replay_share > 0.65:
+                    flags.append((
+                        "MED",
+                        f"Learner update is replay-forward dominated "
+                        f"({replay_share:.0%} of update wall time).",
+                        "pack more TBPTT chunks together; then consider model/kernel optimization",
+                    ))
 
         # Late-stage instability
         if plateau_ep is not None and len(cov) > 200:
@@ -737,53 +902,71 @@ class TrainingAnalyzer:
             tail = updates.tail(max(1, len(updates) // 4))
             lines.append(f"  ppo_updates: {len(updates)} rows logged.")
             lines.append(f"  Late-stage (last {len(tail)} updates) means:")
-            lines.append(f"    mean_entropy        = {tail['mean_entropy'].mean():.3f}")
-            lines.append(f"    mean_kl (approx)    = {tail['mean_kl'].mean():.4f}")
-            lines.append(f"    clip_fraction       = {tail['clip_fraction'].mean():.3f}")
-            lines.append(f"    explained_variance  = {tail['explained_variance'].mean():.3f}")
+            for column, label, fmt in [
+                ("mean_entropy", "mean_entropy", ".3f"),
+                ("mean_kl", "mean_kl (approx)", ".4f"),
+                ("clip_fraction", "clip_fraction", ".3f"),
+                ("explained_variance", "explained_variance", ".3f"),
+                ("update_wall_seconds", "update_wall_sec", ".2f"),
+                ("rollout_wall_seconds", "rollout_wall_sec", ".2f"),
+                ("learner_transitions_per_second", "learner steps/sec", ".2f"),
+                ("rollout_steps_per_second", "rollout steps/sec", ".2f"),
+                ("tbptt_forward_calls", "tbptt fwd calls", ".1f"),
+                ("tbptt_group_mean_active_chunks", "active chunks", ".2f"),
+                ("replay_forward_wall_seconds", "replay_forward_s", ".2f"),
+                ("backward_optimizer_wall_seconds", "backward_opt_s", ".2f"),
+                ("chunk_pack_wall_seconds", "chunk_pack_s", ".2f"),
+                ("cpu_to_gpu_transfer_wall_seconds", "cpu_to_gpu_s", ".2f"),
+                ("payload_total_mib", "payload MiB", ".1f"),
+                ("cuda_peak_allocated_gib", "cuda peak GiB", ".2f"),
+            ]:
+                if column in tail.columns and tail[column].notna().any():
+                    lines.append(
+                        f"    {label:20s}= {tail[column].mean():{fmt}}"
+                    )
             finite_grad_norms = [
                 float(value)
                 for value in tail["grad_norm"].dropna()
                 if math.isfinite(float(value))
-            ]
+            ] if "grad_norm" in tail.columns else []
             if finite_grad_norms:
-                lines.append(
-                    f"    grad_norm (finite)  = {np.mean(finite_grad_norms):.3f}"
+                lines.append(f"    {'grad_norm (finite)':20s}= {np.mean(finite_grad_norms):.3f}")
+            if "grad_norm" in tail.columns:
+                inf_grad_updates = sum(
+                    1
+                    for value in tail["grad_norm"].dropna()
+                    if not math.isfinite(float(value))
                 )
-            inf_grad_updates = sum(
-                1
-                for value in tail["grad_norm"].dropna()
-                if not math.isfinite(float(value))
-            )
-            lines.append(f"    grad_norm = inf cnt = {inf_grad_updates}")
-            lines.append(f"    lr                  = {tail['lr'].mean():.2e}")
+                lines.append(f"    {'grad_norm inf cnt':20s}= {inf_grad_updates}")
+            if "lr" in tail.columns and tail["lr"].notna().any():
+                lines.append(f"    {'lr':20s}= {tail['lr'].mean():.2e}")
             if "nonfinite_grad_steps" in tail.columns:
                 lines.append(
-                    f"    nonfinite_grad_steps= {int(tail['nonfinite_grad_steps'].fillna(0).sum())}"
+                    f"    {'nonfinite_grad_steps':20s}= {int(tail['nonfinite_grad_steps'].fillna(0).sum())}"
                 )
             if "skipped_optimizer_steps" in tail.columns:
                 lines.append(
-                    f"    skipped_opt_steps   = {int(tail['skipped_optimizer_steps'].fillna(0).sum())}"
+                    f"    {'skipped_opt_steps':20s}= {int(tail['skipped_optimizer_steps'].fillna(0).sum())}"
                 )
             if "transitions_in_update" in tail.columns:
                 lines.append(
-                    f"    transitions/update  = {tail['transitions_in_update'].mean():.1f}"
+                    f"    {'transitions/update':20s}= {tail['transitions_in_update'].mean():.1f}"
                 )
             if "entity_mask_utilization" in tail.columns:
                 lines.append(
-                    f"    entity_mask_util    = {tail['entity_mask_utilization'].mean():.3f}"
+                    f"    {'entity_mask_util':20s}= {tail['entity_mask_utilization'].mean():.3f}"
                 )
             if "entity_count_p50" in tail.columns:
                 lines.append(
-                    f"    entity_count_p50    = {tail['entity_count_p50'].mean():.2f}"
+                    f"    {'entity_count_p50':20s}= {tail['entity_count_p50'].mean():.2f}"
                 )
             if "entity_count_p99" in tail.columns:
                 lines.append(
-                    f"    entity_count_p99    = {tail['entity_count_p99'].mean():.2f}"
+                    f"    {'entity_count_p99':20s}= {tail['entity_count_p99'].mean():.2f}"
                 )
             if "selection_mask_utilization" in tail.columns:
                 lines.append(
-                    f"    selection_mask_util = {tail['selection_mask_utilization'].mean():.3f}"
+                    f"    {'selection_mask_util':20s}= {tail['selection_mask_utilization'].mean():.3f}"
                 )
         if evals is None or evals.empty:
             lines.append("  eval_runs: none logged")
@@ -897,7 +1080,9 @@ class TrainingAnalyzer:
         ax.set_title("Action mix over time")
         ax.set_xlabel("episode (binned)"); ax.set_ylabel("share")
         ax.set_ylim(0, 1)
-        ax.legend(loc="upper right"); ax.grid(True)
+        if not mix.empty:
+            ax.legend(loc="upper right")
+        ax.grid(True)
 
         plt.tight_layout()
         if save_path:
@@ -1226,7 +1411,56 @@ class TrainingAnalyzer:
 
             _save(fig, "09_tbptt_speed.png")
 
-        # 10. Eval split
+        # 10. Learner/Ray timing breakdown
+        timing_cols = [
+            column
+            for column in [
+                "rollout_wall_seconds",
+                "ray_get_wall_seconds",
+                "update_wall_seconds",
+                "cpu_to_gpu_transfer_wall_seconds",
+                "chunk_pack_wall_seconds",
+                "replay_forward_wall_seconds",
+                "backward_optimizer_wall_seconds",
+                "checkpoint_wall_seconds",
+            ]
+            if column in updates.columns and updates[column].notna().any()
+        ]
+        if not updates.empty and timing_cols:
+            fig, ax = plt.subplots(figsize=(12, 5))
+            x = updates["update_id"] if "update_id" in updates.columns else np.arange(len(updates))
+            for column in timing_cols:
+                ax.plot(x, updates[column], marker="o", markersize=3, label=column)
+            ax.set_title("Ray / learner timing breakdown")
+            ax.set_xlabel("ppo update")
+            ax.set_ylabel("seconds")
+            ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left")
+            ax.grid(True)
+            _save(fig, "13_learner_timing_breakdown.png")
+
+        # 11. Payload / CUDA footprint
+        memory_cols = [
+            column
+            for column in [
+                "payload_total_mib",
+                "cuda_peak_allocated_gib",
+                "cuda_peak_reserved_gib",
+            ]
+            if column in updates.columns and updates[column].notna().any()
+        ]
+        if not updates.empty and memory_cols:
+            fig, ax = plt.subplots(figsize=(11, 4.5))
+            x = updates["update_id"] if "update_id" in updates.columns else np.arange(len(updates))
+            for column in memory_cols:
+                ax.plot(x, updates[column], marker="o", markersize=3, label=column)
+            ax.set_title("Rollout payload and CUDA peak footprint")
+            ax.set_xlabel("ppo update")
+            ax.set_ylabel("MiB / GiB")
+            ax.legend()
+            ax.grid(True)
+            _save(fig, "14_payload_cuda_footprint.png")
+
+        # 12. Eval split
         if not evals.empty and {"episode_index", "mean_reward"}.issubset(set(evals.columns)):
             fig, ax = plt.subplots(figsize=(11, 4.5))
             if "deterministic" in evals.columns:
@@ -1267,7 +1501,7 @@ class TrainingAnalyzer:
             ax.grid(True)
             _save(fig, "10_eval_split.png")
 
-        # 11. Eval gap
+        # 13. Eval gap
         if (
             not evals.empty
             and {"episode_index", "mean_reward", "deterministic"}.issubset(set(evals.columns))
@@ -1295,7 +1529,7 @@ class TrainingAnalyzer:
                 ax.grid(True)
                 _save(fig, "11_eval_gap.png")
 
-        # 12. Reward component trends
+        # 14. Reward component trends
         if not reward_components.empty:
             reward_cols = [
                 column

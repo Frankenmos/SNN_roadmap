@@ -4,6 +4,75 @@ import time
 from queue import Empty
 
 
+PPO_UPDATE_COLUMNS = [
+    ("episode_index", "INTEGER"),
+    ("global_update_index", "INTEGER"),
+    ("policy_version", "INTEGER"),
+    ("policy_protocol_version", "INTEGER"),
+    ("policy_input_schema", "TEXT"),
+    ("mean_policy_loss", "REAL"),
+    ("mean_value_loss", "REAL"),
+    ("mean_entropy", "REAL"),
+    ("mean_kl", "REAL"),
+    ("clip_fraction", "REAL"),
+    ("explained_variance", "REAL"),
+    ("grad_norm", "REAL"),
+    ("lr", "REAL"),
+    ("nonfinite_grad_steps", "INTEGER"),
+    ("skipped_optimizer_steps", "INTEGER"),
+    ("transitions_in_update", "INTEGER"),
+    ("learnable_transitions_in_update", "INTEGER"),
+    ("fragments_in_update", "INTEGER"),
+    ("return_mean", "REAL"),
+    ("return_std", "REAL"),
+    ("return_p10", "REAL"),
+    ("return_p50", "REAL"),
+    ("return_p90", "REAL"),
+    ("entity_mask_utilization", "REAL"),
+    ("entity_count_p50", "REAL"),
+    ("entity_count_p99", "REAL"),
+    ("selection_mask_utilization", "REAL"),
+    ("update_wall_seconds", "REAL"),
+    ("tbptt_chunks", "INTEGER"),
+    ("tbptt_chunk_groups", "INTEGER"),
+    ("tbptt_window", "INTEGER"),
+    ("tbptt_group_max_steps", "INTEGER"),
+    ("tbptt_group_mean_active_chunks", "REAL"),
+    ("tbptt_forward_calls", "INTEGER"),
+    ("rollout_wall_seconds", "REAL"),
+    ("ray_get_wall_seconds", "REAL"),
+    ("ray_submit_wall_seconds", "REAL"),
+    ("rollout_collect_overhead_wall_seconds", "REAL"),
+    ("rollout_collect_waves", "INTEGER"),
+    ("rollout_empty_waves", "INTEGER"),
+    ("rollout_steps_collected", "INTEGER"),
+    ("rollout_actor_count", "INTEGER"),
+    ("rollout_fragments_collected", "INTEGER"),
+    ("fragment_validation_wall_seconds", "REAL"),
+    ("learner_update_from_fragments_wall_seconds", "REAL"),
+    ("fragment_tensor_build_wall_seconds", "REAL"),
+    ("cpu_to_gpu_transfer_wall_seconds", "REAL"),
+    ("bootstrap_value_wall_seconds", "REAL"),
+    ("gae_wall_seconds", "REAL"),
+    ("tbptt_chunk_build_wall_seconds", "REAL"),
+    ("chunk_pack_wall_seconds", "REAL"),
+    ("replay_forward_wall_seconds", "REAL"),
+    ("loss_eval_wall_seconds", "REAL"),
+    ("backward_optimizer_wall_seconds", "REAL"),
+    ("ppo_epoch_wall_seconds", "REAL"),
+    ("payload_spatial_bytes", "INTEGER"),
+    ("payload_state_bytes", "INTEGER"),
+    ("payload_total_bytes", "INTEGER"),
+    ("payload_total_mib", "REAL"),
+    ("cuda_peak_allocated_bytes", "INTEGER"),
+    ("cuda_peak_reserved_bytes", "INTEGER"),
+    ("rollout_cache_spatial_dtype", "TEXT"),
+    ("episode_log_enqueue_wall_seconds", "REAL"),
+    ("episodes_logged_in_update", "INTEGER"),
+    ("checkpoint_wall_seconds", "REAL"),
+]
+
+
 def _safe_add_column(conn, table_name, column_sql):
     column_name = column_sql.split()[0]
     try:
@@ -69,44 +138,11 @@ def initialize_db(db_path):
             """
         )
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS ppo_updates (
                 update_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 episode_id INTEGER,
-                episode_index INTEGER,
-                global_update_index INTEGER,
-                policy_version INTEGER,
-                policy_protocol_version INTEGER,
-                policy_input_schema TEXT,
-                mean_policy_loss REAL,
-                mean_value_loss REAL,
-                mean_entropy REAL,
-                mean_kl REAL,
-                clip_fraction REAL,
-                explained_variance REAL,
-                grad_norm REAL,
-                lr REAL,
-                nonfinite_grad_steps INTEGER,
-                skipped_optimizer_steps INTEGER,
-                transitions_in_update INTEGER,
-                learnable_transitions_in_update INTEGER,
-                fragments_in_update INTEGER,
-                return_mean REAL,
-                return_std REAL,
-                return_p10 REAL,
-                return_p50 REAL,
-                return_p90 REAL,
-                entity_mask_utilization REAL,
-                entity_count_p50 REAL,
-                entity_count_p99 REAL,
-                selection_mask_utilization REAL,
-                update_wall_seconds REAL,
-                tbptt_chunks INTEGER,
-                tbptt_chunk_groups INTEGER,
-                tbptt_window INTEGER,
-                tbptt_group_max_steps INTEGER,
-                tbptt_group_mean_active_chunks REAL,
-                tbptt_forward_calls INTEGER,
+                {", ".join(f"{name} {column_type}" for name, column_type in PPO_UPDATE_COLUMNS)},
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -139,32 +175,8 @@ def initialize_db(db_path):
         _safe_add_column(conn, "steps", "fragment_id INTEGER")
         _safe_add_column(conn, "steps", "policy_protocol_version INTEGER")
         _safe_add_column(conn, "steps", "policy_input_schema TEXT")
-        _safe_add_column(conn, "ppo_updates", "episode_index INTEGER")
-        _safe_add_column(conn, "ppo_updates", "global_update_index INTEGER")
-        _safe_add_column(conn, "ppo_updates", "policy_version INTEGER")
-        _safe_add_column(conn, "ppo_updates", "policy_protocol_version INTEGER")
-        _safe_add_column(conn, "ppo_updates", "policy_input_schema TEXT")
-        _safe_add_column(conn, "ppo_updates", "nonfinite_grad_steps INTEGER")
-        _safe_add_column(conn, "ppo_updates", "skipped_optimizer_steps INTEGER")
-        _safe_add_column(conn, "ppo_updates", "transitions_in_update INTEGER")
-        _safe_add_column(conn, "ppo_updates", "learnable_transitions_in_update INTEGER")
-        _safe_add_column(conn, "ppo_updates", "fragments_in_update INTEGER")
-        _safe_add_column(conn, "ppo_updates", "return_mean REAL")
-        _safe_add_column(conn, "ppo_updates", "return_std REAL")
-        _safe_add_column(conn, "ppo_updates", "return_p10 REAL")
-        _safe_add_column(conn, "ppo_updates", "return_p50 REAL")
-        _safe_add_column(conn, "ppo_updates", "return_p90 REAL")
-        _safe_add_column(conn, "ppo_updates", "entity_mask_utilization REAL")
-        _safe_add_column(conn, "ppo_updates", "entity_count_p50 REAL")
-        _safe_add_column(conn, "ppo_updates", "entity_count_p99 REAL")
-        _safe_add_column(conn, "ppo_updates", "selection_mask_utilization REAL")
-        _safe_add_column(conn, "ppo_updates", "update_wall_seconds REAL")
-        _safe_add_column(conn, "ppo_updates", "tbptt_chunks INTEGER")
-        _safe_add_column(conn, "ppo_updates", "tbptt_chunk_groups INTEGER")
-        _safe_add_column(conn, "ppo_updates", "tbptt_window INTEGER")
-        _safe_add_column(conn, "ppo_updates", "tbptt_group_max_steps INTEGER")
-        _safe_add_column(conn, "ppo_updates", "tbptt_group_mean_active_chunks REAL")
-        _safe_add_column(conn, "ppo_updates", "tbptt_forward_calls INTEGER")
+        for column_name, column_type in PPO_UPDATE_COLUMNS:
+            _safe_add_column(conn, "ppo_updates", f"{column_name} {column_type}")
         _safe_add_column(conn, "eval_runs", "policy_version INTEGER")
         _safe_add_column(conn, "eval_runs", "policy_protocol_version INTEGER")
         _safe_add_column(conn, "eval_runs", "policy_input_schema TEXT")
@@ -213,22 +225,14 @@ class LogListener(multiprocessing.Process):
                 )
                 buffer_rewards = []
             if buffer_updates:
+                update_columns = [
+                    "episode_id",
+                    *[name for name, _column_type in PPO_UPDATE_COLUMNS],
+                ]
+                placeholders = ", ".join("?" for _column in update_columns)
                 cursor.executemany(
-                    "INSERT INTO ppo_updates (episode_id, episode_index, "
-                    "global_update_index, policy_version, "
-                    "policy_protocol_version, policy_input_schema, "
-                    "mean_policy_loss, mean_value_loss, mean_entropy, mean_kl, "
-                    "clip_fraction, explained_variance, grad_norm, lr, "
-                    "nonfinite_grad_steps, skipped_optimizer_steps, "
-                    "transitions_in_update, learnable_transitions_in_update, "
-                    "fragments_in_update, return_mean, return_std, return_p10, "
-                    "return_p50, return_p90, "
-                    "entity_mask_utilization, entity_count_p50, entity_count_p99, "
-                    "selection_mask_utilization, update_wall_seconds, "
-                    "tbptt_chunks, tbptt_chunk_groups, tbptt_window, "
-                    "tbptt_group_max_steps, tbptt_group_mean_active_chunks, "
-                    "tbptt_forward_calls) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    f"INSERT INTO ppo_updates ({', '.join(update_columns)}) "
+                    f"VALUES ({placeholders})",
                     buffer_updates,
                 )
                 buffer_updates = []
@@ -302,40 +306,10 @@ class LogListener(multiprocessing.Process):
                     buffer_updates.append(
                         (
                             db_id,
-                            record.get("episode_index"),
-                            record.get("global_update_index"),
-                            record.get("policy_version"),
-                            record.get("policy_protocol_version"),
-                            record.get("policy_input_schema"),
-                            record.get("mean_policy_loss"),
-                            record.get("mean_value_loss"),
-                            record.get("mean_entropy"),
-                            record.get("mean_kl"),
-                            record.get("clip_fraction"),
-                            record.get("explained_variance"),
-                            record.get("grad_norm"),
-                            record.get("lr"),
-                            record.get("nonfinite_grad_steps"),
-                            record.get("skipped_optimizer_steps"),
-                            record.get("transitions_in_update"),
-                            record.get("learnable_transitions_in_update"),
-                            record.get("fragments_in_update"),
-                            record.get("return_mean"),
-                            record.get("return_std"),
-                            record.get("return_p10"),
-                            record.get("return_p50"),
-                            record.get("return_p90"),
-                            record.get("entity_mask_utilization"),
-                            record.get("entity_count_p50"),
-                            record.get("entity_count_p99"),
-                            record.get("selection_mask_utilization"),
-                            record.get("update_wall_seconds"),
-                            record.get("tbptt_chunks"),
-                            record.get("tbptt_chunk_groups"),
-                            record.get("tbptt_window"),
-                            record.get("tbptt_group_max_steps"),
-                            record.get("tbptt_group_mean_active_chunks"),
-                            record.get("tbptt_forward_calls"),
+                            *[
+                                record.get(name)
+                                for name, _column_type in PPO_UPDATE_COLUMNS
+                            ],
                         )
                     )
 
@@ -385,6 +359,8 @@ class LogListener(multiprocessing.Process):
 
             except Empty:
                 continue
+            except KeyboardInterrupt:
+                running = False
             except Exception as exc:
                 print(f"LOGGER ERROR: {exc}")
 

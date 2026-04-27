@@ -59,6 +59,28 @@ def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     return {row[1] for row in rows}
 
 
+def _connect_db(db_path: str) -> sqlite3.Connection:
+    try:
+        conn = sqlite3.connect(db_path, timeout=30.0)
+        conn.execute("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1").fetchall()
+        return conn
+    except sqlite3.Error as exc:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        uri = f"file:{Path(db_path).resolve()}?mode=ro&immutable=1"
+        try:
+            conn = sqlite3.connect(uri, uri=True)
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' LIMIT 1",
+            ).fetchall()
+            print("Opened DB as immutable read-only snapshot.")
+            return conn
+        except sqlite3.Error:
+            raise exc
+
+
 def _resolve_db_path(args: argparse.Namespace) -> str:
     defaults = _cfg_defaults()
     if args.db:
@@ -96,7 +118,7 @@ def _resolve_checkpoint_path(args: argparse.Namespace) -> str:
 
 def analyze_db(db_path: str) -> None:
     print(f"=== DB analysis for {db_path} ===")
-    conn = sqlite3.connect(db_path)
+    conn = _connect_db(db_path)
     cursor = conn.cursor()
 
     cursor.execute(
@@ -191,6 +213,19 @@ def analyze_db(db_path: str) -> None:
                 "nonfinite_grad_steps",
                 "skipped_optimizer_steps",
                 "transitions_in_update",
+                "learnable_transitions_in_update",
+                "fragments_in_update",
+                "update_wall_seconds",
+                "rollout_wall_seconds",
+                "ray_get_wall_seconds",
+                "tbptt_forward_calls",
+                "tbptt_group_mean_active_chunks",
+                "cpu_to_gpu_transfer_wall_seconds",
+                "chunk_pack_wall_seconds",
+                "replay_forward_wall_seconds",
+                "backward_optimizer_wall_seconds",
+                "payload_total_mib",
+                "cuda_peak_allocated_bytes",
             ]
             present = [field for field in fields if field in cols]
             if present:
@@ -223,6 +258,29 @@ def analyze_db(db_path: str) -> None:
                             if value is not None and not math.isfinite(float(value))
                         )
                         print(f"  {name:24s}: no finite values ({inf_count} inf/nan)")
+                if {
+                    "transitions_in_update",
+                    "update_wall_seconds",
+                }.issubset(column_to_values):
+                    pairs = [
+                        (steps, seconds)
+                        for steps, seconds in zip(
+                            column_to_values["transitions_in_update"],
+                            column_to_values["update_wall_seconds"],
+                        )
+                        if steps is not None and seconds not in (None, 0)
+                    ]
+                    if pairs:
+                        values = [float(steps) / float(seconds) for steps, seconds in pairs]
+                        print(f"  {'learner steps/sec':24s}: {sum(values) / len(values):.6f}")
+                if "cuda_peak_allocated_bytes" in column_to_values:
+                    clean = [
+                        float(value) / float(1024**3)
+                        for value in column_to_values["cuda_peak_allocated_bytes"]
+                        if value is not None
+                    ]
+                    if clean:
+                        print(f"  {'cuda peak alloc GiB':24s}: {sum(clean) / len(clean):.6f}")
                 if "grad_norm" in column_to_values:
                     inf_count = sum(
                         1

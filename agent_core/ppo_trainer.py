@@ -36,6 +36,7 @@ class PPO:
         lr_min: float = 0.0,
         target_kl: float | None = None,
         tbptt_window: int | None = None,
+        rollout_cache_spatial_dtype: str | torch.dtype = "float32",
     ):
         self.policy_net = policy_net
         self.device = policy_net.device
@@ -49,6 +50,9 @@ class PPO:
         self.lr_min = lr_min
         self.tbptt_window = (
             None if tbptt_window is None else max(1, int(tbptt_window))
+        )
+        self.rollout_cache_spatial_dtype = self._resolve_spatial_cache_dtype(
+            rollout_cache_spatial_dtype,
         )
 
         if total_updates > 0:
@@ -88,7 +92,183 @@ class PPO:
             "tbptt_window": (
                 None if self.tbptt_window is None else int(self.tbptt_window)
             ),
+            "rollout_cache_spatial_dtype": str(self.rollout_cache_spatial_dtype).replace(
+                "torch.",
+                "",
+            ),
         }
+
+    @staticmethod
+    def _resolve_spatial_cache_dtype(value: str | torch.dtype) -> torch.dtype:
+        if isinstance(value, torch.dtype):
+            if value in (torch.float16, torch.float32):
+                return value
+            raise ValueError(
+                "rollout_cache_spatial_dtype must be float32 or float16, "
+                f"got {value}",
+            )
+        normalized = str(value).strip().lower().replace("torch.", "")
+        aliases = {
+            "float": torch.float32,
+            "float32": torch.float32,
+            "fp32": torch.float32,
+            "single": torch.float32,
+            "float16": torch.float16,
+            "fp16": torch.float16,
+            "half": torch.float16,
+        }
+        if normalized not in aliases:
+            raise ValueError(
+                "rollout_cache_spatial_dtype must be float32 or float16, "
+                f"got {value!r}",
+            )
+        return aliases[normalized]
+
+    def _device_spatial_cache_dtype(self) -> torch.dtype:
+        if torch.device(self.device).type == "cuda":
+            return self.rollout_cache_spatial_dtype
+        return torch.float32
+
+    @staticmethod
+    def _tensor_nbytes(tensor: torch.Tensor | None) -> int:
+        if not isinstance(tensor, torch.Tensor):
+            return 0
+        return int(tensor.numel() * tensor.element_size())
+
+    @classmethod
+    def _state_nbytes(cls, state) -> int:
+        if state is None:
+            return 0
+        return sum(cls._tensor_nbytes(part) for part in state)
+
+    @classmethod
+    def _policy_input_nbytes(cls, batch: PolicyInputBatch | None) -> int:
+        if batch is None:
+            return 0
+        total = (
+            cls._tensor_nbytes(batch.spatial_obs)
+            + cls._tensor_nbytes(batch.entity_features)
+            + cls._tensor_nbytes(batch.entity_mask)
+            + cls._tensor_nbytes(batch.selection_features)
+            + cls._tensor_nbytes(batch.selection_mask)
+            + cls._tensor_nbytes(batch.action_feedback_tokens)
+            + cls._tensor_nbytes(batch.meta_vec)
+        )
+        return int(total + cls._state_nbytes(batch.state_in))
+
+    @classmethod
+    def _fragment_payload_stats(cls, fragments: list[RolloutFragment]) -> dict:
+        spatial_bytes = 0
+        state_bytes = 0
+        total_bytes = 0
+        for fragment in fragments:
+            spatial_bytes += cls._tensor_nbytes(fragment.spatial_obs)
+            state_bytes += cls._state_nbytes(fragment.pre_step_snn_state)
+            state_bytes += cls._state_nbytes(
+                None
+                if fragment.tail_next_policy_input is None
+                else fragment.tail_next_policy_input.state_in
+            )
+            tensor_fields = (
+                "spatial_obs",
+                "entity_features",
+                "entity_mask",
+                "selection_features",
+                "selection_mask",
+                "action_feedback_tokens",
+                "meta_vec",
+                "actions",
+                "move_x",
+                "move_y",
+                "target_index",
+                "coarse_index",
+                "fine_index",
+                "old_log_probs",
+                "values",
+                "rewards",
+                "dones",
+                "truncateds",
+                "episode_reset_mask",
+                "sample_mask",
+            )
+            total_bytes += sum(
+                cls._tensor_nbytes(getattr(fragment, name))
+                for name in tensor_fields
+            )
+            total_bytes += cls._state_nbytes(fragment.pre_step_snn_state)
+            total_bytes += cls._policy_input_nbytes(fragment.tail_next_policy_input)
+
+        return {
+            "payload_spatial_bytes": int(spatial_bytes),
+            "payload_state_bytes": int(state_bytes),
+            "payload_total_bytes": int(total_bytes),
+            "payload_total_mib": float(total_bytes / (1024**2)),
+        }
+
+    def _move_state_to_device(
+        self,
+        state,
+        *,
+        dtype: torch.dtype = torch.float32,
+    ):
+        if state is None:
+            return None
+        return (
+            state[0].to(device=self.device, dtype=dtype).detach(),
+            state[1].to(device=self.device, dtype=dtype).detach(),
+        )
+
+    def _move_policy_input_to_device(
+        self,
+        batch: PolicyInputBatch,
+        *,
+        spatial_dtype: torch.dtype | None = None,
+    ) -> PolicyInputBatch:
+        if spatial_dtype is None:
+            spatial_dtype = self._device_spatial_cache_dtype()
+        state_in = self._move_state_to_device(batch.state_in, dtype=torch.float32)
+        return PolicyInputBatch(
+            spatial_obs=batch.spatial_obs.to(
+                device=self.device,
+                dtype=spatial_dtype,
+            ),
+            entity_features=batch.entity_features.to(
+                device=self.device,
+                dtype=torch.float32,
+            ),
+            entity_mask=batch.entity_mask.to(device=self.device),
+            selection_features=batch.selection_features.to(
+                device=self.device,
+                dtype=torch.float32,
+            ),
+            selection_mask=batch.selection_mask.to(device=self.device),
+            action_feedback_tokens=batch.action_feedback_tokens.to(
+                device=self.device,
+                dtype=torch.float32,
+            ),
+            meta_vec=batch.meta_vec.to(device=self.device, dtype=torch.float32),
+            state_in=state_in,
+        )
+
+    @staticmethod
+    def _sync_cuda_if_needed(device: torch.device | str) -> None:
+        device = torch.device(device)
+        if device.type == "cuda" and torch.cuda.is_available():
+            torch.cuda.synchronize(device)
+
+    def _record_elapsed(
+        self,
+        timings: dict[str, float] | None,
+        key: str,
+        started: float,
+        *,
+        sync_cuda: bool = False,
+    ) -> None:
+        if timings is None:
+            return
+        if sync_cuda:
+            self._sync_cuda_if_needed(self.device)
+        timings[key] = float(timings.get(key, 0.0) + time.perf_counter() - started)
 
     def _spatial_action_mask(self, actions: torch.Tensor) -> torch.Tensor:
         mask = torch.zeros_like(actions, dtype=torch.bool)
@@ -568,18 +748,37 @@ class PPO:
             }
         )
 
-    def _bootstrap_fragment_tail_value(self, fragment: RolloutFragment) -> torch.Tensor:
+    def _bootstrap_fragment_tail_value(
+        self,
+        fragment: RolloutFragment,
+        timings: dict[str, float] | None = None,
+    ) -> torch.Tensor:
+        transfer_started = time.perf_counter()
         dones = fragment.dones.to(self.device).float().view(-1)
+        self._record_elapsed(
+            timings,
+            "cpu_to_gpu_transfer_wall_seconds",
+            transfer_started,
+            sync_cuda=True,
+        )
         if float(dones[-1].item()) > 0.5:
             return torch.zeros((), device=self.device)
         if fragment.tail_next_policy_input is None:
             raise RuntimeError(
                 "Non-terminal rollout fragment is missing bootstrap data.",
             )
-        last_batch = fragment.tail_next_policy_input.to(
-            device=self.device,
-            dtype=torch.float32,
+        transfer_started = time.perf_counter()
+        last_batch = self._move_policy_input_to_device(
+            fragment.tail_next_policy_input,
+            spatial_dtype=torch.float32,
         )
+        self._record_elapsed(
+            timings,
+            "cpu_to_gpu_transfer_wall_seconds",
+            transfer_started,
+            sync_cuda=True,
+        )
+        bootstrap_started = time.perf_counter()
         with torch.no_grad():
             _, state_value, _, _ = self._encode_step_tensors(
                 spatial_obs=last_batch.spatial_obs,
@@ -591,26 +790,63 @@ class PPO:
                 meta_vec=last_batch.meta_vec,
                 state_in=last_batch.state_in,
             )
-        return state_value.reshape(-1)[0].detach()
+        value = state_value.reshape(-1)[0].detach()
+        self._record_elapsed(
+            timings,
+            "bootstrap_value_wall_seconds",
+            bootstrap_started,
+            sync_cuda=True,
+        )
+        return value
 
-    def _fragment_tensors(self, fragment: RolloutFragment) -> dict:
+    def _fragment_tensors(
+        self,
+        fragment: RolloutFragment,
+        timings: dict[str, float] | None = None,
+    ) -> dict:
+        transfer_started = time.perf_counter()
+        observations = self._move_policy_input_to_device(
+            fragment.as_policy_input_batch(state_in=None),
+        )
+        pre_step_snn_state = self._move_state_to_device(fragment.pre_step_snn_state)
+        actions = fragment.actions.to(self.device).long().view(-1)
+        move_x = fragment.move_x.to(self.device).long().view(-1)
+        move_y = fragment.move_y.to(self.device).long().view(-1)
+        target_index = fragment.target_index.to(self.device).long().view(-1)
+        coarse_index = fragment.coarse_index.to(self.device).long().view(-1)
+        fine_index = fragment.fine_index.to(self.device).long().view(-1)
+        log_probs_old = fragment.old_log_probs.to(self.device).float().view(-1)
+        rewards = fragment.rewards.to(self.device).float().view(-1)
+        values = fragment.values.to(self.device).float().view(-1)
+        dones = fragment.dones.to(self.device).float().view(-1)
+        truncateds = fragment.truncateds.to(self.device).float().view(-1)
+        episode_reset_mask = (
+            fragment.episode_reset_mask.to(self.device).bool().view(-1)
+        )
+        sample_masks = fragment.sample_mask.to(self.device).float().view(-1)
+        self._record_elapsed(
+            timings,
+            "cpu_to_gpu_transfer_wall_seconds",
+            transfer_started,
+            sync_cuda=True,
+        )
         return {
             "fragment": fragment,
-            "observations": fragment.as_policy_input_batch(state_in=None),
-            "pre_step_snn_state": fragment.pre_step_snn_state,
-            "actions": fragment.actions.to(self.device).long().view(-1),
-            "move_x": fragment.move_x.to(self.device).long().view(-1),
-            "move_y": fragment.move_y.to(self.device).long().view(-1),
-            "target_index": fragment.target_index.to(self.device).long().view(-1),
-            "coarse_index": fragment.coarse_index.to(self.device).long().view(-1),
-            "fine_index": fragment.fine_index.to(self.device).long().view(-1),
-            "log_probs_old": fragment.old_log_probs.to(self.device).float().view(-1),
-            "rewards": fragment.rewards.to(self.device).float().view(-1),
-            "values": fragment.values.to(self.device).float().view(-1),
-            "dones": fragment.dones.to(self.device).float().view(-1),
-            "truncateds": fragment.truncateds.to(self.device).float().view(-1),
-            "episode_reset_mask": fragment.episode_reset_mask.to(self.device).bool().view(-1),
-            "sample_masks": fragment.sample_mask.to(self.device).float().view(-1),
+            "observations": observations,
+            "pre_step_snn_state": pre_step_snn_state,
+            "actions": actions,
+            "move_x": move_x,
+            "move_y": move_y,
+            "target_index": target_index,
+            "coarse_index": coarse_index,
+            "fine_index": fine_index,
+            "log_probs_old": log_probs_old,
+            "rewards": rewards,
+            "values": values,
+            "dones": dones,
+            "truncateds": truncateds,
+            "episode_reset_mask": episode_reset_mask,
+            "sample_masks": sample_masks,
         }
 
     def update_policy(
@@ -629,10 +865,38 @@ class PPO:
         if not fragments:
             return [], None
         update_started = time.perf_counter()
+        timings = {
+            "fragment_tensor_build_wall_seconds": 0.0,
+            "cpu_to_gpu_transfer_wall_seconds": 0.0,
+            "bootstrap_value_wall_seconds": 0.0,
+            "gae_wall_seconds": 0.0,
+            "tbptt_chunk_build_wall_seconds": 0.0,
+            "chunk_pack_wall_seconds": 0.0,
+            "replay_forward_wall_seconds": 0.0,
+            "loss_eval_wall_seconds": 0.0,
+            "backward_optimizer_wall_seconds": 0.0,
+            "ppo_epoch_wall_seconds": 0.0,
+        }
+        payload_stats = self._fragment_payload_stats(fragments)
+        use_cuda_memory_stats = (
+            torch.device(self.device).type == "cuda" and torch.cuda.is_available()
+        )
+        if use_cuda_memory_stats:
+            torch.cuda.reset_peak_memory_stats(self.device)
 
-        fragment_tensors = [self._fragment_tensors(fragment) for fragment in fragments]
+        fragment_tensor_started = time.perf_counter()
+        fragment_tensors = [
+            self._fragment_tensors(fragment, timings) for fragment in fragments
+        ]
+        self._record_elapsed(
+            timings,
+            "fragment_tensor_build_wall_seconds",
+            fragment_tensor_started,
+            sync_cuda=True,
+        )
         raw_advantages_by_fragment = []
         returns_by_fragment = []
+        gae_started = time.perf_counter()
         for item in fragment_tensors:
             if int(item["dones"].numel()) > 1:
                 unsupported_resets = (
@@ -645,7 +909,10 @@ class PPO:
                         "episode reset. Split time-limit fragments at the reset "
                         "boundary, or store per-boundary bootstrap values.",
                     )
-            last_next_value = self._bootstrap_fragment_tail_value(item["fragment"])
+            last_next_value = self._bootstrap_fragment_tail_value(
+                item["fragment"],
+                timings,
+            )
             raw_advantages = self._compute_advantages(
                 item["rewards"],
                 item["values"],
@@ -670,9 +937,16 @@ class PPO:
                 all_raw_advantages,
                 device=self.device,
             )
+        self._record_elapsed(
+            timings,
+            "gae_wall_seconds",
+            gae_started,
+            sync_cuda=True,
+        )
 
         chunks = []
         cursor = 0
+        chunk_build_started = time.perf_counter()
         for item, returns in zip(fragment_tensors, returns_by_fragment):
             length = int(item["actions"].size(0))
             advantages = normalized_advantages[cursor : cursor + length]
@@ -696,6 +970,12 @@ class PPO:
                 ),
             )
         tbptt_chunks = int(len(chunks))
+        self._record_elapsed(
+            timings,
+            "tbptt_chunk_build_wall_seconds",
+            chunk_build_started,
+            sync_cuda=True,
+        )
 
         rollout_size = int(sum(fragment.num_steps for fragment in fragments))
         losses = []
@@ -718,6 +998,7 @@ class PPO:
             param for param in self.policy_net.parameters() if param.requires_grad
         ]
 
+        epoch_loop_started = time.perf_counter()
         for _ in range(epochs):
             epoch_kls = []
             for chunk_group in self._iter_chunk_groups(chunks, batch_size):
@@ -737,8 +1018,22 @@ class PPO:
                     dtype=self.policy_net.amp_dtype,
                     enabled=self.policy_net.use_amp,
                 ):
-                    replayed_group = self._replay_packed_chunk_group(
-                        self._pack_chunk_group(chunk_group),
+                    pack_started = time.perf_counter()
+                    packed_group = self._pack_chunk_group(chunk_group)
+                    self._record_elapsed(
+                        timings,
+                        "chunk_pack_wall_seconds",
+                        pack_started,
+                        sync_cuda=True,
+                    )
+
+                    replay_started = time.perf_counter()
+                    replayed_group = self._replay_packed_chunk_group(packed_group)
+                    self._record_elapsed(
+                        timings,
+                        "replay_forward_wall_seconds",
+                        replay_started,
+                        sync_cuda=True,
                     )
                     tbptt_group_max_steps = max(
                         tbptt_group_max_steps,
@@ -748,6 +1043,7 @@ class PPO:
                     active_chunk_sum += float(replayed_group["active_chunks_sum"])
                     active_chunk_steps += int(replayed_group["active_steps"])
 
+                    loss_started = time.perf_counter()
                     active_mask = replayed_group["alive_mask"].reshape(-1)
                     action_logits = replayed_group["action_logits"].reshape(
                         -1,
@@ -772,7 +1068,7 @@ class PPO:
                             replayed_group["old_log_prob"].reshape(-1)[active_mask],
                             replayed_group["advantages"].reshape(-1)[active_mask],
                             replayed_group["returns"].reshape(-1)[active_mask],
-                             replayed_group["sample_mask"].reshape(-1)[active_mask],
+                            replayed_group["sample_mask"].reshape(-1)[active_mask],
                         )
                     )
                     policy_num = policy_num + policy_loss * diag["sample_count"]
@@ -792,6 +1088,12 @@ class PPO:
                     value_loss = value_num / value_den.clamp_min(1.0)
                     entropy_loss = entropy_num / policy_den.clamp_min(1.0)
                     loss = policy_loss + value_loss - entropy_loss
+                    self._record_elapsed(
+                        timings,
+                        "loss_eval_wall_seconds",
+                        loss_started,
+                        sync_cuda=True,
+                    )
 
                 approx_kl = (
                     0.0
@@ -817,6 +1119,7 @@ class PPO:
                 acc_clip_frac.append(float(clip_frac))
                 epoch_kls.append(float(approx_kl))
 
+                backward_started = time.perf_counter()
                 self.optimizer.zero_grad(set_to_none=True)
                 self.policy_net.scaler.scale(loss).backward()
                 self.policy_net.scaler.unscale_(self.optimizer)
@@ -841,11 +1144,23 @@ class PPO:
 
                 acc_grad_norm.append(grad_norm_value)
                 self.policy_net.scaler.update()
+                self._record_elapsed(
+                    timings,
+                    "backward_optimizer_wall_seconds",
+                    backward_started,
+                    sync_cuda=True,
+                )
 
             epochs_ran += 1
             if self.target_kl is not None and epoch_kls:
                 if float(np.mean(epoch_kls)) > float(self.target_kl):
                     break
+        self._record_elapsed(
+            timings,
+            "ppo_epoch_wall_seconds",
+            epoch_loop_started,
+            sync_cuda=True,
+        )
 
         with torch.no_grad():
             returns = torch.cat(returns_by_fragment, dim=0)
@@ -871,6 +1186,13 @@ class PPO:
             ],
             dim=0,
         )
+        if use_cuda_memory_stats:
+            self._sync_cuda_if_needed(self.device)
+            cuda_peak_allocated_bytes = int(torch.cuda.max_memory_allocated(self.device))
+            cuda_peak_reserved_bytes = int(torch.cuda.max_memory_reserved(self.device))
+        else:
+            cuda_peak_allocated_bytes = 0
+            cuda_peak_reserved_bytes = 0
         stats = {
             "mean_policy_loss": float(np.mean(acc_policy)),
             "mean_value_loss": float(np.mean(acc_value)),
@@ -914,7 +1236,14 @@ class PPO:
                 else active_chunk_sum / float(active_chunk_steps)
             ),
             "tbptt_forward_calls": int(tbptt_forward_calls),
+            "cuda_peak_allocated_bytes": int(cuda_peak_allocated_bytes),
+            "cuda_peak_reserved_bytes": int(cuda_peak_reserved_bytes),
+            "rollout_cache_spatial_dtype": str(
+                self._device_spatial_cache_dtype(),
+            ).replace("torch.", ""),
         }
+        stats.update(payload_stats)
+        stats.update(timings)
 
         if self.scheduler is not None:
             self.scheduler.step()
@@ -1114,11 +1443,17 @@ class PPO:
         max_len = max(int(chunk["length"]) for chunk in chunk_group)
         group_size = len(chunk_group)
         sample_obs = chunk_group[0]["observations"]
+        target_device = torch.device(self.device)
+        spatial_dtype = (
+            sample_obs.spatial_obs.dtype
+            if sample_obs.spatial_obs.is_floating_point()
+            else torch.float32
+        )
 
         spatial_obs = torch.zeros(
             (max_len, group_size, *sample_obs.spatial_obs.shape[1:]),
             device=self.device,
-            dtype=torch.float32,
+            dtype=spatial_dtype,
         )
         entity_features = torch.zeros(
             (max_len, group_size, *sample_obs.entity_features.shape[1:]),
@@ -1242,7 +1577,12 @@ class PPO:
         for column, chunk in enumerate(chunk_group):
             length = int(chunk["length"])
             lengths.append(length)
-            obs = chunk["observations"].to(device=self.device, dtype=torch.float32)
+            obs = chunk["observations"]
+            if obs.spatial_obs.device != target_device:
+                obs = self._move_policy_input_to_device(
+                    obs,
+                    spatial_dtype=spatial_dtype,
+                )
             spatial_obs[:length, column] = obs.spatial_obs
             entity_features[:length, column] = obs.entity_features
             entity_mask[:length, column] = obs.entity_mask

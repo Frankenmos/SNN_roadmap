@@ -28,7 +28,7 @@ The repository is structured into several logical components:
 ### 3. The Agent & Policy (`agent_core/`)
 - **`DefeatRoaches` (Agent):** The orchestrator that binds the observation extractor, the reward function, and the PPO update logic.
 - **`PolicyNetwork`:** A hybrid CNN + token encoder policy with spiking attention and dual-timescale token memory. Spatial features become pooled spatial tokens with explicit 2D positional encoding; unit, selection, action-feedback, and meta context become additional token groups before attention and the fast/slow temporal SNN pathways. The action/value heads read a global latent, while the spatial target head keeps a structured spatial branch alive for localization.
-- **`PPO`:** The current PPO path includes Stage-1 TBPTT with ordered chunk replay, helper-step masking, packed replay, and the SDPA attention fast path.
+- **`PPO`:** The current PPO path includes fragment-based rollouts, Stage-1 TBPTT with ordered chunk replay, helper-step masking, packed replay, a per-update GPU rollout cache for learner updates, and the SDPA attention fast path.
 
 Canonical entrypoints are now `train.py`, `eval.py`, `agent.py`, and
 the `agent_core/` package. The root-level `PPO_CNN_*` launchers remain
@@ -69,20 +69,42 @@ pip install -r requirements.txt
 ## 🏃‍♂️ Running the Project
 
 ### 1. Training the Agent
-To start training the agent from scratch (or resume from the latest checkpoint if configured):
+To start the original single-process training loop:
 
 ```bash
 python train.py
 ```
 
-### 2. Resuming from the Best Checkpoint
+This path resumes from `models/<run_name>/checkpoint.pth` when `environment.run_name` or `--run_name` points at an existing run. It does not resume partial in-memory rollout fragments.
+
+### 2. Distributed Ray PPO
+The current throughput path is synchronous Ray rollout collection with a single learner:
+
+```bash
+python -m distributed.ray_train --num-actors 4 --run-name <run_name>
+```
+
+Useful smoke commands:
+
+```bash
+python -m distributed.ray_train --num-actors 1 --max-updates 1 --run-name ray_smoke_1actor
+python -m distributed.ray_train --num-actors 4 --max-updates 1 --run-name ray_smoke_4actors
+```
+
+Ray runs save under `models/<run_name>/`. Resuming uses the same command and same `--run-name`; the learner loads `models/<run_name>/checkpoint.pth` if it exists. A stopped run resumes from the last completed checkpoint, not from a half-finished rollout/update. During tuning, set `environment.log_frequency: 1` if you want every completed update to be resumable.
+
+The learner logs rollout, Ray, packing, replay, backward, checkpoint, payload, and CUDA peak-memory timings into `ppo_updates`. If learner updates are slow, inspect `tbptt_forward_calls`, `tbptt_group_mean_active_chunks`, `replay_forward_wall_seconds`, `chunk_pack_wall_seconds`, `backward_optimizer_wall_seconds`, and `cpu_to_gpu_transfer_wall_seconds`.
+
+For TBPTT throughput, `hyperparameters.batch_size` controls how many recurrent chunks are replayed together. With the default `tbptt_window: 128`, `batch_size: 128` usually means one chunk per group and many tiny GPU forwards. For Ray tuning, try `batch_size: 512` or `1024`, and use `epochs: 2` to `4` for fast iteration before returning to heavier settings.
+
+### 3. Resuming from the Best Checkpoint
 If your policy collapses and you want to resume training from the historical peak:
 
 ```bash
 python resume_from_best.py
 ```
 
-### 3. Monitoring Training
+### 4. Monitoring Training
 To generate the static analysis bundle for a run:
 
 ```bash
@@ -102,13 +124,6 @@ This writes the usual files under `analysis_results/<run_name>/`, including:
 - `win_rate.png`
 - `training_metrics.csv`
 - `instability_report.txt`
-Install the Python dependencies before running training scripts or tests:
-
-```bash
-pip install -r requirements.txt
-```
-
-This covers the core stack (`numpy`, `torch`), PySC2 tooling (`pysc2`, `absl-py`), and utilities used by the helpers (`pyyaml`, `matplotlib`).
 
 When `--aismart` is enabled it also writes:
 - `analysis_results/<run_name>/ai_friendly_results/`
@@ -152,7 +167,7 @@ python analyze_pth.py --run-name <your_run_name> --which best --no-map
 python analyze_pth.py --run-name <your_run_name> --which best --max-points 2000
 ```
 
-### 4. Evaluation & Diagnostics
+### 5. Evaluation & Diagnostics
 Basic eval from the latest or best checkpoint:
 
 ```bash
@@ -262,7 +277,10 @@ historical docs live under [`docs/`](docs/README.md).
 
 Recommended starting points:
 - [`docs/current/REPO_STATE.md`](docs/current/REPO_STATE.md): current repo state and open questions
-- [`docs/current/action_refactor.md`](docs/current/action_refactor.md): what the Stage-1 action refactor landed and what remains
+- [`docs/current/RAY_STATUS.md`](docs/current/RAY_STATUS.md): current distributed rollout status
+- [`docs/current/FRAGMENT_PPO.md`](docs/current/FRAGMENT_PPO.md): fragment-based PPO contract and invariants
+- [`docs/current/ACTION_FEEDBACK_PLAN.md`](docs/current/ACTION_FEEDBACK_PLAN.md): current stream-token action feedback protocol
+- [`docs/SPATIAL_HEADS.md`](docs/SPATIAL_HEADS.md): spatial target-head options and current config default
 - [`docs/current/THE_BPTT.md`](docs/current/THE_BPTT.md): current BPTT/TBPTT reasoning note
 - [`docs/current/working_log.md`](docs/current/working_log.md): compressed implementation log
 - [`docs/README.md`](docs/README.md): full doc index

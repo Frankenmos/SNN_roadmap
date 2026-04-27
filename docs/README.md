@@ -24,10 +24,9 @@
 
 - Active verification state: `Zero` is the live run (analysis not yet complete on final checkpoints)
 
-- [REPO_STATE.md](current/REPO_STATE.md) - What the repo does today (semantic click action space, token-pointer target head, masked-critic, update-before-eval)
+- [REPO_STATE.md](current/REPO_STATE.md) - What the repo does today (semantic click action space, configurable spatial target head, masked-critic, update-before-eval)
 - [working_log.md](current/working_log.md) - Compressed implementation history
 - [open_questions.md](current/open_questions.md) - Open questions and items needing user input or tooling support
-- [action_refactor.md](current/action_refactor.md) - Status note for landed action-space work
 
 ## Architecture & Training
 
@@ -53,7 +52,7 @@ Historical reasoning and specifications. No longer the current execution plan.
 - [spatial_target_migration_spec_BPTT_test.md](archive/spatial_target_migration_spec_BPTT_test.md) - Full spatial head migration spec (Phase 0-3)
 - [phase2_spec_2026-04-23.md](archive/phase2_spec_2026-04-23.md) - Coarse-to-fine target head spec (Phase 2 complete)
 - [action_history_bridge_verification_2026-04-24.md](archive/action_history_bridge_verification_2026-04-24.md) - Bridge verification report
-- [action_refactor.md](archive/action_refactor.md) - Action refactor status
+- [action_refactor.md](archive/action_refactor.md) - Historical MOVE/ATTACK action-refactor status, superseded by the current semantic click stack
 
 ### Implementation Records (Previously "Plans")
 - [phase2_3_implementation_record_2026-04-23.md](archive/phase2_3_implementation_record_2026-04-23.md) - Phase 2/3 implementation with lessons learned
@@ -76,6 +75,7 @@ Historical reasoning and specifications. No longer the current execution plan.
 ## Ideas (Speculative)
 
 - [WHEN_SHIT_GETS_DONE.md](ideas/WHEN_SHIT_GETS_DONE.md) - Non-neuromorphic branch plan
+- [GPU_THROUGHPUT_OPTIMIZATION_PLAN.md](ideas/GPU_THROUGHPUT_OPTIMIZATION_PLAN.md) - GPU, payload, and async optimization ladder
 - [RAYPLAN.md](ideas/RAYPLAN.md) - Distributed training plan with Ray
 - [THROUGHPUT_PLAN.md](ideas/THROUGHPUT_PLAN.md) - Transport and measurement companion to the Ray plan
 - [WHY_YOLO_BAD.md](ideas/WHY_YOLO_BAD.md) - Analysis of YOLO approach issues

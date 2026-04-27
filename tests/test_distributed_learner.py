@@ -7,7 +7,8 @@ from MockedEnv.policy_batch import make_dummy_state_from_shape, make_policy_batc
 from agent_core.policy_protocol import TOTAL_TOKEN_COUNT
 from distributed.learner import cpu_state_dict, validate_fragment_batch
 from distributed.protocol import EpisodeSummary, RolloutFragment
-from distributed.ray_train import _log_episode_summaries
+from distributed.ray_train import _collect_sync_fragments, _log_episode_summaries
+from distributed.rollout import LocalRolloutWorker
 
 
 def _make_fragment(length=2, policy_version=3):
@@ -53,6 +54,125 @@ class DummyQueue:
 
     def put(self, item):
         self.items.append(item)
+
+
+class _FakeObs:
+    def __init__(self, done=False):
+        self._done = bool(done)
+
+    def last(self):
+        return self._done
+
+
+class _FakeEnv:
+    def __init__(self):
+        self.steps = 0
+
+    def reset(self):
+        return [_FakeObs(done=False)]
+
+    def step(self, actions):
+        del actions
+        self.steps += 1
+        return [_FakeObs(done=False)]
+
+
+class _FakeReward:
+    def calculate_reward(self, obs, _unused):
+        del obs, _unused
+        return 1.0
+
+
+class _FakePPO:
+    def __init__(self):
+        self.memory = []
+        self.pending_fragments = []
+
+    def pending_rollout_steps(self):
+        return len(self.memory) + sum(
+            fragment.num_steps for fragment in self.pending_fragments
+        )
+
+    def store_transition(self, *args, **kwargs):
+        del args, kwargs
+        self.memory.append(object())
+
+    def set_final_next(self, _next_policy_input):
+        return None
+
+    def finalize_fragment(self, *, actor_id, fragment_id, policy_version, **_kwargs):
+        fragment = _make_fragment(length=len(self.memory), policy_version=policy_version)
+        object.__setattr__(fragment, "actor_id", int(actor_id))
+        object.__setattr__(fragment, "fragment_id", int(fragment_id))
+        self.pending_fragments.append(fragment)
+        self.memory = []
+        return fragment
+
+    def consume_pending_fragments(self):
+        fragments = list(self.pending_fragments)
+        self.pending_fragments = []
+        return fragments
+
+
+class _FakePolicy:
+    device = torch.device("cpu")
+
+
+class _FakeRolloutAgent:
+    def __init__(self):
+        self.ppo = _FakePPO()
+        self.policy = _FakePolicy()
+        self.reward_function = _FakeReward()
+        self.snn_state = make_dummy_state_from_shape(
+            (1, 2, TOTAL_TOKEN_COUNT, 64),
+            fill_value=0.0,
+        )
+        self.last_action_sample = None
+
+    def reset(self):
+        return None
+
+    def step(self, _obs):
+        policy_input = make_policy_batch(batch_size=1, with_state=True, zeros=True)
+        return (
+            object(),
+            1,
+            2,
+            3,
+            None,
+            -0.5,
+            0.0,
+            policy_input,
+            True,
+        )
+
+    def peek_observation(self, _obs):
+        return make_policy_batch(batch_size=1, with_state=True, zeros=True)
+
+
+class _NoneActor:
+    def collect_fragment(self, *args, **kwargs):
+        del args, kwargs
+        return None
+
+
+class _RemoteMethod:
+    def __init__(self, fn):
+        self._fn = fn
+
+    def remote(self, *args, **kwargs):
+        return self._fn(*args, **kwargs)
+
+
+class _LocalRayActor:
+    def __init__(self, actor):
+        self.collect_fragment = _RemoteMethod(actor.collect_fragment)
+
+
+class _LocalRay:
+    @staticmethod
+    def get(refs):
+        return refs
 
 
 def test_validate_fragment_batch_accepts_matching_policy_version():
@@ -114,3 +234,35 @@ def test_log_episode_summaries_uses_stable_actor_episode_key():
     assert queue.items[0]["policy_version"] == 7
     assert queue.items[1]["total"] == 11.0
     assert queue.items[1]["avg"] == 11.0
+
+
+def test_local_rollout_worker_clears_returned_fragment_from_actor_pending_buffer():
+    worker = LocalRolloutWorker(
+        actor_id=7,
+        env=_FakeEnv(),
+        agent=_FakeRolloutAgent(),
+        steps_per_episode=100,
+    )
+
+    first = worker.collect_fragment(target_steps=1, policy_version=3)
+    second = worker.collect_fragment(target_steps=1, policy_version=3)
+
+    assert first is not None
+    assert second is not None
+    assert first.fragment_id == 0
+    assert second.fragment_id == 1
+    assert worker.agent.ppo.pending_fragments == []
+    assert worker.counters.env_steps == 2
+
+
+def test_collect_sync_fragments_fails_fast_when_all_actors_return_none():
+    actors = [_LocalRayActor(_NoneActor()), _LocalRayActor(_NoneActor())]
+
+    with pytest.raises(RuntimeError, match="made no progress"):
+        _collect_sync_fragments(
+            _LocalRay(),
+            actors,
+            fragment_steps=1,
+            global_rollout_steps=1,
+            policy_version=0,
+        )
