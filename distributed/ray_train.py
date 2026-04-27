@@ -5,7 +5,7 @@ import math
 import os
 import time
 from collections import deque
-from multiprocessing import Manager
+from multiprocessing import Queue
 from pathlib import Path
 from typing import Iterable
 
@@ -218,20 +218,49 @@ def _collect_sync_fragments(
     fragment_steps: int,
     global_rollout_steps: int,
     policy_version: int,
-) -> list[RolloutFragment]:
+) -> tuple[list[RolloutFragment], dict[str, float | int]]:
     fragments: list[RolloutFragment] = []
     collected_steps = 0
+    stats: dict[str, float | int] = {
+        "ray_get_wall_seconds": 0.0,
+        "ray_submit_wall_seconds": 0.0,
+        "rollout_collect_waves": 0,
+        "rollout_empty_waves": 0,
+        "rollout_steps_collected": 0,
+    }
+    empty_waves = 0
     while collected_steps < int(global_rollout_steps):
+        submit_started = time.perf_counter()
         refs = [
             actor.collect_fragment.remote(fragment_steps, policy_version)
             for actor in actors
         ]
+        stats["ray_submit_wall_seconds"] = float(
+            stats["ray_submit_wall_seconds"],
+        ) + (time.perf_counter() - submit_started)
+        ray_get_started = time.perf_counter()
         wave = ray.get(refs)
+        stats["ray_get_wall_seconds"] = float(
+            stats["ray_get_wall_seconds"],
+        ) + (time.perf_counter() - ray_get_started)
+        stats["rollout_collect_waves"] = int(stats["rollout_collect_waves"]) + 1
         # Filter out None values (actor had no new fragment to contribute)
         wave = [f for f in wave if f is not None]
+        if not wave:
+            empty_waves += 1
+            stats["rollout_empty_waves"] = int(empty_waves)
+            if empty_waves >= 3:
+                raise RuntimeError(
+                    "Rollout collection made no progress for 3 consecutive "
+                    "waves. All actors returned None; actor-local rollout "
+                    "buffers may be stale or wedged.",
+                )
+            continue
+        empty_waves = 0
         fragments.extend(wave)
         collected_steps = sum(fragment.num_steps for fragment in fragments)
-    return fragments
+    stats["rollout_steps_collected"] = int(collected_steps)
+    return fragments, stats
 
 
 def main() -> None:
@@ -263,8 +292,7 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     config_path = Path(cfg.config_path).resolve()
 
-    manager = Manager()
-    log_queue = manager.Queue()
+    log_queue = Queue()
     run_dir = _run_dir()
     run_name = cfg.environment.run_name
     print(f"Ray run directory: {run_dir}")
@@ -278,6 +306,7 @@ def main() -> None:
     actors = []
     learner = None
     ray_started = False
+    interrupted = False
     db_listener = LogListener(log_queue, _run_path(cfg.environment.db_path))
     db_listener.start()
     try:
@@ -316,7 +345,7 @@ def main() -> None:
         for update_index in range(max_updates):
             policy_version = int(learner.policy_version)
             rollout_started = time.perf_counter()
-            fragments = _collect_sync_fragments(
+            fragments, rollout_stats = _collect_sync_fragments(
                 ray,
                 actors,
                 fragment_steps=fragment_steps,
@@ -329,32 +358,33 @@ def main() -> None:
             stats["rollout_wall_seconds"] = float(rollout_wall_seconds)
             stats["rollout_actor_count"] = int(num_actors)
             stats["rollout_fragments_collected"] = int(len(fragments))
+            stats.update(rollout_stats)
+            stats["rollout_collect_overhead_wall_seconds"] = max(
+                0.0,
+                float(rollout_wall_seconds)
+                - float(rollout_stats.get("ray_get_wall_seconds", 0.0))
+                - float(rollout_stats.get("ray_submit_wall_seconds", 0.0)),
+            )
 
-            episode_index += _log_episode_summaries(
+            episode_log_started = time.perf_counter()
+            episodes_logged = _log_episode_summaries(
                 log_queue=log_queue,
                 fragments=fragments,
                 episode_rewards=episode_rewards,
             )
-            _log_update(
-                log_queue=log_queue,
-                stats=stats,
-                episode_index=episode_index,
+            stats["episode_log_enqueue_wall_seconds"] = float(
+                time.perf_counter() - episode_log_started,
             )
-
-            print(
-                f"Update {update_index + 1}/{max_updates} | "
-                f"policy_version={learner.policy_version} | "
-                f"steps={sum(fragment.num_steps for fragment in fragments)} | "
-                f"episodes={episode_index} | "
-                f"rollout={rollout_wall_seconds:.1f}s | "
-                f"update={stats.get('update_wall_seconds', 0.0):.1f}s",
-            )
+            stats["episodes_logged_in_update"] = int(episodes_logged)
+            episode_index += episodes_logged
 
             checkpoint_frequency = max(1, int(cfg.environment.log_frequency))
+            checkpoint_wall_seconds = 0.0
             if (update_index + 1) % checkpoint_frequency == 0:
                 avg_reward = (
                     float(np.mean(episode_rewards)) if episode_rewards else None
                 )
+                checkpoint_started = time.perf_counter()
                 save_checkpoint(
                     learner.agent,
                     episode_index,
@@ -363,6 +393,41 @@ def main() -> None:
                     avg_reward=avg_reward,
                     require_rollout_clear=False,
                 )
+                checkpoint_wall_seconds = time.perf_counter() - checkpoint_started
+            stats["checkpoint_wall_seconds"] = float(checkpoint_wall_seconds)
+
+            update_log_started = time.perf_counter()
+            _log_update(
+                log_queue=log_queue,
+                stats=stats,
+                episode_index=episode_index,
+            )
+            update_log_wall_seconds = time.perf_counter() - update_log_started
+            cuda_peak_gib = float(
+                stats.get("cuda_peak_allocated_bytes", 0) or 0,
+            ) / float(1024**3)
+
+            print(
+                f"Update {update_index + 1}/{max_updates} | "
+                f"policy_version={learner.policy_version} | "
+                f"steps={sum(fragment.num_steps for fragment in fragments)} | "
+                f"episodes={episode_index} | "
+                f"rollout={rollout_wall_seconds:.1f}s | "
+                f"ray_get={stats.get('ray_get_wall_seconds', 0.0):.1f}s | "
+                f"update={stats.get('update_wall_seconds', 0.0):.1f}s | "
+                f"log={update_log_wall_seconds:.3f}s",
+            )
+            print(
+                "  learner_detail | "
+                f"transfer={stats.get('cpu_to_gpu_transfer_wall_seconds', 0.0):.1f}s | "
+                f"pack={stats.get('chunk_pack_wall_seconds', 0.0):.1f}s | "
+                f"replay={stats.get('replay_forward_wall_seconds', 0.0):.1f}s | "
+                f"backward={stats.get('backward_optimizer_wall_seconds', 0.0):.1f}s | "
+                f"fwd_calls={int(stats.get('tbptt_forward_calls', 0) or 0)} | "
+                f"active_chunks={stats.get('tbptt_group_mean_active_chunks', 0.0):.2f} | "
+                f"payload={stats.get('payload_total_mib', 0.0):.1f}MiB | "
+                f"cuda_peak={cuda_peak_gib:.2f}GiB",
+            )
 
             _broadcast_weights(
                 ray,
@@ -371,7 +436,7 @@ def main() -> None:
                 include_extractor_state=False,
             )
 
-        if learner is not None:
+        if learner is not None and not interrupted:
             avg_reward = float(np.mean(episode_rewards)) if episode_rewards else None
             save_checkpoint(
                 learner.agent,
@@ -381,14 +446,36 @@ def main() -> None:
                 avg_reward=avg_reward,
                 require_rollout_clear=False,
             )
+    except KeyboardInterrupt:
+        interrupted = True
+        print("Interrupted by user; shutting down Ray actors and logger.")
     finally:
         if actors:
             try:
                 ray.get([actor.close.remote() for actor in actors], timeout=30)
+            except KeyboardInterrupt:
+                print("Interrupted while closing actors; killing remaining Ray actors.")
+                for actor in actors:
+                    try:
+                        ray.kill(actor, no_restart=True)
+                    except Exception:
+                        pass
             except Exception as exc:
                 print(f"Warning: failed to close one or more Ray actors cleanly: {exc}")
-        log_queue.put({"type": "KILL"})
-        db_listener.join()
+                for actor in actors:
+                    try:
+                        ray.kill(actor, no_restart=True)
+                    except Exception:
+                        pass
+        try:
+            log_queue.put({"type": "KILL"})
+        except Exception as exc:
+            print(f"Warning: failed to send logger shutdown event: {exc}")
+        db_listener.join(timeout=10)
+        if db_listener.is_alive():
+            print("Warning: logger did not stop cleanly; terminating it.")
+            db_listener.terminate()
+            db_listener.join(timeout=5)
         if ray_started:
             ray.shutdown()
 

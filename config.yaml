@@ -3,12 +3,13 @@ hyperparameters:
   lr_min: 5.0e-6
   gamma: 0.99
   clip_eps: 0.10
-  batch_size: 128
-  epochs: 8
+  batch_size: 512
+  epochs: 4
   entropy_coef: 0.01
   critic_loss_coef: 0.5
   rollout_steps: 2048
   tbptt_window: 128
+  rollout_cache_spatial_dtype: "float32"
   target_kl: 0.03
   reward_scale: 1.0
 
@@ -42,7 +43,7 @@ environment:
   checkpoint_path: "checkpoint.pth"
   best_checkpoint_path: "best_checkpoint.pth"
   best_min_episodes: 50
-  log_frequency: 10
+  log_frequency: 1
   db_path: "training_logs.db"
   use_observation_inspector: false
   observation_inspector_output_path: "analysis_results/observation_space.jsonl"

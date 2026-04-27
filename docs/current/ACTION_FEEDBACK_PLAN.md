@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-25
 **Status:** Implemented 2026-04-26
-**Related:** `action_history_bridge_plan.md`, `theta-2/bug_report_theta2.md`
+**Related:** `docs/archive/action_history_bridge_plan.md`, `theta-2/bug_report_theta2.md`
 
 ---
 
@@ -22,7 +22,8 @@ reading this plan.
 
 ## Previous Bridge Layout (Verified Before Migration)
 
-From `policy_protocol.py` and `action_history_bridge_plan.md`:
+From `policy_protocol.py` and the historical
+`docs/archive/action_history_bridge_plan.md`:
 
 | Slice | Dim | Meaning | Source |
 |-------|-----|---------|--------|
@@ -272,7 +273,7 @@ class PolicyInputBatch:
 
 ## References
 
-- `docs/current/action_history_bridge_plan.md` — Historical 24-dim protocol
+- `docs/archive/action_history_bridge_plan.md` — Historical 24-dim protocol
 - `docs/current/THE_BPTT.md` — TBPTT architecture
 - `analysis_results/theta-1/last_action_diagnostics.jsonl` — Wrapper output format
 - `analysis_results/theta-2/bug_report_theta2.md` — Bug analysis

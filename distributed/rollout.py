@@ -211,6 +211,7 @@ class LocalRolloutWorker:
         self.fragment_id += 1
         if fragment is None:
             raise RuntimeError("Rollout worker failed to finalize a fragment")
+        self.agent.ppo.consume_pending_fragments()
         return fragment
 
     def stats(self) -> dict[str, Any]:

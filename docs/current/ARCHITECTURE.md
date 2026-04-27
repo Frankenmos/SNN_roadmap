@@ -350,7 +350,7 @@ Combine: mean(mode) or concatenation
 | `slow_token_snn_beta` | 0.97 | Slow SNN reset |
 | `attention_embed_dim` | 64 | Attention QK dimension |
 | `attention_pool_size` | 7 | Spatial token grid side (7×7 = 49 tokens) |
-| `spatial_head_type` | "coarse_to_fine" \| "token_pointer" | Target head architecture |
+| `spatial_head_type` | "coarse_to_fine" | Current config default; `token_pointer` and `factorized_xy` remain available |
 
 ---
 
@@ -602,8 +602,8 @@ See [`FRAGMENT_PPO.md`](FRAGMENT_PPO.md) for complete fragment documentation.
 | `lr` | 5e-5 | Learning rate |
 | `gamma` | 0.99 | Discount factor |
 | `clip_eps` | 0.10 | PPO clipping |
-| `batch_size` | 128 | Minibatch size |
-| `epochs` | 8 | PPO epochs per update |
+| `batch_size` | 512 | Recurrent chunk group size / PPO minibatch size |
+| `epochs` | 4 | PPO epochs per update |
 | `rollout_steps` | 2048 | Steps between updates |
 | `tbptt_window` | 128 | Truncated BPTT horizon |
 | `target_kl` | 0.03 | Early stop if KL exceeded |

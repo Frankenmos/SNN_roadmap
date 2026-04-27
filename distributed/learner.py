@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 import torch
@@ -106,13 +107,21 @@ class LearnerCoordinator:
         self,
         fragments: Iterable[RolloutFragment],
     ) -> Mapping[str, Any]:
+        validation_started = time.perf_counter()
         checked = validate_fragment_batch(
             fragments,
             expected_policy_version=self.policy_version,
         )
+        validation_wall_seconds = time.perf_counter() - validation_started
+        update_started = time.perf_counter()
         stats = self.agent.update_policy(fragments=checked)
+        learner_wall_seconds = time.perf_counter() - update_started
         summary = dict(stats or {})
         summary.setdefault("global_update_index", int(self.policy_version))
         summary["policy_version"] = int(self.policy_version)
         summary.setdefault("fragments_in_update", int(len(checked)))
+        summary["fragment_validation_wall_seconds"] = float(validation_wall_seconds)
+        summary["learner_update_from_fragments_wall_seconds"] = float(
+            learner_wall_seconds,
+        )
         return summary

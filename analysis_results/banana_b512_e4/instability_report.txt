@@ -1,0 +1,68 @@
+======================================================================
+SNN-PPO Training Instability Report
+======================================================================
+
+Summary:
+  episodes:              1204
+  avg episode length:    152.4
+  avg total reward:      -62.49
+  max total reward:      -31.59
+  reward std (full run): 11.64
+  final 100-ep avg:      -54.12
+  action semantics:      stream_action_feedback_v1
+  action labels:         0=no-op, 1=left_click, 2=right_click
+
+Plateau detection: none detected
+Late-stage CoV (last 200 eps): 0.282
+
+----------------------------------------------------------------------
+Data-driven flags:
+----------------------------------------------------------------------
+  [HIGH] Non-finite gradients detected late: 1 update(s) with non-finite grad_norm, 1 skipped optimizer step(s) in the late-update tail.
+        suggested knob: inspect surrogate gradient stability and reward/value scale
+
+  [MED] Optimizer steps were skipped 1 time(s) in the late-update tail due to invalid gradients.
+        suggested knob: check long-rollout batches and log per-batch failure context
+
+----------------------------------------------------------------------
+Interpretation Notes:
+----------------------------------------------------------------------
+  1. Current code has already fixed two older structural suspects:
+     - state-replay PPO training now uses stored SNN state
+     - entropy bonus is normalized per head instead of favoring move samples
+  2. If you are analyzing a run produced before those fixes landed,
+     older collapse patterns may reflect historical bugs rather than the
+     current trainer.
+
+----------------------------------------------------------------------
+Instrumentation status:
+----------------------------------------------------------------------
+  ppo_updates: 77 rows logged.
+  Late-stage (last 19 updates) means:
+    mean_entropy        = 1.863
+    mean_kl (approx)    = 0.0091
+    clip_fraction       = 0.244
+    explained_variance  = 0.771
+    update_wall_sec     = 77.82
+    rollout_wall_sec    = 42.31
+    learner steps/sec   = 31.47
+    rollout steps/sec   = 58.70
+    tbptt fwd calls     = 2845.4
+    active chunks       = 3.44
+    replay_forward_s    = 35.77
+    backward_opt_s      = 40.17
+    chunk_pack_s        = 0.07
+    cpu_to_gpu_s        = 0.77
+    payload MiB         = 2022.0
+    cuda peak GiB       = 6.02
+    grad_norm (finite)  = 134.516
+    grad_norm inf cnt   = 1
+    lr                  = 5.00e-05
+    nonfinite_grad_steps= 1
+    skipped_opt_steps   = 1
+    transitions/update  = 2445.9
+    entity_mask_util    = 0.496
+    entity_count_p50    = 13.00
+    entity_count_p99    = 13.00
+    selection_mask_util = 0.395
+  eval_runs: none logged

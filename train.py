@@ -4,7 +4,7 @@ import os
 import shutil
 import time
 from collections import deque
-from multiprocessing import Manager
+from multiprocessing import Queue
 from pathlib import Path
 
 import numpy as np
@@ -698,8 +698,7 @@ def main(argv):
 
     _apply_runtime_flags()
 
-    manager = Manager()
-    log_queue = manager.Queue()
+    log_queue = Queue()
 
     db_listener = LogListener(log_queue, _run_path(cfg.environment.db_path))
     print(f"Run directory: {_run_dir()}")
@@ -816,8 +815,15 @@ def main(argv):
     finally:
         if env is not None:
             env.close()
-        log_queue.put({"type": "KILL"})
-        db_listener.join()
+        try:
+            log_queue.put({"type": "KILL"})
+        except Exception as exc:
+            print(f"Warning: failed to send logger shutdown event: {exc}")
+        db_listener.join(timeout=10)
+        if db_listener.is_alive():
+            print("Warning: logger did not stop cleanly; terminating it.")
+            db_listener.terminate()
+            db_listener.join(timeout=5)
 
 
 if __name__ == "__main__":

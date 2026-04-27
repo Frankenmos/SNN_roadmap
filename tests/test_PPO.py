@@ -733,9 +733,131 @@ def test_update_policy_replays_state_and_clears_memory():
     assert stats["tbptt_group_max_steps"] >= 1
     assert stats["tbptt_group_mean_active_chunks"] >= 1.0
     assert stats["tbptt_forward_calls"] >= 1
+    for timing_key in (
+        "fragment_tensor_build_wall_seconds",
+        "cpu_to_gpu_transfer_wall_seconds",
+        "bootstrap_value_wall_seconds",
+        "gae_wall_seconds",
+        "tbptt_chunk_build_wall_seconds",
+        "chunk_pack_wall_seconds",
+        "replay_forward_wall_seconds",
+        "loss_eval_wall_seconds",
+        "backward_optimizer_wall_seconds",
+        "ppo_epoch_wall_seconds",
+    ):
+        assert timing_key in stats
+        assert stats[timing_key] >= 0.0
+    assert stats["payload_spatial_bytes"] > 0
+    assert stats["payload_state_bytes"] > 0
+    assert stats["payload_total_bytes"] >= stats["payload_spatial_bytes"]
+    assert stats["payload_total_mib"] > 0.0
+    assert stats["cuda_peak_allocated_bytes"] == 0
+    assert stats["cuda_peak_reserved_bytes"] == 0
+    assert stats["rollout_cache_spatial_dtype"] == "float32"
     assert changed_params > 0
     assert ppo.memory == []
     assert ppo.final_next is None
+
+
+def test_update_policy_caches_fragment_observations_once_per_fragment(monkeypatch):
+    torch.manual_seed(0)
+    net = SequenceCarryNet()
+    ppo = PPO(net, lr=1e-3, total_updates=0, lr_min=0.0, tbptt_window=2)
+
+    for step in range(4):
+        batch = make_policy_batch(
+            batch_size=1,
+            meta_dim=META_VECTOR_DIM,
+            zeros=True,
+        ).with_state(_make_state(float(step)))
+        ppo.store_transition(
+            batch,
+            torch.tensor(1),
+            torch.tensor(2),
+            torch.tensor(3),
+            torch.tensor(-0.5),
+            torch.tensor(1.0),
+            torch.tensor(0.0),
+            torch.tensor(float(step == 3)),
+            policy_mask=torch.tensor(1.0),
+        )
+    fragment = ppo.finalize_fragment()
+    assert fragment is not None
+
+    move_calls = 0
+    original_move = ppo._move_policy_input_to_device
+
+    def wrapped_move(*args, **kwargs):
+        nonlocal move_calls
+        move_calls += 1
+        return original_move(*args, **kwargs)
+
+    monkeypatch.setattr(ppo, "_move_policy_input_to_device", wrapped_move)
+    losses, stats = ppo.update_policy(fragments=[fragment], batch_size=2, epochs=3)
+
+    assert losses
+    assert stats is not None
+    assert move_calls == 1
+    assert stats["epochs_ran"] == 3
+
+
+def test_device_cached_chunk_pack_preserves_fragment_protocol_tensors():
+    ppo = PPO(FakeNet(), lr=1e-4, total_updates=0, lr_min=0.0, tbptt_window=8)
+
+    for step in range(2):
+        batch = make_policy_batch(
+            batch_size=1,
+            meta_dim=META_VECTOR_DIM,
+            zeros=True,
+        ).with_state(_make_state(float(step)))
+        batch.action_feedback_tokens.fill_(10.0 + step)
+        batch.meta_vec.fill_(20.0 + step)
+        ppo.store_transition(
+            batch,
+            torch.tensor(1),
+            torch.tensor(2 + step),
+            torch.tensor(3 + step),
+            torch.tensor(-0.5),
+            torch.tensor(1.0),
+            torch.tensor(0.0),
+            torch.tensor(float(step == 1)),
+            policy_mask=torch.tensor(1.0),
+            target_index=torch.tensor(4 + step),
+            coarse_index=torch.tensor(5 + step),
+            fine_index=torch.tensor(6 + step),
+        )
+    fragment = ppo.finalize_fragment()
+    assert fragment is not None
+
+    item = ppo._fragment_tensors(fragment)
+    chunks = ppo._build_tbptt_chunks(
+        observations=item["observations"],
+        pre_step_snn_state=item["pre_step_snn_state"],
+        actions=item["actions"],
+        move_xs=item["move_x"],
+        move_ys=item["move_y"],
+        target_indices=item["target_index"],
+        coarse_indices=item["coarse_index"],
+        fine_indices=item["fine_index"],
+        log_probs_old=item["log_probs_old"],
+        advantages=torch.ones(2, device=ppo.device),
+        returns=torch.ones(2, device=ppo.device),
+        dones=item["dones"],
+        episode_reset_mask=item["episode_reset_mask"],
+        sample_masks=item["sample_masks"],
+    )
+    packed = ppo._pack_chunk_group(chunks)
+
+    assert torch.allclose(
+        packed["action_feedback_tokens"][:, 0].cpu(),
+        fragment.action_feedback_tokens,
+    )
+    assert torch.allclose(packed["meta_vec"][:, 0].cpu(), fragment.meta_vec)
+    assert packed["target_index"][:, 0].cpu().tolist() == [4, 5]
+    assert packed["coarse_index"][:, 0].cpu().tolist() == [5, 6]
+    assert packed["fine_index"][:, 0].cpu().tolist() == [6, 7]
+    assert packed["initial_state"][0].shape == (1, 1, 1)
+    assert packed["initial_state"][0].cpu().item() == pytest.approx(0.0)
 
 
 def test_update_policy_uses_chunk_state_carry_and_resets_on_done():
