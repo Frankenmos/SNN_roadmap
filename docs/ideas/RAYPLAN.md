@@ -15,7 +15,7 @@ This is intentionally **not** "rewrite everything into RLlib" and **not** "jump 
 
 ## Implementation Status (2026-04-26)
 
-Phase 0a is now landed in the codebase:
+Phase 0a/0b plus the first synchronous Ray slice are now landed in the codebase:
 
 - `distributed/protocol.py` defines `TransitionRecord`, `RolloutFragment`,
   `EpisodeSummary`, `WeightSnapshot`, and `UpdateSummary`.
@@ -30,10 +30,24 @@ Phase 0a is now landed in the codebase:
   `sqlite3.OperationalError`.
 - Local checkpoints now save and validate the policy input schema, plus a
   learner update/policy version counter.
+- `PPO.update_policy()` now accepts `list[RolloutFragment]` and computes
+  GAE/returns per fragment, using each fragment's own bootstrap tail.
+- The single-process training loop now finalizes local transition buffers into
+  fragments before learner updates.
+- `distributed/rollout.py` provides a Ray-free `LocalRolloutWorker`.
+- `distributed/ray_actor.py` wraps that worker for Ray.
+- `distributed/learner.py` owns the master learner and rejects stale fragments.
+- `distributed/ray_train.py` launches synchronous actor-learner PPO:
+  `python -m distributed.ray_train --num-actors 4 --max-updates N`.
+- `config.yaml` now has a `distributed:` section with 4 rollout actors,
+  512-step actor fragments, and a 2048-step global rollout batch.
+- Time-limit resets are represented separately from terminal `done`, and the
+  learner fails fast if a fragment hides an internal non-terminal reset without
+  per-boundary bootstrap values.
 
-What is **not** done yet: PPO still consumes its local `memory` list directly.
-The next implementation step is to make PPO consume one or more
-`RolloutFragment`s locally and compute GAE per fragment.
+What is **not** done yet: live SC2 smoke, EvalActor, LoggerActor, actor respawn,
+and extractor-normalizer aggregation. The current Ray path is intentionally
+synchronous PPO, not IMPALA/V-trace.
 
 ---
 
@@ -344,24 +358,24 @@ And recommended dataflow:
 2. Refactor `PPO.update_policy()` to accept either:
    - a list of fragments, or
    - one already-flattened batch plus fragment boundaries
-   - **Status:** next step
+   - **Status:** landed 2026-04-26 for `list[RolloutFragment]`
 
 3. Move GAE computation to run **per fragment**, not once over one global flat list.
-   - **Status:** next step
+   - **Status:** landed 2026-04-26
 
 4. Stop making `PPO` own the idea of exactly one tail bootstrap.
-   - **Status:** next step
+   - **Status:** landed 2026-04-26 for learner updates; collection still uses a local temporary buffer before fragment finalization
 
 5. Freeze action-feedback inputs at transition creation time:
    - store the exact policy-input tensors used for acting
    - validate `policy_protocol_version` and `policy_input_schema`
    - do not rebuild action-feedback tokens later on the learner
-   - **Status:** schema validation landed; learner fragment consumption still pending
+   - **Status:** landed 2026-04-26
 
 6. Add a local single-process path that still works without Ray:
    - collect one fragment locally
    - feed it through the same fragment-based learner path
-   - **Status:** next step
+   - **Status:** landed 2026-04-26 inside the existing trainer loop
 
 ### Why this phase matters
 
@@ -373,6 +387,11 @@ If Phase 0 is skipped, the first Ray prototype will be a pile of serialization c
 - PPO update path works from fragments
 - existing smoke tests still pass
 - one new test proves multi-fragment GAE correctness
+
+Current caveat: fragments should be split at non-terminal time-limit resets
+unless/until the fragment schema stores per-boundary bootstrap values. Terminal
+episode boundaries can still appear inside a fragment because `done` resets
+GAE normally.
 
 ---
 

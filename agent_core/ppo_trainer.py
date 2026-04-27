@@ -20,6 +20,7 @@ from agent_core.policy_protocol import (
     PolicyInputBatch,
     SEMANTIC_AVAILABLE_NO_OP_INDEX,
 )
+from distributed.protocol import RolloutFragment
 
 
 class PPO:
@@ -59,6 +60,8 @@ class PPO:
 
         self.memory = []
         self.final_next = None
+        self.pending_fragments = []
+        self._next_fragment_id = 0
         self.update_count = 0
         self._policy_accepts_action_feedback = (
             "action_feedback_tokens"
@@ -346,6 +349,158 @@ class PPO:
     def _clear_rollout_cache(self):
         self.memory = []
         self.final_next = None
+        self.pending_fragments = []
+
+    def has_pending_rollout(self) -> bool:
+        return bool(self.memory or self.pending_fragments)
+
+    def pending_rollout_steps(self, *, include_current: bool = True) -> int:
+        steps = sum(fragment.num_steps for fragment in self.pending_fragments)
+        if include_current:
+            steps += len(self.memory)
+        return int(steps)
+
+    def pending_learnable_steps(self, *, include_current: bool = True) -> int:
+        steps = sum(
+            fragment.num_learnable_steps for fragment in self.pending_fragments
+        )
+        if include_current:
+            steps += sum(
+                int(float(transition["sample_mask"].item()) > 0.0)
+                for transition in self.memory
+            )
+        return int(steps)
+
+    def consume_pending_fragments(self) -> list[RolloutFragment]:
+        fragments = list(self.pending_fragments)
+        self.pending_fragments = []
+        return fragments
+
+    @staticmethod
+    def _stack_states_from_transitions(transitions):
+        states = [transition["observation_batch"].state_in for transition in transitions]
+        if all(state is None for state in states):
+            return None
+        if any(state is None for state in states):
+            raise ValueError("Either every transition must carry state_in, or none may")
+        return (
+            torch.cat([state[0] for state in states], dim=0),
+            torch.cat([state[1] for state in states], dim=0),
+        )
+
+    @staticmethod
+    def _slice_state_row(state, row_index: int):
+        if state is None:
+            return None
+        return (
+            state[0][row_index : row_index + 1].detach(),
+            state[1][row_index : row_index + 1].detach(),
+        )
+
+    def finalize_fragment(
+        self,
+        *,
+        actor_id: int = 0,
+        fragment_id: int | None = None,
+        policy_version: int | None = None,
+        episode_summaries=(),
+        reward_component_summaries=(),
+    ) -> RolloutFragment | None:
+        if not self.memory:
+            return None
+
+        last_done = float(self.memory[-1]["done"].item()) > 0.5
+        if not last_done and self.final_next is None:
+            raise RuntimeError(
+                "Non-terminal rollout fragment is missing bootstrap data. "
+                "Call PPO.set_final_next() before finalize_fragment().",
+            )
+
+        if fragment_id is None:
+            fragment_id = self._next_fragment_id
+            self._next_fragment_id += 1
+        if policy_version is None:
+            policy_version = int(self.update_count)
+
+        step_batches = [
+            transition["observation_batch"].with_state(None)
+            for transition in self.memory
+        ]
+        observations = PolicyInputBatch.stack(step_batches)
+        pre_step_snn_state = self._stack_states_from_transitions(self.memory)
+        default_false = torch.tensor(False, dtype=torch.bool)
+
+        fragment = RolloutFragment(
+            actor_id=int(actor_id),
+            fragment_id=int(fragment_id),
+            policy_version=int(policy_version),
+            spatial_obs=observations.spatial_obs,
+            entity_features=observations.entity_features,
+            entity_mask=observations.entity_mask,
+            selection_features=observations.selection_features,
+            selection_mask=observations.selection_mask,
+            action_feedback_tokens=observations.action_feedback_tokens,
+            meta_vec=observations.meta_vec,
+            actions=torch.stack([transition["action"] for transition in self.memory]),
+            move_x=torch.stack([transition["move_x"] for transition in self.memory]),
+            move_y=torch.stack([transition["move_y"] for transition in self.memory]),
+            target_index=torch.stack(
+                [transition["target_index"] for transition in self.memory],
+            ),
+            coarse_index=torch.stack(
+                [transition["coarse_index"] for transition in self.memory],
+            ),
+            fine_index=torch.stack(
+                [transition["fine_index"] for transition in self.memory],
+            ),
+            old_log_probs=torch.stack(
+                [transition["log_prob"] for transition in self.memory],
+            ),
+            values=torch.stack([transition["value"] for transition in self.memory]),
+            rewards=torch.stack([transition["reward"] for transition in self.memory]),
+            dones=torch.stack([transition["done"] for transition in self.memory]),
+            truncateds=torch.stack(
+                [
+                    transition.get(
+                        "truncated",
+                        torch.zeros((), dtype=torch.float32),
+                    )
+                    for transition in self.memory
+                ],
+            ),
+            episode_reset_mask=torch.stack(
+                [
+                    transition.get(
+                        "episode_reset",
+                        transition.get("done", default_false).bool(),
+                    ).bool()
+                    for transition in self.memory
+                ],
+            ),
+            sample_mask=torch.stack(
+                [transition["sample_mask"] for transition in self.memory],
+            ).float(),
+            pre_step_snn_state=pre_step_snn_state,
+            tail_next_policy_input=self.final_next,
+            tail_next_snn_state=(
+                None if self.final_next is None else self.final_next.state_in
+            ),
+            episode_summaries=tuple(episode_summaries),
+            reward_component_summaries=tuple(reward_component_summaries),
+            step_counters={
+                "steps": int(len(self.memory)),
+                "learnable_steps": int(
+                    sum(
+                        float(transition["sample_mask"].item()) > 0.0
+                        for transition in self.memory
+                    ),
+                ),
+            },
+        )
+        self.pending_fragments.append(fragment)
+        self.memory = []
+        self.final_next = None
+        return fragment
 
     def store_transition(
         self,
@@ -359,6 +514,8 @@ class PPO:
         done: torch.Tensor,
         sample_mask: torch.Tensor | None = None,
         policy_mask: torch.Tensor | None = None,
+        truncated: torch.Tensor | None = None,
+        episode_reset: torch.Tensor | None = None,
         *,
         target_index: torch.Tensor | None = None,
         coarse_index: torch.Tensor | None = None,
@@ -374,6 +531,10 @@ class PPO:
             else:
                 sample_mask = policy_mask
         sample_mask = sample_mask.to(device="cpu").detach()
+        if truncated is None:
+            truncated = torch.tensor(0.0, dtype=torch.float32)
+        if episode_reset is None:
+            episode_reset = done
         default_target = torch.tensor(-1, dtype=torch.long)
         self.memory.append(
             {
@@ -400,103 +561,143 @@ class PPO:
                 "reward": reward.detach().to(device="cpu"),
                 "value": value.detach().to(device="cpu"),
                 "done": done.detach().to(device="cpu"),
+                "truncated": truncated.detach().to(device="cpu", dtype=torch.float32),
+                "episode_reset": episode_reset.detach().to(device="cpu").bool(),
                 "sample_mask": sample_mask,
                 "policy_mask": sample_mask,
             }
         )
 
-    def update_policy(self, batch_size: int = 64, epochs: int = 10):
-        if not self.memory:
+    def _bootstrap_fragment_tail_value(self, fragment: RolloutFragment) -> torch.Tensor:
+        dones = fragment.dones.to(self.device).float().view(-1)
+        if float(dones[-1].item()) > 0.5:
+            return torch.zeros((), device=self.device)
+        if fragment.tail_next_policy_input is None:
+            raise RuntimeError(
+                "Non-terminal rollout fragment is missing bootstrap data.",
+            )
+        last_batch = fragment.tail_next_policy_input.to(
+            device=self.device,
+            dtype=torch.float32,
+        )
+        with torch.no_grad():
+            _, state_value, _, _ = self._encode_step_tensors(
+                spatial_obs=last_batch.spatial_obs,
+                entity_features=last_batch.entity_features,
+                entity_mask=last_batch.entity_mask,
+                selection_features=last_batch.selection_features,
+                selection_mask=last_batch.selection_mask,
+                action_feedback_tokens=last_batch.action_feedback_tokens,
+                meta_vec=last_batch.meta_vec,
+                state_in=last_batch.state_in,
+            )
+        return state_value.reshape(-1)[0].detach()
+
+    def _fragment_tensors(self, fragment: RolloutFragment) -> dict:
+        return {
+            "fragment": fragment,
+            "observations": fragment.as_policy_input_batch(state_in=None),
+            "pre_step_snn_state": fragment.pre_step_snn_state,
+            "actions": fragment.actions.to(self.device).long().view(-1),
+            "move_x": fragment.move_x.to(self.device).long().view(-1),
+            "move_y": fragment.move_y.to(self.device).long().view(-1),
+            "target_index": fragment.target_index.to(self.device).long().view(-1),
+            "coarse_index": fragment.coarse_index.to(self.device).long().view(-1),
+            "fine_index": fragment.fine_index.to(self.device).long().view(-1),
+            "log_probs_old": fragment.old_log_probs.to(self.device).float().view(-1),
+            "rewards": fragment.rewards.to(self.device).float().view(-1),
+            "values": fragment.values.to(self.device).float().view(-1),
+            "dones": fragment.dones.to(self.device).float().view(-1),
+            "truncateds": fragment.truncateds.to(self.device).float().view(-1),
+            "episode_reset_mask": fragment.episode_reset_mask.to(self.device).bool().view(-1),
+            "sample_masks": fragment.sample_mask.to(self.device).float().view(-1),
+        }
+
+    def update_policy(
+        self,
+        fragments: list[RolloutFragment] | None = None,
+        batch_size: int = 64,
+        epochs: int = 10,
+    ):
+        if fragments is None:
+            if self.memory:
+                self.finalize_fragment()
+            fragments = self.consume_pending_fragments()
+        else:
+            fragments = list(fragments)
+
+        if not fragments:
             return [], None
         update_started = time.perf_counter()
 
-        actions = torch.stack(
-            [transition["action"].to(self.device) for transition in self.memory],
-        )
-        move_xs = torch.stack(
-            [transition["move_x"].to(self.device) for transition in self.memory],
-        )
-        move_ys = torch.stack(
-            [transition["move_y"].to(self.device) for transition in self.memory],
-        )
-        target_indices = torch.stack(
-            [transition["target_index"].to(self.device) for transition in self.memory],
-        )
-        coarse_indices = torch.stack(
-            [transition["coarse_index"].to(self.device) for transition in self.memory],
-        )
-        fine_indices = torch.stack(
-            [transition["fine_index"].to(self.device) for transition in self.memory],
-        )
-        log_probs_old = torch.stack(
-            [transition["log_prob"].to(self.device) for transition in self.memory],
-        )
-        rewards = torch.stack(
-            [transition["reward"].to(self.device) for transition in self.memory],
-        )
-        values = torch.stack(
-            [transition["value"].to(self.device) for transition in self.memory],
-        )
-        dones = torch.stack(
-            [transition["done"].to(self.device) for transition in self.memory],
-        )
-        sample_masks = torch.stack(
-            [
-                transition.get(
-                    "sample_mask",
-                    transition.get(
-                        "policy_mask",
-                        torch.tensor(1.0, dtype=torch.float32, device=self.device),
-                    ),
-                ).to(self.device)
-                for transition in self.memory
-            ],
-        ).float()
-
-        with torch.no_grad():
-            if dones[-1].item() == 1.0:
-                last_next_value = torch.zeros((), device=self.device)
-            else:
-                if self.final_next is None:
-                    raise RuntimeError(
-                        "Non-terminal rollout tail is missing bootstrap data. "
-                        "Call PPO.set_final_next() before update_policy().",
-                    )
-                last_batch = self.final_next.to(
-                    device=self.device,
-                    dtype=torch.float32,
+        fragment_tensors = [self._fragment_tensors(fragment) for fragment in fragments]
+        raw_advantages_by_fragment = []
+        returns_by_fragment = []
+        for item in fragment_tensors:
+            if int(item["dones"].numel()) > 1:
+                unsupported_resets = (
+                    item["episode_reset_mask"][:-1]
+                    & (item["dones"][:-1] <= 0.5)
                 )
-                _, _, last_next_value, _ = self.policy_net(last_batch)
-                last_next_value = last_next_value.squeeze(-1)
+                if bool(unsupported_resets.any().item()):
+                    raise ValueError(
+                        "RolloutFragment contains an internal non-terminal "
+                        "episode reset. Split time-limit fragments at the reset "
+                        "boundary, or store per-boundary bootstrap values.",
+                    )
+            last_next_value = self._bootstrap_fragment_tail_value(item["fragment"])
+            raw_advantages = self._compute_advantages(
+                item["rewards"],
+                item["values"],
+                item["dones"],
+                last_next_value,
+            )
+            raw_advantages_by_fragment.append(raw_advantages)
+            returns_by_fragment.append((raw_advantages + item["values"]).detach())
 
-        raw_advantages = self._compute_advantages(
-            rewards, values, dones, last_next_value,
+        all_raw_advantages = torch.cat(raw_advantages_by_fragment, dim=0)
+        all_sample_masks = torch.cat(
+            [item["sample_masks"] for item in fragment_tensors],
+            dim=0,
         )
-        returns = (raw_advantages + values).detach()
-        if bool((sample_masks > 0.0).any().item()):
-            valid_advantages = raw_advantages[sample_masks > 0.0]
-            advantages = (
-                raw_advantages - valid_advantages.mean()
+        if bool((all_sample_masks > 0.0).any().item()):
+            valid_advantages = all_raw_advantages[all_sample_masks > 0.0]
+            normalized_advantages = (
+                all_raw_advantages - valid_advantages.mean()
             ) / (valid_advantages.std(unbiased=False) + 1e-8)
         else:
-            advantages = torch.zeros_like(raw_advantages, device=self.device)
+            normalized_advantages = torch.zeros_like(
+                all_raw_advantages,
+                device=self.device,
+            )
 
-        chunks = self._build_tbptt_chunks(
-            actions=actions,
-            move_xs=move_xs,
-            move_ys=move_ys,
-            target_indices=target_indices,
-            coarse_indices=coarse_indices,
-            fine_indices=fine_indices,
-            log_probs_old=log_probs_old,
-            advantages=advantages,
-            returns=returns,
-            dones=dones,
-            sample_masks=sample_masks,
-        )
+        chunks = []
+        cursor = 0
+        for item, returns in zip(fragment_tensors, returns_by_fragment):
+            length = int(item["actions"].size(0))
+            advantages = normalized_advantages[cursor : cursor + length]
+            cursor += length
+            chunks.extend(
+                self._build_tbptt_chunks(
+                    observations=item["observations"],
+                    pre_step_snn_state=item["pre_step_snn_state"],
+                    actions=item["actions"],
+                    move_xs=item["move_x"],
+                    move_ys=item["move_y"],
+                    target_indices=item["target_index"],
+                    coarse_indices=item["coarse_index"],
+                    fine_indices=item["fine_index"],
+                    log_probs_old=item["log_probs_old"],
+                    advantages=advantages,
+                    returns=returns,
+                    dones=item["dones"],
+                    episode_reset_mask=item["episode_reset_mask"],
+                    sample_masks=item["sample_masks"],
+                ),
+            )
         tbptt_chunks = int(len(chunks))
 
-        rollout_size = len(self.memory)
+        rollout_size = int(sum(fragment.num_steps for fragment in fragments))
         losses = []
         acc_policy = []
         acc_value = []
@@ -647,6 +848,8 @@ class PPO:
                     break
 
         with torch.no_grad():
+            returns = torch.cat(returns_by_fragment, dim=0)
+            values = torch.cat([item["values"] for item in fragment_tensors], dim=0)
             var_returns = returns.var(unbiased=False)
             explained_var = 1.0 - (returns - values).var(unbiased=False) / (
                 var_returns + 1e-8
@@ -654,23 +857,19 @@ class PPO:
 
         returns_cpu = returns.detach().to("cpu").float()
         update_wall_seconds = time.perf_counter() - update_started
-        entity_counts = torch.tensor(
+        entity_counts = torch.cat(
             [
-                float(
-                    transition["observation_batch"].entity_mask.sum().item(),
-                )
-                for transition in self.memory
+                fragment.entity_mask.sum(dim=1).detach().to("cpu").float()
+                for fragment in fragments
             ],
-            dtype=torch.float32,
+            dim=0,
         )
-        selection_counts = torch.tensor(
+        selection_counts = torch.cat(
             [
-                float(
-                    transition["observation_batch"].selection_mask.sum().item(),
-                )
-                for transition in self.memory
+                fragment.selection_mask.sum(dim=1).detach().to("cpu").float()
+                for fragment in fragments
             ],
-            dtype=torch.float32,
+            dim=0,
         )
         stats = {
             "mean_policy_loss": float(np.mean(acc_policy)),
@@ -684,6 +883,10 @@ class PPO:
             "nonfinite_grad_steps": int(nonfinite_grad_steps),
             "skipped_optimizer_steps": int(skipped_optimizer_steps),
             "transitions_in_update": int(rollout_size),
+            "learnable_transitions_in_update": int(
+                sum(fragment.num_learnable_steps for fragment in fragments),
+            ),
+            "fragments_in_update": int(len(fragments)),
             "return_mean": float(returns_cpu.mean().item()),
             "return_std": float(returns_cpu.std(unbiased=False).item()),
             "return_p10": float(torch.quantile(returns_cpu, 0.10).item()),
@@ -718,7 +921,6 @@ class PPO:
         self.update_count += 1
         stats["global_update_index"] = int(self.update_count)
 
-        self._clear_rollout_cache()
         return losses, stats
 
     def _build_tbptt_chunks(
@@ -730,21 +932,36 @@ class PPO:
         advantages: torch.Tensor,
         returns: torch.Tensor,
         dones: torch.Tensor,
+        observations: PolicyInputBatch | None = None,
+        pre_step_snn_state: tuple[torch.Tensor, torch.Tensor] | None = None,
+        episode_reset_mask: torch.Tensor | None = None,
         sample_masks: torch.Tensor | None = None,
         policy_masks: torch.Tensor | None = None,
         target_indices: torch.Tensor | None = None,
         coarse_indices: torch.Tensor | None = None,
         fine_indices: torch.Tensor | None = None,
     ):
+        rollout_size = int(actions.size(0))
         if sample_masks is None:
             if policy_masks is not None:
                 sample_masks = policy_masks
             else:
                 sample_masks = torch.ones(
-                    len(self.memory),
+                    rollout_size,
                     dtype=torch.float32,
                     device=self.device,
                 )
+        if episode_reset_mask is None:
+            episode_reset_mask = torch.zeros(
+                rollout_size,
+                dtype=torch.bool,
+                device=dones.device,
+            )
+        else:
+            episode_reset_mask = episode_reset_mask.to(
+                device=dones.device,
+                dtype=torch.bool,
+            )
         if target_indices is None:
             target_indices = torch.full_like(actions, -1, dtype=torch.long)
         if coarse_indices is None:
@@ -752,25 +969,35 @@ class PPO:
         if fine_indices is None:
             fine_indices = torch.full_like(actions, -1, dtype=torch.long)
         chunks = []
-        rollout_size = len(self.memory)
         window = rollout_size if self.tbptt_window is None else self.tbptt_window
         start = 0
         while start < rollout_size:
             end = min(start + window, rollout_size)
-            done_indices = torch.nonzero(dones[start:end] > 0.5, as_tuple=False)
-            if len(done_indices) > 0:
-                end = start + int(done_indices[0].item()) + 1
+            split_mask = (dones[start:end] > 0.5) | episode_reset_mask[start:end]
+            split_indices = torch.nonzero(split_mask, as_tuple=False)
+            if len(split_indices) > 0:
+                end = start + int(split_indices[0].item()) + 1
 
-            step_batches = [
-                self.memory[idx]["observation_batch"].with_state(None)
-                for idx in range(start, end)
-            ]
+            if observations is None:
+                step_batches = [
+                    self.memory[idx]["observation_batch"].with_state(None)
+                    for idx in range(start, end)
+                ]
+                chunk_observations = PolicyInputBatch.stack(step_batches)
+                initial_state = self.memory[start]["observation_batch"].state_in
+            else:
+                index = torch.arange(
+                    start,
+                    end,
+                    device=observations.spatial_obs.device,
+                )
+                chunk_observations = observations.index_select(index).with_state(None)
+                initial_state = self._slice_state_row(pre_step_snn_state, start)
+
             chunks.append(
                 {
-                    "observations": PolicyInputBatch.stack(step_batches),
-                    "initial_state": self.memory[start][
-                        "observation_batch"
-                    ].state_in,
+                    "observations": chunk_observations,
+                    "initial_state": initial_state,
                     "actions": actions[start:end],
                     "move_x": move_xs[start:end],
                     "move_y": move_ys[start:end],

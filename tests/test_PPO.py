@@ -498,6 +498,65 @@ def test_compute_advantages_matches_hand_calculation():
     assert torch.allclose(advantages, expected, atol=1e-5)
 
 
+def test_update_policy_bootstraps_each_fragment_independently():
+    ppo = PPO(SequenceCarryNet(), lr=1e-4, gamma=0.99, total_updates=0, lr_min=0.0)
+
+    first_batch = make_policy_batch(
+        batch_size=1,
+        meta_dim=META_VECTOR_DIM,
+        zeros=True,
+    ).with_state(_make_state(0.0))
+    ppo.store_transition(
+        first_batch,
+        torch.tensor(0),
+        torch.tensor(0),
+        torch.tensor(0),
+        torch.tensor(-0.1),
+        torch.tensor(1.0),
+        torch.tensor(0.0),
+        torch.tensor(0.0),
+        policy_mask=torch.tensor(1.0),
+    )
+    tail = make_policy_batch(
+        batch_size=1,
+        meta_dim=META_VECTOR_DIM,
+        zeros=True,
+    ).with_state(_make_state(20.0))
+    ppo.set_final_next(tail)
+    first_fragment = ppo.finalize_fragment()
+
+    second_batch = make_policy_batch(
+        batch_size=1,
+        meta_dim=META_VECTOR_DIM,
+        zeros=True,
+    ).with_state(_make_state(0.0))
+    ppo.store_transition(
+        second_batch,
+        torch.tensor(0),
+        torch.tensor(0),
+        torch.tensor(0),
+        torch.tensor(-0.1),
+        torch.tensor(1.0),
+        torch.tensor(0.0),
+        torch.tensor(1.0),
+        policy_mask=torch.tensor(1.0),
+    )
+    second_fragment = ppo.finalize_fragment()
+
+    assert first_fragment is not None
+    assert second_fragment is not None
+    losses, stats = ppo.update_policy(
+        fragments=[first_fragment, second_fragment],
+        batch_size=2,
+        epochs=1,
+    )
+
+    assert losses
+    assert stats["fragments_in_update"] == 2
+    assert stats["transitions_in_update"] == 2
+    assert stats["return_mean"] == pytest.approx((1.0 + 0.99 * 10.0 + 1.0) / 2.0)
+
+
 def test_calculate_losses_reports_normalized_entropy():
     ppo = PPO(FakeNet(), lr=1e-4)
     batch_size = 128

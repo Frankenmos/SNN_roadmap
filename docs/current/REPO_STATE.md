@@ -1,18 +1,22 @@
 # Repo State
 
-Updated: 2026-04-22
+Updated: 2026-04-26
 
 ## What The Repo Does Today
 
 This is currently an SNN + PPO DefeatRoaches project with:
 
 - hybrid observation tokenization from Fix 3
+- fragment-based PPO with per-fragment GAE and an initial synchronous Ray rollout path
+- `POLICY_PROTOCOL_VERSION = 2` with `policy_input_schema = "stream_action_feedback_v1"`
 - Stage-1 TBPTT with ordered chunk replay and packed replay
 - SDPA-backed attention as the current low-risk attention fast path
 - SQLite logging plus analysis plots under `analysis_results/`
 - semantic policy actions:
   `NO_OP`, `LEFT_CLICK`, `RIGHT_CLICK`
 - eval-side trace capture plus per-trace analysis bundles for real-step inspection
+- distributed smoke entrypoint:
+  `python -m distributed.ray_train --num-actors 4 --max-updates N`
 - dual-timescale token memory:
   fast + slow token-temporal SNN pathways feeding one shared control latent
 - explicit 2D positional encoding on the spatial token grid
@@ -27,6 +31,11 @@ The current policy input path is:
 - `multi_select` / `single_select` -> selection tokens
 - `action_feedback_tokens[1, 9] = previous bridge action + execution/score feedback`
 - `meta_vec[15] = player[11] + semantic_available_actions[3] + pysc2_last_action[1]`
+- token-type embeddings
+- spiking self-attention
+- fast + slow token-temporal SNN pathways, combined into one latent readout
+- PPO action / target / value readout, with the target head reading a retained
+  spatial context map and replay teacher-forcing recorded target payloads
 - token-type embeddings
 - spiking self-attention
 - fast + slow token-temporal SNN pathways, combined into one latent readout
@@ -192,6 +201,17 @@ also be treated as incompatible:
 - `meta_vec` width changed from `19` to `24`
 - the bridge slice changed from 4 attempted-action fields to 9 fields:
   attempted action plus last-action and score-delta feedback
+
+Checkpoints from before the 2026-04-26 protocol version migration should also
+be treated as incompatible:
+
+- `POLICY_PROTOCOL_VERSION` introduced (current = 2)
+- `policy_input_schema` introduced (current = "stream_action_feedback_v1")
+- `meta_vec` width changed from `24` to `15`
+- action-feedback fields moved from meta_vec to separate `action_feedback_tokens`
+- fragment-based PPO with per-fragment GAE replaces single-bootstrap approach
+- initial Ray trainer added: rollout actors collect fragments, one learner owns
+  optimizer/scheduler/checkpoints, stale `policy_version` fragments are rejected
 
 **Note (2026-04-23)**: The `coarse_to_fine` spatial head is now implemented
 and ready for testing. To use it, set `model.spatial_head_type: "coarse_to_fine"`

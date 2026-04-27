@@ -65,6 +65,25 @@ environment:
   eval_frequency: 50
   eval_episodes: 5
 
+distributed:
+  enabled: false
+  num_rollout_actors: 4
+  num_eval_actors: 0
+  fragment_steps: 512
+  global_rollout_steps: 2048
+  learner_device: "cuda"
+  actor_device: "cpu"
+  sc2_runtime_profile: "linux_headless"
+  serialize_env_resets: true
+  ray_local_mode: false
+  object_store_memory_gb: 8
+  actor_cpus: 1
+  learner_gpus: 1
+  eval_every_updates: 50
+  max_updates: 0
+  required_policy_protocol_version: 2
+  required_policy_input_schema: "stream_action_feedback_v1"
+
 model:
   spatial_input_shape: [27, 84, 84]
   vector_input_dim: 15

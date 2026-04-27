@@ -16,7 +16,8 @@
 ## Current Planning
 
 - [ACTION_FEEDBACK_PLAN.md](current/ACTION_FEEDBACK_PLAN.md) - Current stream-token action feedback protocol
-- [action_history_bridge_plan.md](current/action_history_bridge_plan.md) - Historical 24-dim action-history bridge protocol
+- [FRAGMENT_PPO.md](current/FRAGMENT_PPO.md) - Fragment PPO memory contract and Ray boundary
+- [RAY_STATUS.md](current/RAY_STATUS.md) - Current Ray implementation status
 - [feedback_diagnostics_note.md](current/feedback_diagnostics_note.md) - Feedback JSONL shape and meta layout
 
 ## Current State
@@ -31,6 +32,7 @@
 ## Architecture & Training
 
 - [THE_BPTT.md](current/THE_BPTT.md) - BPTT/TBPTT design notes and historical analysis
+- [ARCHITECTURE.md](current/ARCHITECTURE.md) - Current architecture reference
 - [review_architectural_fixes_2026-04-23.md](archive/review_architectural_fixes_2026-04-23.md) - Review of what's landed vs. still live (archived from current/)
 
 ## Reviews & Analysis
@@ -57,6 +59,7 @@ Historical reasoning and specifications. No longer the current execution plan.
 - [phase2_3_implementation_record_2026-04-23.md](archive/phase2_3_implementation_record_2026-04-23.md) - Phase 2/3 implementation with lessons learned
 - [observation_expansion_record_2026-04-24.md](archive/observation_expansion_record_2026-04-24.md) - 24-dim action-history bridge implementation
 - [observation_feedback_investigation_2026-04-23.md](archive/observation_feedback_investigation_2026-04-23.md) - Observation feedback investigation
+- [action_history_bridge_plan.md](archive/action_history_bridge_plan.md) - Historical 24-dim action-history bridge protocol
 
 ### Fix Plans (Historical)
 - [planned_fixes.md](archive/planned_fixes.md)

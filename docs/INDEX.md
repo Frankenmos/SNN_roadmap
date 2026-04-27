@@ -21,9 +21,12 @@ Start here when you want repo context without spelunking through old plans.
 - [working_log.md](current/working_log.md) - Compressed implementation history (297 lines)
 - [open_questions.md](current/open_questions.md) - Open questions and items needing user input
 
+### Fragment-Based PPO & Ray Migration
+- [FRAGMENT_PPO.md](current/FRAGMENT_PPO.md) - Fragment-based rollout memory management and per-fragment GAE
+- [RAY_STATUS.md](current/RAY_STATUS.md) - Ray implementation phases and status tracker
+
 ### Action History & Observation Protocol
 - [ACTION_FEEDBACK_PLAN.md](current/ACTION_FEEDBACK_PLAN.md) - Current stream action-feedback token protocol
-- [action_history_bridge_plan.md](current/action_history_bridge_plan.md) - Historical 24-dim action-history bridge protocol
 - [feedback_diagnostics_note.md](current/feedback_diagnostics_note.md) - Observed feedback JSONL shape and timing semantics from the bridge investigation
 
 ### BPTT & Training Architecture
@@ -39,6 +42,7 @@ Start here when you want repo context without spelunking through old plans.
 ## Archive (Historical)
 
 ### Specifications & Migration Plans
+- [action_history_bridge_plan.md](archive/action_history_bridge_plan.md) - Historical 24-dim action-history bridge protocol (archived after protocol version 2 migration)
 - [spatial_target_migration_spec_BPTT_test.md](archive/spatial_target_migration_spec_BPTT_test.md) - Full spatial head migration spec (Phase 0-3); Phases 0-2 complete, Phase 3 pending (898 lines)
 - [phase2_spec_2026-04-23.md](archive/phase2_spec_2026-04-23.md) - Coarse-to-fine target head specification (Phase 2 complete) (536 lines)
 - [action_refactor.md](archive/action_refactor.md) - Status note for the landed action-space work
@@ -69,8 +73,8 @@ Start here when you want repo context without spelunking through old plans.
 
 ### Future Branches
 - [WHEN_SHIT_GETS_DONE.md](ideas/WHEN_SHIT_GETS_DONE.md) - Non-neuromorphic branch plan (587 lines)
-- [RAYPLAN.md](ideas/RAYPLAN.md) - Distributed training plan with Ray (824 lines)
-- [THROUGHPUT_PLAN.md](ideas/THROUGHPUT_PLAN.md) - Transport and measurement companion to the Ray plan (470 lines)
+- [RAYPLAN.md](ideas/RAYPLAN.md) - Distributed training plan with Ray (836 lines)
+- [THROUGHPUT_PLAN.md](ideas/THROUGHPUT_PLAN.md) - Transport and measurement companion to the Ray plan (473 lines)
 - [distributed_roadmap.md](ideas/distributed_roadmap.md) - Distributed training roadmap (75 lines)
 
 ### Analysis & Critique
@@ -107,7 +111,7 @@ Start here when you want repo context without spelunking through old plans.
 
 ### Action Spaces & Target Heads
 - [ACTION_FEEDBACK_PLAN.md](current/ACTION_FEEDBACK_PLAN.md) - Current stream-token action feedback protocol
-- [action_history_bridge_plan.md](current/action_history_bridge_plan.md) - Historical 24-dim bridge protocol
+- [action_history_bridge_plan.md](archive/action_history_bridge_plan.md) - Historical 24-dim bridge protocol (archived)
 - [SPATIAL_HEADS.md](SPATIAL_HEADS.md) - Spatial target head reference
 - [action_refactor.md](archive/action_refactor.md) - Action refactor status
 - [phase2_spec_2026-04-23.md](archive/phase2_spec_2026-04-23.md) - Coarse-to-fine spec (Phase 2 complete)
@@ -121,7 +125,9 @@ Start here when you want repo context without spelunking through old plans.
 - [review_architectural_fixes_2026-04-23.md](archive/review_architectural_fixes_2026-04-23.md) - What's landed vs. live
 - [observation_feedback_investigation_2026-04-23.md](archive/observation_feedback_investigation_2026-04-23.md) - Investigation findings
 
-### Distributed Training (Future)
+### Distributed Training
+- [FRAGMENT_PPO.md](current/FRAGMENT_PPO.md) - Fragment-based rollout memory management and Ray boundary
+- [RAY_STATUS.md](current/RAY_STATUS.md) - Ray implementation phases and current smoke status
 - [RAYPLAN.md](ideas/RAYPLAN.md) - Ray distributed plan
 - [THROUGHPUT_PLAN.md](ideas/THROUGHPUT_PLAN.md) - Ray transport and throughput plan
 - [distributed_roadmap.md](ideas/distributed_roadmap.md) - Roadmap
@@ -136,13 +142,13 @@ Start here when you want repo context without spelunking through old plans.
 | spatial_target_migration_spec_BPTT_test.md | 898 | archive/ |
 | review_architectural_fixes_2026-04-23.md | 857 | archive/ |
 | THE_BPTT.md | 699 | current/ |
-| RAYPLAN.md | 824 | ideas/ |
+| RAYPLAN.md | 836 | ideas/ |
 | WHEN_SHIT_GETS_DONE.md | 587 | ideas/ |
 | phase2_spec_2026-04-23.md | 536 | archive/ |
 | phase2_3_implementation_record_2026-04-23.md | 518 | archive/ |
 | independent_review_2026-04-20.md | 493 | archive/ |
 | planned_fixes.md | 473 | archive/ |
-| THROUGHPUT_PLAN.md | 470 | ideas/ |
+| THROUGHPUT_PLAN.md | 473 | ideas/ |
 | WHY_YOLO_BAD.md | 460 | ideas/ |
 | deep-research-report.md | 372 | docs/ |
 | TEST_SNIPPETS.md | 367 | tooling/ |
