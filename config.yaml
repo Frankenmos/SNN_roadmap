@@ -76,6 +76,7 @@ distributed:
   sc2_runtime_profile: "linux_headless"
   serialize_env_resets: true
   ray_local_mode: false
+  include_dashboard: false
   object_store_memory_gb: 8
   actor_cpus: 1
   learner_gpus: 1

@@ -187,6 +187,7 @@ def _ray_init_kwargs(args: argparse.Namespace) -> dict:
     local_mode = bool(args.local_mode or _distributed_value("ray_local_mode", False))
     kwargs = {
         "ignore_reinit_error": True,
+        "include_dashboard": bool(_distributed_value("include_dashboard", False)),
         "local_mode": local_mode,
     }
     object_store_memory = _object_store_memory_bytes()
