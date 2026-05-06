@@ -185,6 +185,16 @@ class DefeatRoaches(base_agent.BaseAgent):
                 "rollout_cache_spatial_dtype",
                 "float32",
             ),
+            right_click_curriculum_updates=getattr(
+                cfg.hyperparameters,
+                "right_click_curriculum_updates",
+                0,
+            ),
+            right_click_curriculum_noop_logit_penalty=getattr(
+                cfg.hyperparameters,
+                "right_click_curriculum_noop_logit_penalty",
+                0.0,
+            ),
         )
 
         self.bootstrap_pending = True
@@ -211,6 +221,18 @@ class DefeatRoaches(base_agent.BaseAgent):
         return self.extractor.peek_observation(
             obs,
             last_action_token=self.last_action_token,
+        )
+
+    def _observe_reward_action(self, action_id, move_x, move_y, obs, action_func):
+        observer = getattr(self.reward_function, "observe_action", None)
+        if observer is None:
+            return
+        observer(
+            action_id=action_id,
+            target_x=move_x,
+            target_y=move_y,
+            obs=obs,
+            action_call=action_func,
         )
 
     def step(self, obs, deterministic: bool = False):
@@ -267,6 +289,7 @@ class DefeatRoaches(base_agent.BaseAgent):
 
         action_func = self.action_space.dispatch(action, move_x, move_y, obs)
         learnable = True
+        executed_action = action
 
         if action == POLICY_ACTION_RIGHT_CLICK:
             learnable = _matches_function_call(
@@ -279,9 +302,18 @@ class DefeatRoaches(base_agent.BaseAgent):
             raise ValueError(f"Unknown policy action id: {action}")
         if action in SPATIAL_ACTION_IDS and not learnable:
             action_func = self.action_space.no_op()
+            executed_action = POLICY_ACTION_NO_OP
             self.last_action_token = self.action_space.get_last_token()
         else:
             self.last_action_token = self.action_space.get_last_token()
+
+        self._observe_reward_action(
+            action_id=executed_action,
+            move_x=move_x,
+            move_y=move_y,
+            obs=obs,
+            action_func=action_func,
+        )
 
         return (
             action_func,

@@ -19,6 +19,7 @@ from agent_core.policy_protocol import (
     POLICY_ACTION_RIGHT_CLICK,
     PolicyInputBatch,
     SEMANTIC_AVAILABLE_NO_OP_INDEX,
+    SEMANTIC_AVAILABLE_RIGHT_CLICK_INDEX,
 )
 from distributed.protocol import RolloutFragment
 
@@ -37,6 +38,8 @@ class PPO:
         target_kl: float | None = None,
         tbptt_window: int | None = None,
         rollout_cache_spatial_dtype: str | torch.dtype = "float32",
+        right_click_curriculum_updates: int = 0,
+        right_click_curriculum_noop_logit_penalty: float = 0.0,
     ):
         self.policy_net = policy_net
         self.device = policy_net.device
@@ -50,6 +53,14 @@ class PPO:
         self.lr_min = lr_min
         self.tbptt_window = (
             None if tbptt_window is None else max(1, int(tbptt_window))
+        )
+        self.right_click_curriculum_updates = max(
+            0,
+            int(right_click_curriculum_updates or 0),
+        )
+        self.right_click_curriculum_noop_logit_penalty = max(
+            0.0,
+            float(right_click_curriculum_noop_logit_penalty or 0.0),
         )
         self.rollout_cache_spatial_dtype = self._resolve_spatial_cache_dtype(
             rollout_cache_spatial_dtype,
@@ -95,6 +106,12 @@ class PPO:
             "rollout_cache_spatial_dtype": str(self.rollout_cache_spatial_dtype).replace(
                 "torch.",
                 "",
+            ),
+            "right_click_curriculum_updates": int(
+                self.right_click_curriculum_updates,
+            ),
+            "right_click_curriculum_noop_logit_penalty": float(
+                self.right_click_curriculum_noop_logit_penalty,
             ),
         }
 
@@ -307,7 +324,50 @@ class PPO:
                     f"{int(available.size(-1))} < {int(action_logits.size(-1))}",
                 )
             available = available[..., : action_logits.size(-1)]
-        return action_logits.masked_fill(~available, -1.0e4)
+        masked_logits = action_logits.masked_fill(~available, -1.0e4)
+        return self._apply_right_click_curriculum(masked_logits, available)
+
+    def _right_click_curriculum_penalty(self) -> float:
+        if (
+            self.right_click_curriculum_updates <= 0
+            or self.right_click_curriculum_noop_logit_penalty <= 0.0
+            or self.update_count >= self.right_click_curriculum_updates
+        ):
+            return 0.0
+
+        progress = float(self.update_count) / float(
+            max(1, self.right_click_curriculum_updates),
+        )
+        return float(
+            self.right_click_curriculum_noop_logit_penalty
+            * max(0.0, 1.0 - progress)
+        )
+
+    def _apply_right_click_curriculum(
+        self,
+        action_logits: torch.Tensor,
+        available: torch.Tensor,
+    ) -> torch.Tensor:
+        penalty = self._right_click_curriculum_penalty()
+        if penalty <= 0.0:
+            return action_logits
+        if int(action_logits.size(-1)) <= max(
+            POLICY_ACTION_NO_OP,
+            POLICY_ACTION_RIGHT_CLICK,
+        ):
+            return action_logits
+
+        right_click_available = available[..., SEMANTIC_AVAILABLE_RIGHT_CLICK_INDEX]
+        if not bool(right_click_available.any().item()):
+            return action_logits
+
+        adjusted = action_logits.clone()
+        adjusted[..., POLICY_ACTION_NO_OP] = torch.where(
+            right_click_available,
+            adjusted[..., POLICY_ACTION_NO_OP] - penalty,
+            adjusted[..., POLICY_ACTION_NO_OP],
+        )
+        return adjusted
 
     def _build_target_head_state(
         self,

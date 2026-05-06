@@ -239,11 +239,13 @@ Reason:
 
 ## Immediate Priorities
 
-1. Finalize reward semantics for `banana_b2048_e4_a10` using wrapper-derived terminal and outcome signals.
+1. Run `banana_smart_v4_b2048_e4_a10` and check whether the V4 action-aware
+   reward plus temporary Smart curriculum breaks the no-op/passive-autoattack
+   collapse.
 2. Env-verify the new semantic action mask and `coarse_to_fine` clicks on the live wrapper.
-3. Verify and tune `RewardFunctionV3` terminal/outcome semantics against live
-   traces.
-4. Regenerate/review the main `banana_b2048_e4_a10` analysis bundle once the run
+3. Verify and tune `RewardFunctionV4` terminal/outcome/action-shaping semantics
+   against live traces.
+4. Regenerate/review the main `banana_smart_v4_b2048_e4_a10` analysis bundle once the run
    reaches a stable checkpoint block or final stop point.
 5. Compare `coarse_to_fine` against `token_pointer` only after a short live training/eval pass establishes current behavior.
 6. Re-evaluate deterministic vs stochastic behavior before pulling Stage-2 action work forward.

@@ -42,6 +42,14 @@ if "deterministic" not in FLAGS:
         True,
         "Use argmax actions instead of sampling. Disable with --nodeterministic.",
     )
+if "split_diagnostics_by_mode" not in FLAGS:
+    flags.DEFINE_bool(
+        "split_diagnostics_by_mode",
+        True,
+        "Append _det or _stoch to eval diagnostic JSONL paths so deterministic "
+        "and sampled eval traces do not append into the same files. Disable "
+        "with --nosplit_diagnostics_by_mode.",
+    )
 if "inspect" not in FLAGS:
     flags.DEFINE_bool(
         "inspect",
@@ -182,6 +190,59 @@ def _default_trace_output_dir(run_name):
     if name:
         return os.path.join(analysis_dir, name, "episode_traces")
     return os.path.join(analysis_dir, "episode_traces")
+
+
+def _mode_suffix(deterministic):
+    return "det" if deterministic else "stoch"
+
+
+def _split_jsonl_path_by_mode(path, deterministic, enabled=True):
+    if not path or not enabled:
+        return path
+
+    root, ext = os.path.splitext(path)
+    if not ext:
+        ext = ".jsonl"
+
+    mode_suffix = _mode_suffix(deterministic)
+    basename = os.path.basename(root).lower()
+    existing_suffixes = (
+        "_det",
+        "_stoch",
+        "_deterministic",
+        "_stochastic",
+        "_sampled",
+    )
+    if basename.endswith(existing_suffixes):
+        return root + ext
+    return f"{root}_{mode_suffix}{ext}"
+
+
+def _default_jsonl_path(filename, run_name):
+    analysis_dir = getattr(cfg.environment, "analysis_dir", "analysis_results")
+    name = run_name or getattr(cfg.environment, "run_name", "")
+    if name:
+        return os.path.join(analysis_dir, name, filename)
+    return os.path.join(analysis_dir, filename)
+
+
+def _resolve_eval_jsonl_path(
+    explicit_path,
+    *,
+    enabled,
+    filename,
+    run_name,
+    deterministic,
+    split_by_mode,
+):
+    if not enabled and explicit_path is None:
+        return None
+    path = explicit_path or _default_jsonl_path(filename, run_name)
+    return _split_jsonl_path_by_mode(
+        path,
+        deterministic=deterministic,
+        enabled=split_by_mode,
+    )
 
 
 def play(
@@ -396,81 +457,59 @@ def play(
 def main(argv):
     del argv
 
+    run_name = FLAGS.run_name or getattr(cfg.environment, "run_name", "")
     checkpoint_path = _locate_checkpoint(
         FLAGS.checkpoint, FLAGS.run_name, FLAGS.best,
     )
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    inspect_output_path = FLAGS.inspect_output
-    if FLAGS.inspect and inspect_output_path is None:
-        analysis_dir = getattr(cfg.environment, "analysis_dir", "analysis_results")
-        name = FLAGS.run_name or getattr(cfg.environment, "run_name", "")
-        if name:
-            inspect_output_path = os.path.join(
-                analysis_dir, name, "eval_observation_space.jsonl",
-            )
-        else:
-            inspect_output_path = os.path.join(
-                analysis_dir, "eval_observation_space.jsonl",
-            )
-
-    policy_input_output_path = FLAGS.policy_input_output
-    if FLAGS.inspect_policy_input and policy_input_output_path is None:
-        analysis_dir = getattr(cfg.environment, "analysis_dir", "analysis_results")
-        name = FLAGS.run_name or getattr(cfg.environment, "run_name", "")
-        if name:
-            policy_input_output_path = os.path.join(
-                analysis_dir, name, "policy_input_diagnostics.jsonl",
-            )
-        else:
-            policy_input_output_path = os.path.join(
-                analysis_dir, "policy_input_diagnostics.jsonl",
-            )
-
-    actions_output_path = FLAGS.actions_output
-    if FLAGS.inspect_actions and actions_output_path is None:
-        analysis_dir = getattr(cfg.environment, "analysis_dir", "analysis_results")
-        name = FLAGS.run_name or getattr(cfg.environment, "run_name", "")
-        if name:
-            actions_output_path = os.path.join(
-                analysis_dir, name, "available_actions_diagnostics.jsonl",
-            )
-        else:
-            actions_output_path = os.path.join(
-                analysis_dir, "available_actions_diagnostics.jsonl",
-            )
-
-    last_action_output_path = FLAGS.last_action_output
-    if FLAGS.inspect_last_action and last_action_output_path is None:
-        analysis_dir = getattr(cfg.environment, "analysis_dir", "analysis_results")
-        name = FLAGS.run_name or getattr(cfg.environment, "run_name", "")
-        if name:
-            last_action_output_path = os.path.join(
-                analysis_dir, name, "last_action_diagnostics.jsonl",
-            )
-        else:
-            last_action_output_path = os.path.join(
-                analysis_dir, "last_action_diagnostics.jsonl",
-            )
-
-    score_output_path = FLAGS.score_output
-    if FLAGS.inspect_score and score_output_path is None:
-        analysis_dir = getattr(cfg.environment, "analysis_dir", "analysis_results")
-        name = FLAGS.run_name or getattr(cfg.environment, "run_name", "")
-        if name:
-            score_output_path = os.path.join(
-                analysis_dir, name, "score_diagnostics.jsonl",
-            )
-        else:
-            score_output_path = os.path.join(
-                analysis_dir, "score_diagnostics.jsonl",
-            )
+    split_by_mode = bool(FLAGS.split_diagnostics_by_mode)
+    inspect_output_path = _resolve_eval_jsonl_path(
+        FLAGS.inspect_output,
+        enabled=FLAGS.inspect,
+        filename="eval_observation_space.jsonl",
+        run_name=run_name,
+        deterministic=FLAGS.deterministic,
+        split_by_mode=split_by_mode,
+    )
+    policy_input_output_path = _resolve_eval_jsonl_path(
+        FLAGS.policy_input_output,
+        enabled=FLAGS.inspect_policy_input,
+        filename="policy_input_diagnostics.jsonl",
+        run_name=run_name,
+        deterministic=FLAGS.deterministic,
+        split_by_mode=split_by_mode,
+    )
+    actions_output_path = _resolve_eval_jsonl_path(
+        FLAGS.actions_output,
+        enabled=FLAGS.inspect_actions,
+        filename="available_actions_diagnostics.jsonl",
+        run_name=run_name,
+        deterministic=FLAGS.deterministic,
+        split_by_mode=split_by_mode,
+    )
+    last_action_output_path = _resolve_eval_jsonl_path(
+        FLAGS.last_action_output,
+        enabled=FLAGS.inspect_last_action,
+        filename="last_action_diagnostics.jsonl",
+        run_name=run_name,
+        deterministic=FLAGS.deterministic,
+        split_by_mode=split_by_mode,
+    )
+    score_output_path = _resolve_eval_jsonl_path(
+        FLAGS.score_output,
+        enabled=FLAGS.inspect_score,
+        filename="score_diagnostics.jsonl",
+        run_name=run_name,
+        deterministic=FLAGS.deterministic,
+        split_by_mode=split_by_mode,
+    )
 
     trace_output_dir = FLAGS.trace_output_dir
     if FLAGS.trace_episodes > 0 and trace_output_dir is None:
         trace_output_dir = _default_trace_output_dir(
-            FLAGS.run_name or getattr(cfg.environment, "run_name", ""),
+            run_name,
         )
 
     play(
@@ -494,7 +533,7 @@ def main(argv):
         score_every=FLAGS.score_every,
         trace_episodes=FLAGS.trace_episodes,
         trace_output_dir=trace_output_dir,
-        run_name=FLAGS.run_name or getattr(cfg.environment, "run_name", ""),
+        run_name=run_name,
     )
 
 

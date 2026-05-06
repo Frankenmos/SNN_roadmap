@@ -6,7 +6,11 @@ import torch.nn as nn
 
 from MockedEnv.policy_batch import make_policy_batch
 from agent_core.policy_protocol import (
+    META_AVAILABLE_ACTION_OFFSET,
     META_VECTOR_DIM,
+    POLICY_ACTION_LEFT_CLICK,
+    POLICY_ACTION_NO_OP,
+    POLICY_ACTION_RIGHT_CLICK,
     SPATIAL_OBS_SHAPE,
 )
 from agent_core.ppo_trainer import PPO
@@ -468,6 +472,28 @@ def test_select_action_no_op_ignores_spatial_log_prob():
     assert sample.x == 0
     assert sample.y == 0
     assert sample.log_prob == pytest.approx(float(expected_log_prob.item()), abs=1e-6)
+
+
+def test_right_click_curriculum_temporarily_penalizes_no_op_when_smart_available():
+    action_logits = torch.tensor([[0.0, -10.0, -1.0]])
+    move_x_logits = torch.zeros(1, 8)
+    move_y_logits = torch.zeros(1, 8)
+    ppo = PPO(
+        FakeNet(action_logits, move_x_logits, move_y_logits),
+        lr=1e-4,
+        right_click_curriculum_updates=10,
+        right_click_curriculum_noop_logit_penalty=2.0,
+    )
+
+    batch = make_policy_batch(batch_size=1, meta_dim=META_VECTOR_DIM)
+    batch.meta_vec[:, META_AVAILABLE_ACTION_OFFSET + POLICY_ACTION_LEFT_CLICK] = 0.0
+
+    sample = ppo.select_action(batch, deterministic=True)
+    assert sample.action_id == POLICY_ACTION_RIGHT_CLICK
+
+    ppo.update_count = 10
+    sample = ppo.select_action(batch, deterministic=True)
+    assert sample.action_id == POLICY_ACTION_NO_OP
 
 
 def test_compute_advantages_matches_hand_calculation():

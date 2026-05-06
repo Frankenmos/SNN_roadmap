@@ -2,6 +2,7 @@ from collections import deque
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 import torch
 
 import train as run_mod
@@ -9,10 +10,14 @@ import train as run_mod
 from MockedEnv.policy_batch import make_dummy_state, make_policy_batch
 from agent_core.policy_protocol import (
     META_VECTOR_DIM,
+    POLICY_ACTION_NO_OP,
+    POLICY_ACTION_RIGHT_CLICK,
+    SMART_SCREEN_FUNCTION_ID,
 )
 from agent_core.rewards import build_reward_function
 from agent_core.rewards.defeat_roaches_v2 import RewardFunctionV2
 from agent_core.rewards.defeat_roaches_v3 import RewardFunctionV3
+from agent_core.rewards.defeat_roaches_v4 import RewardFunctionV4
 from obs_space.obs_space_2 import get_friendly_health
 
 
@@ -323,9 +328,74 @@ def test_reward_v3_positioning_reward_is_positive_when_entering_band():
     assert total_reward > 0.0
 
 
+def test_reward_v4_rewards_smart_clicks_near_visible_enemy():
+    reward_fn = RewardFunctionV4(
+        damage_dealt_coef=0.0,
+        damage_taken_coef=0.0,
+        kill_reward_coef=0.0,
+        win_reward=0.0,
+        loss_penalty=0.0,
+        step_penalty=0.0,
+        distance_reward_coef=0.0,
+        distance_hold_bonus=0.0,
+        smart_target_radius=6.0,
+        smart_near_enemy_reward=0.08,
+        smart_far_enemy_penalty=0.03,
+        noop_visible_enemy_penalty=0.02,
+    )
+    obs = _make_reward_obs(100, enemy_health=100, enemy_count=1, last=False)
+
+    reward_fn.calculate_reward(obs, None)
+    reward_fn.observe_action(
+        action_id=POLICY_ACTION_RIGHT_CLICK,
+        target_x=10,
+        target_y=10,
+        obs=obs,
+    )
+    total_reward = reward_fn.calculate_reward(obs, None)
+    components = reward_fn.get_last_reward_components()
+
+    assert total_reward > 0.0
+    assert components["bonus_reward"] > 0.0
+
+
+def test_reward_v4_penalizes_noop_when_enemy_and_smart_are_visible():
+    reward_fn = RewardFunctionV4(
+        damage_dealt_coef=0.0,
+        damage_taken_coef=0.0,
+        kill_reward_coef=0.0,
+        win_reward=0.0,
+        loss_penalty=0.0,
+        step_penalty=0.0,
+        distance_reward_coef=0.0,
+        distance_hold_bonus=0.0,
+        noop_visible_enemy_penalty=0.02,
+    )
+    obs = _make_reward_obs(100, enemy_health=100, enemy_count=1, last=False)
+    obs.observation.available_actions = {SMART_SCREEN_FUNCTION_ID}
+
+    reward_fn.calculate_reward(obs, None)
+    reward_fn.observe_action(
+        action_id=POLICY_ACTION_NO_OP,
+        target_x=0,
+        target_y=0,
+        obs=obs,
+    )
+    total_reward = reward_fn.calculate_reward(obs, None)
+    components = reward_fn.get_last_reward_components()
+
+    assert total_reward == pytest.approx(-0.02)
+    assert components["bonus_reward"] == pytest.approx(-0.02)
+
+
 def test_reward_factory_builds_v3():
     reward_fn = build_reward_function("defeat_roaches_v3", step_penalty=0.0)
     assert isinstance(reward_fn, RewardFunctionV3)
+
+
+def test_reward_factory_builds_v4():
+    reward_fn = build_reward_function("defeat_roaches_v4", step_penalty=0.0)
+    assert isinstance(reward_fn, RewardFunctionV4)
 
 
 def test_rollout_budget_triggers_update_on_transition_count(monkeypatch):

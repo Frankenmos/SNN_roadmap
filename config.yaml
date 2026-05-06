@@ -12,9 +12,11 @@ hyperparameters:
   rollout_cache_spatial_dtype: "float32"
   target_kl: 0.03
   reward_scale: 1.0
+  right_click_curriculum_updates: 120
+  right_click_curriculum_noop_logit_penalty: 2.0
 
 reward:
-  name: "defeat_roaches_v3"
+  name: "defeat_roaches_v4"
   damage_dealt_coef: 0.15
   damage_taken_coef: 0.10
   kill_reward_coef: 30.0
@@ -28,6 +30,10 @@ reward:
   distance_reward_clip: 1.0
   distance_hold_bonus: 0.05
   distance_gate: 18.0
+  smart_target_radius: 6.0
+  smart_near_enemy_reward: 0.08
+  smart_far_enemy_penalty: 0.03
+  noop_visible_enemy_penalty: 0.02
 
 environment:
   map_name: "DefeatRoaches"
@@ -37,7 +43,7 @@ environment:
   steps_per_episode: 3600
   target_reward: 25.0
   reward_window: 200
-  run_name: "banana_b2048_e4_a10"
+  run_name: "banana_smart_v4_b2048_e4_a10"
   models_dir: "models"
   analysis_dir: "analysis_results"
   checkpoint_path: "checkpoint.pth"

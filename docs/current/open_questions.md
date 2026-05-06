@@ -40,6 +40,13 @@ would make the next round of fixes much easier or safer to land.
 
 ## What I Need You To Test
 
+- overnight candidate:
+  run `banana_smart_v4_b2048_e4_a10` from a fresh checkpoint and inspect
+  whether stochastic and deterministic policies actually emit `Smart_screen`
+  much more often than `banana_b2048_e4_a10`
+- for that run, prioritize action mix and click quality before reward:
+  Smart frequency, no-op frequency while enemies are visible, and whether
+  clicks land near roaches
 - a small live run on the current `coarse_to_fine` head
 - an optional before/after comparison against `token_pointer` if the current
   run looks worse or ambiguous
