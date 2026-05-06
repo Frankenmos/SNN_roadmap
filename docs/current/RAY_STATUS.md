@@ -1,7 +1,8 @@
 # Ray Implementation Status
 
-**Last Updated:** 2026-04-26
-**Current Phase:** Initial synchronous 4-actor Ray path implemented; live SC2 smoke still needed
+**Last Updated:** 2026-05-06
+**Current Phase:** Initial synchronous configurable-actor Ray path implemented;
+live SC2 smoke/throughput validation still needed for the tuned config
 
 This document tracks the implementation status of the distributed training
 migration to Ray, following the plan in [`RAYPLAN.md`](../ideas/RAYPLAN.md).
@@ -123,7 +124,7 @@ migration to Ray, following the plan in [`RAYPLAN.md`](../ideas/RAYPLAN.md).
 - ✅ Fragment construction contains valid bootstrap tail
 - ✅ Fragment can finish early at terminal/time-cap boundary
 - ✅ Actor reset path is implemented after terminal/time-cap episodes
-- ⏳ Needs live SC2 smoke with 1 actor and then 4 actors
+- ⏳ Needs live SC2 smoke with 1 actor, 4 actors, and the current 10-actor config
 
 ---
 
@@ -152,11 +153,11 @@ migration to Ray, following the plan in [`RAYPLAN.md`](../ideas/RAYPLAN.md).
 
 ### Acceptance Criteria (from RAYPLAN.md §9)
 
-- ✅ 4 actors configured by default
+- ✅ Actor count and fragment size are config-driven
 - ✅ Learner update count advances once per global batch
 - ✅ Actor fragments are rejected if `policy_version` is stale
 - ✅ Scheduler keys off learner update count
-- ⏳ Needs live SC2 4-actor smoke
+- ⏳ Needs live SC2 smoke for 4-actor and current 10-actor configs
 
 ---
 
@@ -251,15 +252,15 @@ migration to Ray, following the plan in [`RAYPLAN.md`](../ideas/RAYPLAN.md).
 
 **Status**: Initial implementation complete
 
-### Config Section to Add
+### Current Config Section
 
 ```yaml
 distributed:
   enabled: false
-  num_rollout_actors: 4
+  num_rollout_actors: 10
   num_eval_actors: 0
-  fragment_steps: 512
-  global_rollout_steps: 2048
+  fragment_steps: 256
+  global_rollout_steps: 2560
   learner_device: "cuda"
   actor_device: "cpu"
   sc2_runtime_profile: "linux_headless"
@@ -337,10 +338,11 @@ distributed:
 - Ray-free rollout collector added
 - Ray rollout actor wrapper added
 - Learner coordinator added
-- Synchronous 4-actor Ray entrypoint added
+- Synchronous configurable-actor Ray entrypoint added
 
 **In Progress:**
-- Live SC2 smoke for `python -m distributed.ray_train --num-actors 4`
+- Live SC2 smoke for `python -m distributed.ray_train --num-actors 4`, followed
+  by the current 10-actor config
 
 **Next Steps:**
 1. Run 1-update live smoke: `python -m distributed.ray_train --num-actors 4 --max-updates 1`

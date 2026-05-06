@@ -3,7 +3,7 @@ hyperparameters:
   lr_min: 5.0e-6
   gamma: 0.99
   clip_eps: 0.10
-  batch_size: 512
+  batch_size: 2048
   epochs: 4
   entropy_coef: 0.01
   critic_loss_coef: 0.5
@@ -37,7 +37,7 @@ environment:
   steps_per_episode: 3600
   target_reward: 25.0
   reward_window: 200
-  run_name: ""
+  run_name: "banana_b2048_e4_a10"
   models_dir: "models"
   analysis_dir: "analysis_results"
   checkpoint_path: "checkpoint.pth"
@@ -68,10 +68,10 @@ environment:
 
 distributed:
   enabled: false
-  num_rollout_actors: 4
+  num_rollout_actors: 10
   num_eval_actors: 0
-  fragment_steps: 512
-  global_rollout_steps: 2048
+  fragment_steps: 256
+  global_rollout_steps: 2560
   learner_device: "cuda"
   actor_device: "cpu"
   sc2_runtime_profile: "linux_headless"

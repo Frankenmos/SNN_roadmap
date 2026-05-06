@@ -22,7 +22,8 @@
 
 ## Current State
 
-- Active verification state: `Zero` is the live run (analysis not yet complete on final checkpoints)
+- Active verification state: `banana_b2048_e4_a10` is the latest live run
+  (around 5,000 episodes so far; behavior review pending before final conclusions)
 
 - [REPO_STATE.md](current/REPO_STATE.md) - What the repo does today (semantic click action space, configurable spatial target head, masked-critic, update-before-eval)
 - [working_log.md](current/working_log.md) - Compressed implementation history

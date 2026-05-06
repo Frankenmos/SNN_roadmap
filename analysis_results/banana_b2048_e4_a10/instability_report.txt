@@ -1,0 +1,63 @@
+======================================================================
+SNN-PPO Training Instability Report
+======================================================================
+
+Summary:
+  episodes:              5212
+  avg episode length:    194.6
+  avg total reward:      -33.16
+  max total reward:      138.76
+  reward std (full run): 32.49
+  final 100-ep avg:      -17.05
+  action semantics:      stream_action_feedback_v1
+  action labels:         0=no-op, 1=left_click, 2=right_click
+
+Plateau detection: none detected
+Late-stage CoV (last 200 eps): 2.237
+
+----------------------------------------------------------------------
+Data-driven flags:
+----------------------------------------------------------------------
+  (no rule triggered — training looks healthy by log signals)
+----------------------------------------------------------------------
+Interpretation Notes:
+----------------------------------------------------------------------
+  1. Current code has already fixed two older structural suspects:
+     - state-replay PPO training now uses stored SNN state
+     - entropy bonus is normalized per head instead of favoring move samples
+  2. If you are analyzing a run produced before those fixes landed,
+     older collapse patterns may reflect historical bugs rather than the
+     current trainer.
+
+----------------------------------------------------------------------
+Instrumentation status:
+----------------------------------------------------------------------
+  ppo_updates: 350 rows logged.
+  Late-stage (last 87 updates) means:
+    mean_entropy        = 0.131
+    mean_kl (approx)    = 0.0005
+    clip_fraction       = 0.008
+    explained_variance  = 0.430
+    update_wall_sec     = 40.59
+    rollout_wall_sec    = 39.62
+    learner steps/sec   = 77.84
+    rollout steps/sec   = 80.62
+    tbptt fwd calls     = 1049.0
+    active chunks       = 11.99
+    replay_forward_s    = 18.24
+    backward_opt_s      = 20.34
+    chunk_pack_s        = 0.11
+    cpu_to_gpu_s        = 0.77
+    payload MiB         = 2599.2
+    cuda peak GiB       = 12.69
+    grad_norm (finite)  = 87.406
+    grad_norm inf cnt   = 0
+    lr                  = 5.00e-05
+    nonfinite_grad_steps= 0
+    skipped_opt_steps   = 0
+    transitions/update  = 3139.6
+    entity_mask_util    = 0.519
+    entity_count_p50    = 13.00
+    entity_count_p99    = 13.00
+    selection_mask_util = 0.427
+  eval_runs: none logged

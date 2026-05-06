@@ -1,6 +1,6 @@
 # Help Needed
 
-Updated: 2026-04-27
+Updated: 2026-05-06
 
 This note is the practical follow-up to the semantic-action /
 stream-action-feedback and `coarse_to_fine` migration.
@@ -75,6 +75,10 @@ would make the next round of fixes much easier or safer to land.
 - any repeatable env-backed smoke command you trust
 - a lightweight way for you to hand me env observations / traces when a run
   looks wrong but I cannot execute the environment directly
+- diagnostic-output hygiene for eval:
+  deterministic and stochastic eval should write distinct JSONL files by
+  default, or at least warn before appending to the same
+  `*_diagnostics.jsonl` paths, because mixed-mode traces are easy to misread
 - a short note about which diagnostics you consider most trustworthy:
   DB metrics, eval traces, observation JSONL, or manual replay inspection
 - if you want me to move faster on experimental branches:

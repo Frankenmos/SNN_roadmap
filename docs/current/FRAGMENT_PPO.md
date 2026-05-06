@@ -308,12 +308,14 @@ This fails **before** any training happens, preventing silent corruption.
 - `distributed/rollout.py` - Ray-free `LocalRolloutWorker`
 - `distributed/ray_actor.py` - Ray actor wrapper with `set_weights()` / `collect_fragment()`
 - `distributed/learner.py` - Learner coordinator and weight payloads
-- `distributed/ray_train.py` - Synchronous 4-actor entrypoint
-- `config.yaml distributed:` - default 4 rollout actors, 512-step fragments, 2048-step global batch
+- `distributed/ray_train.py` - Synchronous configurable-actor entrypoint
+- `config.yaml distributed:` - current defaults use 10 rollout actors, 256-step
+  fragments, and a 2560-step global batch
 
 ### Current Caveats
 
-- Live SC2 smoke is still needed for the 4-actor path.
+- Live SC2 smoke/throughput validation is still needed for the configured Ray
+  path, especially beyond the smaller 1-actor and 4-actor smoke shapes.
 - Step-level logs are still local-trainer only; Ray logs episode summaries and PPO updates first.
 - Extractor normalizers are synced to actors initially, then actor-local until we add normalizer aggregation.
 - Windows SC2 can race while creating temporary maps; `distributed.serialize_env_resets`

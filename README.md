@@ -95,7 +95,7 @@ Ray runs save under `models/<run_name>/`. Resuming uses the same command and sam
 
 The learner logs rollout, Ray, packing, replay, backward, checkpoint, payload, and CUDA peak-memory timings into `ppo_updates`. If learner updates are slow, inspect `tbptt_forward_calls`, `tbptt_group_mean_active_chunks`, `replay_forward_wall_seconds`, `chunk_pack_wall_seconds`, `backward_optimizer_wall_seconds`, and `cpu_to_gpu_transfer_wall_seconds`.
 
-For TBPTT throughput, `hyperparameters.batch_size` controls how many recurrent chunks are replayed together. With the default `tbptt_window: 128`, `batch_size: 128` usually means one chunk per group and many tiny GPU forwards. For Ray tuning, try `batch_size: 512` or `1024`, and use `epochs: 2` to `4` for fast iteration before returning to heavier settings.
+For TBPTT throughput, `hyperparameters.batch_size` controls how many recurrent chunks are replayed together. With the default `tbptt_window: 128`, `batch_size: 128` usually means one chunk per group and many tiny GPU forwards. Recent live runs use `batch_size: 2048` with `epochs: 4`; for quick Ray tuning/smoke work, smaller values such as `512` or `1024` and `epochs: 2` can still be useful before returning to the heavier setting.
 
 ### 3. Resuming from the Best Checkpoint
 If your policy collapses and you want to resume training from the historical peak:

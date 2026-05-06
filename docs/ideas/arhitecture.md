@@ -129,8 +129,8 @@ The first distributed version should move in visible beats:
                                      v
                          +-------------------------+
                          | flatten after returns   |
-                         | PPO epochs = 8          |
-                         | batch_size = 128        |
+                         | PPO epochs = 4          |
+                         | batch_size = 2048       |
                          | TBPTT window = 128      |
                          +-----------+-------------+
                                      |
@@ -144,18 +144,18 @@ The first distributed version should move in visible beats:
 Current config gravity:
 
 - `rollout_steps: 2048`
-- `num_rollout_actors: 4`
-- recommended `fragment_steps: 512`
+- `num_rollout_actors: 10`
+- `fragment_steps: 256`
+- `global_rollout_steps: 2560`
 
-That gives the clean first shape:
+That gives the current tuned shape:
 
 ```text
-        4 actors x 512 learnable steps = 2048-step PPO batch
+        10 actors x 256 learnable steps = 2560-step PPO batch
 ```
 
-Using `fragment_steps: 256` is valid, but it means two actor collection
-waves per update. That may be useful later, but it is not the simplest
-first diagram.
+The older 4 actor x 512 step shape is still a useful smoke/debug profile, but
+it is no longer the live `config.yaml` default.
 
 ---
 
@@ -293,7 +293,8 @@ optimization.
  |   entity_mask             [T, 24]                                               |
  |   selection_features      [T, 20, 7]                                            |
  |   selection_mask          [T, 20]                                               |
- |   meta_vec                [T, 19] or resolved future width                      |
+ |   action_feedback_tokens  [T, 1, 9]                                            |
+ |   meta_vec                [T, 15]                                              |
  |   pre_step_snn_state      state used during action selection                    |
  |                                                                                 |
  | action / PPO data                                                               |
@@ -396,14 +397,14 @@ Rough payload pressure from the current config:
                            = 762,048 bytes
                            ~= 0.73 MiB
 
-  512-step fragment spatial payload:
-      ~= 372 MiB before entity/meta/state/action tensors
+  256-step fragment spatial payload:
+      ~= 186 MiB before entity/meta/state/action tensors
 
-  2048-step global PPO batch spatial payload:
-      ~= 1.45 GiB before overhead
+  2560-step global PPO batch spatial payload:
+      ~= 1.82 GiB before overhead
 
   one SNN state snapshot:
-      syn + mem, 2 pathways, 94 tokens, 64 dims
+      syn + mem, 2 pathways, 95 tokens, 64 dims
       ~= 94 KiB float32 per transition if stored every step
 ```
 
@@ -435,11 +436,13 @@ This is the current policy-input beast from `config.yaml`:
                                           |
                                           v
                               +-----------------------+
-                              | meta_vec [19]         |
+                              | action_feedback [1,9] |
+                              | meta_vec [15]         |
                               | player stats          |
                               | availability          |
                               | pysc2 last action     |
                               | bridge/action input   |
+                              | moved to stream token |
                               +-----------+-----------+
                                           |
                                           v
