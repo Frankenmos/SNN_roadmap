@@ -96,7 +96,7 @@ net.to("cpu")
 
 ```yaml
 hyperparameters:
-  batch_size: 512
+  batch_size: 2048
   epochs: 4
 
 model:
@@ -106,5 +106,11 @@ model:
   vector_input_dim: 15
 
 environment:
+  run_name: "banana_b2048_e4_a10"
   steps_per_episode: 3600              # Just increased from 600
+
+distributed:
+  num_rollout_actors: 10
+  fragment_steps: 256
+  global_rollout_steps: 2560
 ```

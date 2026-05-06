@@ -5,6 +5,16 @@ Compressed current-memory version.
 Verbose pre-compression snapshot:
 `docs/archive/working_log_2026-04-20_pre_compress.md`
 
+## 2026-05-06
+
+- documented `banana_b2048_e4_a10` as the latest/live training run, currently
+  around 5,000 episodes
+- updated current docs to match the live config drift:
+  `batch_size: 2048`, `num_rollout_actors: 10`, `fragment_steps: 256`, and
+  `global_rollout_steps: 2560`
+- noted that behavior from the latest run is disappointing and should be
+  analyzed before adding more action-space complexity
+
 ## 2026-04-26
 
 - moved the 9-dim action feedback bridge out of `meta_vec` and into
@@ -299,7 +309,8 @@ Verbose pre-compression snapshot:
   `heatmap`
 - verify and tune `RewardFunctionV3` terminal/outcome semantics against live
   traces
-- regenerate the main `Zero` report bundle against the live DB/checkpoint state
+- regenerate/review the main `banana_b2048_e4_a10` report bundle against the live
+  DB/checkpoint state
 - keep `analysis_results/BPTT-1` as historical context only (same obs function shape, but older action-space version)
 - re-run deterministic and stochastic eval after the reward pass
 - only then decide whether the next action-space step is:

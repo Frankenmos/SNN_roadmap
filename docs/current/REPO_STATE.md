@@ -1,6 +1,6 @@
 # Repo State
 
-Updated: 2026-04-26
+Updated: 2026-05-06
 
 ## What The Repo Does Today
 
@@ -36,11 +36,6 @@ The current policy input path is:
 - fast + slow token-temporal SNN pathways, combined into one latent readout
 - PPO action / target / value readout, with the target head reading a retained
   spatial context map and replay teacher-forcing recorded target payloads
-- token-type embeddings
-- spiking self-attention
-- fast + slow token-temporal SNN pathways, combined into one latent readout
-- PPO action / target / value readout, with the target head reading a retained
-  spatial context map and replay teacher-forcing recorded target payloads
 
 The current action path is:
 
@@ -60,17 +55,25 @@ Why the repo moved there:
 
 ## Current Training Read
 
-The active verification run is now `Zero` (not yet ready for full post-run analysis).
+The active/latest training run is now `banana_b2048_e4_a10`, currently around
+5,000 episodes. It is not ready for a final post-run conclusion yet, but the
+behavior read is disappointing enough that reward/action-behavior diagnosis is
+the next discussion point before treating this as a healthy training direction.
 
 - live training checkpoint:
-  `models/Zero/checkpoint.pth`
+  `models/banana_b2048_e4_a10/checkpoint.pth`
+- current analysis bundle:
+  `analysis_results/banana_b2048_e4_a10/`
 - active comparison artifact:
   `analysis_results/BPTT-1` is historical only (older `MOVE/ATTACK` semantics)
-- track `Zero` on its own trajectory (action mix, terminals, rewards) before declaring any global trend conclusions
+- track `banana_b2048_e4_a10` on its own trajectory (action mix, terminals,
+  rewards, episode-phase behavior) before declaring any global trend conclusions
 
 Current interpretation:
 
 - reward refactor / rebalance is still urgent
+- the current run's behavior should be reviewed before adding more action-space
+  complexity
 - the new semantic-action + `coarse_to_fine` stack now needs env-backed
   judgment before pulling the `heatmap` head or larger action-space work forward
 
@@ -145,7 +148,8 @@ Current interpretation:
 - reward refactor / rebalance based on the newer wrapper-driven env read
 - env-backed verification / tuning of `RewardFunctionV3` terminal and outcome
   semantics
-- refreshed current-run analysis bundle for the **current** checkpoint instead of relying on the old best-checkpoint snapshots
+- final refreshed current-run analysis/readout after `banana_b2048_e4_a10`
+  finishes or reaches the next stable checkpoint block
 - env-backed validation that timeout-as-truncation behaves as intended in the
   current single-process and Ray rollout paths
 - env-backed validation that keeping `LEFT_CLICK` masked is still the correct
@@ -235,11 +239,12 @@ Reason:
 
 ## Immediate Priorities
 
-1. Finalize reward semantics for `Zero` using wrapper-derived terminal and outcome signals.
+1. Finalize reward semantics for `banana_b2048_e4_a10` using wrapper-derived terminal and outcome signals.
 2. Env-verify the new semantic action mask and `coarse_to_fine` clicks on the live wrapper.
 3. Verify and tune `RewardFunctionV3` terminal/outcome semantics against live
    traces.
-4. Regenerate the main `Zero` analysis bundle once the run reaches a stable checkpoint block.
+4. Regenerate/review the main `banana_b2048_e4_a10` analysis bundle once the run
+   reaches a stable checkpoint block or final stop point.
 5. Compare `coarse_to_fine` against `token_pointer` only after a short live training/eval pass establishes current behavior.
 6. Re-evaluate deterministic vs stochastic behavior before pulling Stage-2 action work forward.
 

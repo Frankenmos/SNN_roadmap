@@ -1,6 +1,6 @@
 # SNN-PPO Architecture
 
-**Last Updated:** 2026-04-26
+**Last Updated:** 2026-05-06
 **Status:** Active Development
 
 > **Stream Token Migration Status**
@@ -602,7 +602,7 @@ See [`FRAGMENT_PPO.md`](FRAGMENT_PPO.md) for complete fragment documentation.
 | `lr` | 5e-5 | Learning rate |
 | `gamma` | 0.99 | Discount factor |
 | `clip_eps` | 0.10 | PPO clipping |
-| `batch_size` | 512 | Recurrent chunk group size / PPO minibatch size |
+| `batch_size` | 2048 | Recurrent chunk group size / PPO minibatch size in current `config.yaml` |
 | `epochs` | 4 | PPO epochs per update |
 | `rollout_steps` | 2048 | Steps between updates |
 | `tbptt_window` | 128 | Truncated BPTT horizon |
