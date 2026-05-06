@@ -14,6 +14,16 @@ Verbose pre-compression snapshot:
   `global_rollout_steps: 2560`
 - noted that behavior from the latest run is disappointing and should be
   analyzed before adding more action-space complexity
+- prepared the next overnight experiment as `banana_smart_v4_b2048_e4_a10`:
+  - added `defeat_roaches_v4`, an action-aware reward layer over V3
+  - gives a small bonus for `Smart_screen` clicks near visible enemies
+  - gives a small penalty for no-op while enemies and Smart are available
+  - added a temporary PPO no-op logit penalty while Smart is available
+    (`right_click_curriculum_updates: 120`, penalty starts at `2.0` and
+    linearly decays to zero)
+  - intent is to fight the observed no-op/passive-autoattack collapse without
+    changing the minigame or adding offline pretraining yet
+  - verification: `pytest -q` -> `108 passed`
 
 ## 2026-04-26
 

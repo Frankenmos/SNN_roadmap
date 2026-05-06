@@ -2,6 +2,7 @@
 
 from agent_core.rewards.defeat_roaches_v2 import RewardFunctionV2
 from agent_core.rewards.defeat_roaches_v3 import RewardFunctionV3
+from agent_core.rewards.defeat_roaches_v4 import RewardFunctionV4
 
 
 def build_reward_function(name="defeat_roaches_v3", **kwargs):
@@ -10,4 +11,6 @@ def build_reward_function(name="defeat_roaches_v3", **kwargs):
         return RewardFunctionV2()
     if normalized in {"defeat_roaches_v3", "v3"}:
         return RewardFunctionV3(**kwargs)
+    if normalized in {"defeat_roaches_v4", "v4"}:
+        return RewardFunctionV4(**kwargs)
     raise ValueError(f"Unknown reward function name: {name}")

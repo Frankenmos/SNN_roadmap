@@ -171,3 +171,43 @@ def test_eval_play_can_write_episode_trace(tmp_path, monkeypatch):
     assert tuple(records[0]["policy_input"]["meta_vec"].shape) == (META_VECTOR_DIM,)
     assert records[1]["action"] == 0
     assert records[1]["dispatched_action"]["function_name"] == "no_op"
+
+
+def test_eval_diagnostic_paths_split_by_mode():
+    det_path = eval_mod._resolve_eval_jsonl_path(
+        None,
+        enabled=True,
+        filename="score_diagnostics.jsonl",
+        run_name="banana",
+        deterministic=True,
+        split_by_mode=True,
+    )
+    stoch_path = eval_mod._resolve_eval_jsonl_path(
+        None,
+        enabled=True,
+        filename="score_diagnostics.jsonl",
+        run_name="banana",
+        deterministic=False,
+        split_by_mode=True,
+    )
+    explicit_path = eval_mod._resolve_eval_jsonl_path(
+        "analysis_results/banana/custom.jsonl",
+        enabled=True,
+        filename="score_diagnostics.jsonl",
+        run_name="banana",
+        deterministic=False,
+        split_by_mode=True,
+    )
+    already_split = eval_mod._resolve_eval_jsonl_path(
+        "analysis_results/banana/custom_det.jsonl",
+        enabled=True,
+        filename="score_diagnostics.jsonl",
+        run_name="banana",
+        deterministic=True,
+        split_by_mode=True,
+    )
+
+    assert det_path == "analysis_results/banana/score_diagnostics_det.jsonl"
+    assert stoch_path == "analysis_results/banana/score_diagnostics_stoch.jsonl"
+    assert explicit_path == "analysis_results/banana/custom_stoch.jsonl"
+    assert already_split == "analysis_results/banana/custom_det.jsonl"
