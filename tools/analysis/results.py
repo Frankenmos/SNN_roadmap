@@ -44,7 +44,11 @@ SEMANTIC_CLICK_ACTION_LABELS = {0: "no-op", 1: "left_click", 2: "right_click"}
 STREAM_ACTION_FEEDBACK_LABELS = SEMANTIC_CLICK_ACTION_LABELS.copy()
 ACTION_LABELS = CONDITIONED_ACTION_LABELS.copy()
 PHASE_LABELS = ("early", "mid", "late")
-SEMANTIC_CLICK_SEMANTICS = {"semantic_pointer_v1", "stream_action_feedback_v1"}
+SEMANTIC_CLICK_SEMANTICS = {
+    "semantic_pointer_v1",
+    "stream_action_feedback_v1",
+    "stream_action_effect_feedback_v2",
+}
 RAY_THROUGHPUT_FIELDS = [
     "rollout_wall_seconds",
     "ray_get_wall_seconds",
@@ -169,11 +173,15 @@ class TrainingAnalyzer:
                             model_cfg.get("spatial_head_type", ""),
                         ).lower()
                         if (
-                            configured_schema == "stream_action_feedback_v1"
+                            configured_schema
+                            in {
+                                "stream_action_feedback_v1",
+                                "stream_action_effect_feedback_v2",
+                            }
                             or spatial_head == "coarse_to_fine"
                             or int(model_cfg.get("vector_input_dim", 0) or 0) == 15
                         ):
-                            return "stream_action_feedback_v1"
+                            return configured_schema or "stream_action_feedback_v1"
                         if spatial_head == "token_pointer":
                             return "semantic_pointer_v1"
                 except (TypeError, ValueError):

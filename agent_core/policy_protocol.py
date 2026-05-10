@@ -18,7 +18,7 @@ TOKEN_TYPE_ACTION_FEEDBACK: Final[int] = 3
 TOKEN_TYPE_META: Final[int] = 4
 TOKEN_TYPE_GROUPS: Final[int] = 5
 ACTION_FEEDBACK_TOKEN_COUNT: Final[int] = 1
-ACTION_FEEDBACK_TOKEN_DIM: Final[int] = 9
+ACTION_FEEDBACK_TOKEN_DIM: Final[int] = 12
 TOTAL_TOKEN_COUNT: Final[int] = (
     SPATIAL_TOKEN_COUNT
     + MAX_ENTITY_TOKENS
@@ -105,8 +105,8 @@ SCORE_PENALTY_BIT_OFFSET: Final[int] = ACTION_HISTORY_OFFSET + 4
 META_VECTOR_DIM: Final[int] = (
     META_LAST_ACTION_INDEX_OFFSET + META_LAST_ACTION_INDEX_DIM
 )
-POLICY_PROTOCOL_VERSION: Final[int] = 2
-POLICY_INPUT_SCHEMA: Final[str] = "stream_action_feedback_v1"
+POLICY_PROTOCOL_VERSION: Final[int] = 3
+POLICY_INPUT_SCHEMA: Final[str] = "stream_action_effect_feedback_v2"
 NO_ACTION_SENTINEL_INDEX: Final[int] = 0
 UNKNOWN_LAST_ACTION_INDEX: Final[int] = RAW_AVAILABLE_ACTION_DIM + 1
 
@@ -118,7 +118,24 @@ ACTION_FEEDBACK_ANY_EXECUTED_OFFSET: Final[int] = 4
 ACTION_FEEDBACK_SCORE_DELTA_OFFSET: Final[int] = 5
 ACTION_FEEDBACK_KILL_DELTA_OFFSET: Final[int] = 6
 ACTION_FEEDBACK_PENALTY_BIT_OFFSET: Final[int] = 7
-ACTION_FEEDBACK_RESERVED_OFFSET: Final[int] = 8
+ACTION_FEEDBACK_TARGET_NEAR_ENEMY_OFFSET: Final[int] = 8
+ACTION_FEEDBACK_MOVED_TOWARD_TARGET_OFFSET: Final[int] = 9
+ACTION_FEEDBACK_ENEMY_HEALTH_DROP_OFFSET: Final[int] = 10
+ACTION_FEEDBACK_FRIENDLY_HEALTH_DROP_OFFSET: Final[int] = 11
+ACTION_FEEDBACK_FIELD_NAMES: Final[tuple[str, ...]] = (
+    "bridge_type",
+    "x_norm",
+    "y_norm",
+    "executed_smart",
+    "any_executed",
+    "score_delta_norm",
+    "kill_delta_norm",
+    "score_penalty_bit",
+    "target_near_enemy",
+    "friendly_moved_toward_target",
+    "enemy_health_drop_norm",
+    "friendly_health_drop_norm",
+)
 
 POLICY_ACTION_NO_OP: Final[int] = 0
 POLICY_ACTION_LEFT_CLICK: Final[int] = 1
@@ -189,7 +206,7 @@ class PolicyInputBatch:
       entity_mask:        [B, 24]
       selection_features: [B, 20, 7]
       selection_mask:     [B, 20]
-      action_feedback_tokens: [B, 1, 9]
+      action_feedback_tokens: [B, 1, 12]
       meta_vec:           [B, F_meta]
       state_in:           optional SNN state tuple
     """

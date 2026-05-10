@@ -22,7 +22,7 @@ The repository is structured into several logical components:
 - `setup_env.py`: Encapsulates the PySC2 environment initialization, ensuring the correct map (`DefeatRoaches`), step multipliers, and observation dimensions are loaded.
 
 ### 2. Observation & Action Space (`obs_space/`, `action_space/`)
-- `ObservationExtractor`: Converts raw PySC2 observations into the current hybrid policy input: spatial screen tensor, padded entity tokens, padded selection tokens, `action_feedback_tokens [B, 1, 9]`, and `meta_vec [B, 15]`.
+- `ObservationExtractor`: Converts raw PySC2 observations into the current hybrid policy input: spatial screen tensor, padded entity tokens, padded selection tokens, `action_feedback_tokens [B, 1, 12]`, and `meta_vec [B, 15]`.
 - `ActionSpace`: Maps the current semantic policy (`NO_OP`, `LEFT_CLICK`, `RIGHT_CLICK`) into explicit PySC2 `FunctionCall`s. `RIGHT_CLICK` dispatches `Smart_screen(x, y)`, while `LEFT_CLICK` is scaffolded but masked unavailable in the current DefeatRoaches wrapper.
 
 ### 3. The Agent & Policy (`agent_core/`)
@@ -61,6 +61,15 @@ source venv/bin/activate  # On Windows use: venv\Scripts\activate
 # 3. Install dependencies
 pip install -r requirements.txt
 ```
+
+On Windows, prefer the Windows lock file:
+
+```bash
+pip install -r requirements-windows.txt
+```
+
+It keeps `protobuf==3.20.3` for PySC2/s2clientprotocol compatibility on newer
+Python and gates the Windows-only `pywin32` dependency with a platform marker.
 
 *(Note: PySC2 requires a working installation of StarCraft II. Please refer to the [PySC2 documentation](https://github.com/google-deepmind/pysc2) for instructions on installing the game client and maps.)*
 

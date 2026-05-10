@@ -3,6 +3,7 @@ import torch
 
 from MockedEnv.policy_batch import make_policy_batch
 from agent_core.policy_protocol import (
+    ACTION_FEEDBACK_TOKEN_DIM,
     BRIDGE_ACTION_BOOTSTRAP_SELECT,
     META_VECTOR_DIM,
     META_LAST_ACTION_INDEX_OFFSET,
@@ -91,7 +92,11 @@ def test_agent_step_returns_current_training_tuple(make_obs):
     assert tuple(policy_input.spatial_obs.shape) == (1, 27, 84, 84)
     assert tuple(policy_input.entity_features.shape) == (1, 24, 21)
     assert tuple(policy_input.selection_features.shape) == (1, 20, 7)
-    assert tuple(policy_input.action_feedback_tokens.shape) == (1, 1, 9)
+    assert tuple(policy_input.action_feedback_tokens.shape) == (
+        1,
+        1,
+        ACTION_FEEDBACK_TOKEN_DIM,
+    )
     assert tuple(policy_input.meta_vec.shape) == (1, META_VECTOR_DIM)
     assert policy_input.state_in is not None
     assert isinstance(learnable, bool)

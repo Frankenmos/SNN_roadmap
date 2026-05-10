@@ -5,9 +5,30 @@ Compressed current-memory version.
 Verbose pre-compression snapshot:
 `docs/archive/working_log_2026-04-20_pre_compress.md`
 
+## 2026-05-10
+
+- reviewed the V5 run family artifact `banana_smart_v5_b2048_e4_a10`:
+  - important naming note: V5 is a run-family name, not `RewardFunctionV5`
+  - the run sidecar reports `reward.name = "defeat_roaches_v4"`
+  - the actual protocol jump was `POLICY_PROTOCOL_VERSION = 3` and
+    `stream_action_effect_feedback_v2`
+  - local DB spans 2026-05-06 16:18:24 to 2026-05-10 17:01:16 with
+    11,447 episodes and 672 PPO updates
+  - headline read is bad: max reward `0.00`, final-100 average `-49.76`,
+    and late non-finite-gradient / skipped-optimizer warnings
+- refreshed docs so Claude / future agents do not confuse the V5 run family
+  with a nonexistent `defeat_roaches_v5` implementation
+
 ## 2026-05-06
 
-- documented `banana_b2048_e4_a10` as the latest/live training run, currently
+- implemented Action Effect Feedback v2:
+  - bumped `POLICY_PROTOCOL_VERSION` to 3 and schema to
+    `stream_action_effect_feedback_v2`
+  - widened `action_feedback_tokens` from `[B, 1, 9]` to `[B, 1, 12]`
+  - added effect bits for target-near-enemy, friendly movement toward target,
+    enemy health drop, and friendly health drop
+  - added rollout counters for policy action mix and Smart effect outcomes
+- documented `banana_b2048_e4_a10` as the then-latest pre-V4 baseline run,
   around 5,000 episodes
 - updated current docs to match the live config drift:
   `batch_size: 2048`, `num_rollout_actors: 10`, `fragment_steps: 256`, and
@@ -317,10 +338,10 @@ Verbose pre-compression snapshot:
   `coarse_to_fine` is implemented and selected in `config.yaml`; it still needs
   a short live training/eval pass before we draw conclusions or move toward
   `heatmap`
-- verify and tune `RewardFunctionV3` terminal/outcome semantics against live
+- verify and tune `RewardFunctionV4` terminal/outcome/action-shaping semantics against live
   traces
-- regenerate/review the main `banana_b2048_e4_a10` report bundle against the live
-  DB/checkpoint state
+- review the `banana_smart_v5_b2048_e4_a10` diagnostics/traces against the live
+  DB/checkpoint state, and compare directly to `banana_smart_v4_b2048_e4_a10`
 - keep `analysis_results/BPTT-1` as historical context only (same obs function shape, but older action-space version)
 - re-run deterministic and stochastic eval after the reward pass
 - only then decide whether the next action-space step is:

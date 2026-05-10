@@ -73,7 +73,7 @@ Located in [`distributed/protocol.py`](../../distributed/protocol.py).
 | `entity_mask` | `[T, 24]` | Valid entity slots |
 | `selection_features` | `[T, 20, 7]` | Selected units |
 | `selection_mask` | `[T, 20]` | Valid selection slots |
-| `action_feedback_tokens` | `[T, 1, 9]` | Previous action + outcome |
+| `action_feedback_tokens` | `[T, 1, 12]` | Previous action + outcome/effect feedback |
 | `meta_vec` | `[T, 15]` | Player + available + last-action |
 | `actions` | `[T]` | Selected action IDs |
 | `move_x`, `move_y` | `[T]` | Decoded click coordinates |
@@ -97,9 +97,9 @@ Located in [`distributed/protocol.py`](../../distributed/protocol.py).
 |-------|---------|
 | `episode_summaries` | Per-episode reward/step counts |
 | `reward_component_summaries` | Per-episode reward breakdowns |
-| `step_counters` | Fragment-level step counts |
-| `policy_protocol_version` | Must equal `POLICY_PROTOCOL_VERSION = 2` |
-| `policy_input_schema` | Must equal `"stream_action_feedback_v1"` |
+| `step_counters` | Fragment-level step/action/effect counts |
+| `policy_protocol_version` | Must equal `POLICY_PROTOCOL_VERSION = 3` |
+| `policy_input_schema` | Must equal `"stream_action_effect_feedback_v2"` |
 
 ### Properties
 
@@ -258,23 +258,23 @@ def __post_init__(self):
 ### Constants (from [`policy_protocol.py`](../../agent_core/policy_protocol.py))
 
 ```python
-POLICY_PROTOCOL_VERSION: Final[int] = 2
-POLICY_INPUT_SCHEMA: Final[str] = "stream_action_feedback_v1"
+POLICY_PROTOCOL_VERSION: Final[int] = 3
+POLICY_INPUT_SCHEMA: Final[str] = "stream_action_effect_feedback_v2"
 ```
 
 ### What Gets Validated
 
 | Check | Purpose |
 |-------|---------|
-| `policy_protocol_version == 2` | Rejects v1 checkpoints (24-dim meta_vec) |
-| `policy_input_schema == "stream_action_feedback_v1"` | Rejects incompatible token layouts |
+| `policy_protocol_version == 3` | Rejects old 9-dim feedback-token checkpoints |
+| `policy_input_schema == "stream_action_effect_feedback_v2"` | Rejects incompatible token layouts |
 
 ### Failure Mode
 
 If an actor with stale protocol tries to send data:
 
 ```python
-ValueError: policy input schema mismatch: 'old_schema' != 'stream_action_feedback_v1'
+ValueError: policy input schema mismatch: 'old_schema' != 'stream_action_effect_feedback_v2'
 ```
 
 This fails **before** any training happens, preventing silent corruption.

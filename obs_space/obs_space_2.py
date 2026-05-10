@@ -47,6 +47,7 @@ from agent_core.policy_protocol import (
     UNKNOWN_LAST_ACTION_INDEX,
 )
 from obs_space.action_feedback_encoder import ActionFeedbackEncoder
+from obs_space.action_effects import ActionEffectTracker
 
 _PLAYER_FRIENDLY = 1
 _SCORE_CUMULATIVE_DIM = 13
@@ -227,6 +228,7 @@ class ObservationExtractor:
         self.feedback_encoder = ActionFeedbackEncoder(
             screen_size=SPATIAL_OBS_SHAPE[-1],
         )
+        self.effect_tracker = ActionEffectTracker()
 
     def extract_observation(
         self,
@@ -273,6 +275,10 @@ class ObservationExtractor:
             getattr(obs.observation, "last_actions", None),
         )
         score_delta = self._score_delta(obs)
+        action_effect = self.effect_tracker.compute(
+            obs,
+            last_action_token=last_action_token,
+        )
         meta_vec = self._extract_meta_vector(
             obs,
             last_action_ids=last_action_ids,
@@ -281,6 +287,7 @@ class ObservationExtractor:
             last_action_token=last_action_token,
             last_action_ids=last_action_ids,
             score_delta=score_delta,
+            action_effect=action_effect,
         )
         action_feedback_tokens = torch.as_tensor(
             action_feedback.reshape(
@@ -292,6 +299,7 @@ class ObservationExtractor:
         )
         if update_feedback_state:
             self._previous_score_cumulative = self._extract_score_cumulative(obs)
+            self.effect_tracker.update(obs)
 
         return PolicyInputBatch(
             spatial_obs=spatial_obs,
@@ -494,6 +502,7 @@ class ObservationExtractor:
 
     def reset(self):
         self._previous_score_cumulative = None
+        self.effect_tracker.reset()
         return None
 
     def state_dict(self):

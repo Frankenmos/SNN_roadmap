@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from Utility.logger_utils import initialize_db
+from agent_core.policy_protocol import POLICY_INPUT_SCHEMA
 from tools.analysis.analyze_pth import (
     collect_checkpoint_metadata,
     collect_extractor_state_rows,
@@ -395,7 +396,7 @@ def test_training_analyzer_uses_stream_action_feedback_semantics(tmp_path):
         json.dumps(
             {
                 "distributed": {
-                    "required_policy_input_schema": "stream_action_feedback_v1",
+                    "required_policy_input_schema": POLICY_INPUT_SCHEMA,
                 },
                 "model": {
                     "action_dim": 3,
@@ -414,7 +415,7 @@ def test_training_analyzer_uses_stream_action_feedback_semantics(tmp_path):
     finally:
         analyzer.close()
 
-    assert diagnosis["action_semantics"] == "stream_action_feedback_v1"
+    assert diagnosis["action_semantics"] == POLICY_INPUT_SCHEMA
     assert diagnosis["action_labels"][0] == "no-op"
     assert diagnosis["action_labels"][2] == "right_click"
     assert diagnosis["noop_action_id"] == 0

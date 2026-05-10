@@ -1,6 +1,6 @@
 # Repo State
 
-Updated: 2026-05-06
+Updated: 2026-05-10
 
 ## What The Repo Does Today
 
@@ -8,7 +8,7 @@ This is currently an SNN + PPO DefeatRoaches project with:
 
 - hybrid observation tokenization from Fix 3
 - fragment-based PPO with per-fragment GAE and an initial synchronous Ray rollout path
-- `POLICY_PROTOCOL_VERSION = 2` with `policy_input_schema = "stream_action_feedback_v1"`
+- `POLICY_PROTOCOL_VERSION = 3` with `policy_input_schema = "stream_action_effect_feedback_v2"`
 - Stage-1 TBPTT with ordered chunk replay and packed replay
 - SDPA-backed attention as the current low-risk attention fast path
 - SQLite logging plus analysis plots under `analysis_results/`
@@ -29,7 +29,7 @@ The current policy input path is:
 - spatial `feature_screen` -> CNN -> pooled spatial tokens
 - `feature_units` -> entity tokens
 - `multi_select` / `single_select` -> selection tokens
-- `action_feedback_tokens[1, 9] = previous bridge action + execution/score feedback`
+- `action_feedback_tokens[1, 12] = previous bridge action + execution/score/effect feedback`
 - `meta_vec[15] = player[11] + semantic_available_actions[3] + pysc2_last_action[1]`
 - token-type embeddings
 - spiking self-attention
@@ -55,27 +55,47 @@ Why the repo moved there:
 
 ## Current Training Read
 
-The active/latest training run is now `banana_b2048_e4_a10`, currently around
-5,000 episodes. It is not ready for a final post-run conclusion yet, but the
-behavior read is disappointing enough that reward/action-behavior diagnosis is
-the next discussion point before treating this as a healthy training direction.
+The latest local run artifact is `banana_smart_v5_b2048_e4_a10`.
+This is a run-family name, not a reward-function version: its
+`effective_config.json` reports `reward.name = "defeat_roaches_v4"` and
+`policy_input_schema = "stream_action_effect_feedback_v2"`.
 
 - live training checkpoint:
-  `models/banana_b2048_e4_a10/checkpoint.pth`
+  `models/banana_smart_v5_b2048_e4_a10/checkpoint.pth`
 - current analysis bundle:
-  `analysis_results/banana_b2048_e4_a10/`
+  `analysis_results/banana_smart_v5_b2048_e4_a10/`
 - active comparison artifact:
-  `analysis_results/BPTT-1` is historical only (older `MOVE/ATTACK` semantics)
-- track `banana_b2048_e4_a10` on its own trajectory (action mix, terminals,
-  rewards, episode-phase behavior) before declaring any global trend conclusions
+  `analysis_results/banana_smart_v4_b2048_e4_a10/`
+- older baseline:
+  `analysis_results/banana_b2048_e4_a10/`
+
+V5 local DB summary:
+
+- ran from 2026-05-06 16:18:24 to 2026-05-10 17:01:16
+- 11,447 episodes and 672 PPO updates
+- average reward `-63.23`, final-100 average `-49.76`, max reward `0.00`
+- average episode length `183.6`
+- no `eval_runs` rows logged
+- instability report flags late non-finite gradients and skipped optimizer steps
 
 Current interpretation:
 
-- reward refactor / rebalance is still urgent
-- the current run's behavior should be reviewed before adding more action-space
-  complexity
-- the new semantic-action + `coarse_to_fine` stack now needs env-backed
-  judgment before pulling the `heatmap` head or larger action-space work forward
+- V5 is latest evidence, but it should not be treated as a healthy direction
+  until the action/effect diagnostics and gradient instability are reviewed
+- the V4 run looked better on reward headline metrics but was unstable and used
+  the older 9-dim feedback-token protocol
+- reward/action-behavior diagnosis is still the next discussion point before
+  adding more action-space complexity
+- the semantic-action + `coarse_to_fine` stack still needs env-backed judgment
+  before pulling the `heatmap` head or larger action-space work forward
+
+## Run Timeline
+
+| Run | Dates in local DB | Protocol/schema | Reward | Notes |
+|-----|-------------------|-----------------|--------|-------|
+| `banana_b2048_e4_a10` | 2026-04-27 -> 2026-04-28 | `2 / stream_action_feedback_v1` | V3-era baseline | 5,212 episodes; older baseline before V4 action-aware reward. |
+| `banana_smart_v4_b2048_e4_a10` | 2026-05-06 | `2 / stream_action_feedback_v1` | `defeat_roaches_v4` | 6,642 episodes; max reward `211.93`, final-100 avg `-2.51`, plateau/instability flags. |
+| `banana_smart_v5_b2048_e4_a10` | 2026-05-06 -> 2026-05-10 | `3 / stream_action_effect_feedback_v2` | `defeat_roaches_v4` | 11,447 episodes; max reward `0.00`, final-100 avg `-49.76`, late non-finite gradient warnings. |
 
 ## What Is Considered Current
 
@@ -146,15 +166,16 @@ Current interpretation:
 ## What Is Not Done
 
 - reward refactor / rebalance based on the newer wrapper-driven env read
-- env-backed verification / tuning of `RewardFunctionV3` terminal and outcome
-  semantics
-- final refreshed current-run analysis/readout after `banana_b2048_e4_a10`
-  finishes or reaches the next stable checkpoint block
+- env-backed verification / tuning of `RewardFunctionV4` terminal, outcome,
+  and action-shaping semantics
+- final refreshed V5 readout after inspecting the V5 diagnostics/traces, not
+  just the headline training metrics
 - env-backed validation that timeout-as-truncation behaves as intended in the
   current single-process and Ray rollout paths
 - env-backed validation that keeping `LEFT_CLICK` masked is still the correct
   no-alias choice on the current wrapper
-- broader action-history token groups beyond the current one-step 9-field bridge
+- broader action-history token groups beyond the current one-step 12-field
+  action-effect feedback token
 - env-backed validation of the current `coarse_to_fine` spatial head - see [../SPATIAL_HEADS.md](../SPATIAL_HEADS.md)
 - selection actions and broader learnable action vocabulary beyond the current
   semantic click scaffold
@@ -211,13 +232,24 @@ also be treated as incompatible:
 Checkpoints from before the 2026-04-26 protocol version migration should also
 be treated as incompatible:
 
-- `POLICY_PROTOCOL_VERSION` introduced (current = 2)
-- `policy_input_schema` introduced (current = "stream_action_feedback_v1")
+- `POLICY_PROTOCOL_VERSION` introduced (now current = 3 after the later
+  2026-05-06 action-effect feedback bump)
+- `policy_input_schema` introduced (current = "stream_action_effect_feedback_v2")
 - `meta_vec` width changed from `24` to `15`
 - action-feedback fields moved from meta_vec to separate `action_feedback_tokens`
 - fragment-based PPO with per-fragment GAE replaces single-bootstrap approach
 - initial Ray trainer added: rollout actors collect fragments, one learner owns
   optimizer/scheduler/checkpoints, stale `policy_version` fragments are rejected
+
+Checkpoints from before the 2026-05-06 action-effect feedback bump should also
+be treated as incompatible:
+
+- `POLICY_PROTOCOL_VERSION` changed from `2` to `3`
+- `policy_input_schema` changed from `"stream_action_feedback_v1"` to
+  `"stream_action_effect_feedback_v2"`
+- `action_feedback_tokens` widened from `[B, 1, 9]` to `[B, 1, 12]`
+- the extra fields are target-near-enemy, friendly-moved-toward-target,
+  enemy-health-drop, and friendly-health-drop feedback
 
 **Note (2026-04-27)**: The `coarse_to_fine` spatial head is implemented and
 selected in `config.yaml`. `token_pointer` remains available as the lower-cost
@@ -239,16 +271,19 @@ Reason:
 
 ## Immediate Priorities
 
-1. Run `banana_smart_v4_b2048_e4_a10` and check whether the V4 action-aware
-   reward plus temporary Smart curriculum breaks the no-op/passive-autoattack
-   collapse.
-2. Env-verify the new semantic action mask and `coarse_to_fine` clicks on the live wrapper.
-3. Verify and tune `RewardFunctionV4` terminal/outcome/action-shaping semantics
+1. Inspect `banana_smart_v5_b2048_e4_a10` diagnostics and traces before adding
+   more action-space complexity.
+2. Explain why the protocol-3/effect-feedback V5 run regressed so hard versus
+   the V4 run, including the late non-finite gradients and skipped optimizer
+   steps.
+3. Decide whether the next controlled experiment is a V5 stabilization pass,
+   a rollback/ablation against the V4 protocol, or a reward-scale/gradient
+   stability pass.
+4. Env-verify the semantic action mask and `coarse_to_fine` clicks on the live wrapper.
+5. Verify and tune `RewardFunctionV4` terminal/outcome/action-shaping semantics
    against live traces.
-4. Regenerate/review the main `banana_smart_v4_b2048_e4_a10` analysis bundle once the run
-   reaches a stable checkpoint block or final stop point.
-5. Compare `coarse_to_fine` against `token_pointer` only after a short live training/eval pass establishes current behavior.
-6. Re-evaluate deterministic vs stochastic behavior before pulling Stage-2 action work forward.
+6. Compare `coarse_to_fine` against `token_pointer` only after a short live training/eval pass establishes current behavior.
+7. Re-evaluate deterministic vs stochastic behavior before pulling Stage-2 action work forward.
 
 ## Future Branch Candidates
 
@@ -266,7 +301,7 @@ Reason:
 ## Open Questions
 
 1. Once the reward path is updated, does deterministic behavior recover, or is there still a deeper action-space or optimization bottleneck?
-2. Is the 9-field one-step bridge enough for now, or should Stage 2 move longer action history into its own token group soon?
+2. Is the 12-field one-step action-effect token enough for now, or should Stage 2 move longer action history into its own token group soon?
 3. How much remaining weakness is reward shaping versus entity identity versus optimization instability?
 4. If `SMART` remains hard to learn from pure PPO, is the better next move offline pretraining, curriculum maps, or both?
 5. When we leave "make the SNN work" mode, do we keep this branch as the research branch and build a denser recurrent branch for the actual game-learning push?

@@ -1,0 +1,14 @@
+AI-friendly export bundle
+window=100
+num_bins=50
+action_semantics=stream_action_effect_feedback_v2
+action_labels=0:no-op,1:left_click,2:right_click
+
+files:
+- 01_reward_trajectory.png
+- 02_episode_length.png
+- 03_reward_efficiency.png
+- 04_oscillation_score.png
+- 09_tbptt_speed.png
+- 13_learner_timing_breakdown.png
+- 14_payload_cuda_footprint.png

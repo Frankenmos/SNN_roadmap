@@ -3,6 +3,7 @@ import torch
 
 from MockedEnv.policy_batch import make_dummy_state_from_shape, make_policy_batch
 from agent_core.policy_protocol import (
+    ACTION_FEEDBACK_TOKEN_DIM,
     POLICY_INPUT_SCHEMA,
     POLICY_PROTOCOL_VERSION,
     TOTAL_TOKEN_COUNT,
@@ -76,6 +77,11 @@ def test_validate_policy_protocol_accepts_current_schema():
 def test_validate_policy_protocol_rejects_mismatches():
     with pytest.raises(ValueError, match="policy protocol mismatch"):
         validate_policy_protocol(
+            policy_protocol_version=2,
+            policy_input_schema="stream_action_feedback_v1",
+        )
+    with pytest.raises(ValueError, match="policy protocol mismatch"):
+        validate_policy_protocol(
             policy_protocol_version=POLICY_PROTOCOL_VERSION + 1,
             policy_input_schema=POLICY_INPUT_SCHEMA,
         )
@@ -96,7 +102,7 @@ def test_rollout_fragment_preserves_current_policy_input_contract():
 
     batch = fragment.as_policy_input_batch()
     assert batch.spatial_obs.shape == (3, 27, 84, 84)
-    assert batch.action_feedback_tokens.shape == (3, 1, 9)
+    assert batch.action_feedback_tokens.shape == (3, 1, ACTION_FEEDBACK_TOKEN_DIM)
     assert batch.meta_vec.shape == (3, 15)
 
 

@@ -22,8 +22,11 @@
 
 ## Current State
 
-- Active verification state: `banana_b2048_e4_a10` is the latest live run
-  (around 5,000 episodes so far; behavior review pending before final conclusions)
+- Latest local verification artifact: `banana_smart_v5_b2048_e4_a10`
+  (11,447 episodes, protocol 3 / `stream_action_effect_feedback_v2`; behavior
+  review pending before final conclusions)
+- Naming warning: V5 is a run family, not `RewardFunctionV5`. The latest V5
+  sidecar still uses `reward.name = "defeat_roaches_v4"`.
 
 - [REPO_STATE.md](current/REPO_STATE.md) - What the repo does today (semantic click action space, configurable spatial target head, masked-critic, update-before-eval)
 - [working_log.md](current/working_log.md) - Compressed implementation history
