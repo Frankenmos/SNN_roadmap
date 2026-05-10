@@ -89,8 +89,8 @@ distributed:
   learner_gpus: 1
   eval_every_updates: 50
   max_updates: 0
-  required_policy_protocol_version: 2
-  required_policy_input_schema: "stream_action_feedback_v1"
+  required_policy_protocol_version: 3
+  required_policy_input_schema: "stream_action_effect_feedback_v2"
 
 model:
   spatial_input_shape: [27, 84, 84]

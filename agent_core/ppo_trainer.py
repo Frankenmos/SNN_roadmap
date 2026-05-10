@@ -8,8 +8,14 @@ import torch
 import torch.optim as optim
 
 from agent_core.policy_protocol import (
+    ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET,
+    ACTION_FEEDBACK_ENEMY_HEALTH_DROP_OFFSET,
+    ACTION_FEEDBACK_EXECUTED_SMART_OFFSET,
+    ACTION_FEEDBACK_MOVED_TOWARD_TARGET_OFFSET,
+    ACTION_FEEDBACK_TARGET_NEAR_ENEMY_OFFSET,
     ACTION_REQUIRES_TARGET,
     ActionSample,
+    BRIDGE_ACTION_RIGHT_CLICK,
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
     META_AVAILABLE_ACTION_DIM,
@@ -221,6 +227,67 @@ class PPO:
             "payload_total_bytes": int(total_bytes),
             "payload_total_mib": float(total_bytes / (1024**2)),
         }
+
+    @staticmethod
+    def _fragment_step_counters(
+        *,
+        actions: torch.Tensor,
+        action_feedback_tokens: torch.Tensor,
+        sample_mask: torch.Tensor,
+    ) -> dict[str, int]:
+        actions = actions.detach().cpu().long().reshape(-1)
+        sample_mask = sample_mask.detach().cpu().float().reshape(-1) > 0.0
+        feedback = action_feedback_tokens.detach().cpu().float()
+        feedback = feedback.reshape(feedback.shape[0], -1)
+        smart_feedback = (
+            feedback[:, ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET].round().long()
+            == BRIDGE_ACTION_RIGHT_CLICK
+        )
+        smart_executed = feedback[:, ACTION_FEEDBACK_EXECUTED_SMART_OFFSET] > 0.5
+        near_enemy = feedback[:, ACTION_FEEDBACK_TARGET_NEAR_ENEMY_OFFSET] > 0.5
+        moved = feedback[:, ACTION_FEEDBACK_MOVED_TOWARD_TARGET_OFFSET] > 0.5
+        enemy_drop = feedback[:, ACTION_FEEDBACK_ENEMY_HEALTH_DROP_OFFSET] > 0.0
+        null_unclear = smart_feedback & ~moved & ~enemy_drop
+
+        return {
+            "steps": int(actions.numel()),
+            "learnable_steps": int(sample_mask.sum().item()),
+            "rollout_policy_no_op_count": int(
+                (actions[sample_mask] == POLICY_ACTION_NO_OP).sum().item(),
+            ),
+            "rollout_policy_left_click_count": int(
+                (actions[sample_mask] == POLICY_ACTION_LEFT_CLICK).sum().item(),
+            ),
+            "rollout_policy_right_click_count": int(
+                (actions[sample_mask] == POLICY_ACTION_RIGHT_CLICK).sum().item(),
+            ),
+            "rollout_feedback_smart_executed_count": int(
+                (smart_executed & sample_mask).sum().item(),
+            ),
+            "rollout_feedback_near_enemy_smart_count": int(
+                (near_enemy & smart_feedback & sample_mask).sum().item(),
+            ),
+            "rollout_feedback_moved_toward_target_count": int(
+                (moved & smart_feedback & sample_mask).sum().item(),
+            ),
+            "rollout_feedback_enemy_health_drop_after_smart_count": int(
+                (enemy_drop & smart_feedback & sample_mask).sum().item(),
+            ),
+            "rollout_feedback_null_unclear_smart_count": int(
+                (null_unclear & sample_mask).sum().item(),
+            ),
+        }
+
+    @staticmethod
+    def _aggregate_fragment_step_counters(
+        fragments: list[RolloutFragment],
+    ) -> dict[str, int]:
+        totals: dict[str, int] = {}
+        for fragment in fragments:
+            for key, value in fragment.step_counters.items():
+                if key.startswith("rollout_"):
+                    totals[key] = totals.get(key, 0) + int(value)
+        return totals
 
     def _move_state_to_device(
         self,
@@ -669,6 +736,15 @@ class PPO:
         observations = PolicyInputBatch.stack(step_batches)
         pre_step_snn_state = self._stack_states_from_transitions(self.memory)
         default_false = torch.tensor(False, dtype=torch.bool)
+        actions = torch.stack([transition["action"] for transition in self.memory])
+        sample_mask = torch.stack(
+            [transition["sample_mask"] for transition in self.memory],
+        ).float()
+        step_counters = self._fragment_step_counters(
+            actions=actions,
+            action_feedback_tokens=observations.action_feedback_tokens,
+            sample_mask=sample_mask,
+        )
 
         fragment = RolloutFragment(
             actor_id=int(actor_id),
@@ -681,7 +757,7 @@ class PPO:
             selection_mask=observations.selection_mask,
             action_feedback_tokens=observations.action_feedback_tokens,
             meta_vec=observations.meta_vec,
-            actions=torch.stack([transition["action"] for transition in self.memory]),
+            actions=actions,
             move_x=torch.stack([transition["move_x"] for transition in self.memory]),
             move_y=torch.stack([transition["move_y"] for transition in self.memory]),
             target_index=torch.stack(
@@ -717,9 +793,7 @@ class PPO:
                     for transition in self.memory
                 ],
             ),
-            sample_mask=torch.stack(
-                [transition["sample_mask"] for transition in self.memory],
-            ).float(),
+            sample_mask=sample_mask,
             pre_step_snn_state=pre_step_snn_state,
             tail_next_policy_input=self.final_next,
             tail_next_snn_state=(
@@ -727,15 +801,7 @@ class PPO:
             ),
             episode_summaries=tuple(episode_summaries),
             reward_component_summaries=tuple(reward_component_summaries),
-            step_counters={
-                "steps": int(len(self.memory)),
-                "learnable_steps": int(
-                    sum(
-                        float(transition["sample_mask"].item()) > 0.0
-                        for transition in self.memory
-                    ),
-                ),
-            },
+            step_counters=step_counters,
         )
         self.pending_fragments.append(fragment)
         self.memory = []
@@ -1303,6 +1369,7 @@ class PPO:
             ).replace("torch.", ""),
         }
         stats.update(payload_stats)
+        stats.update(self._aggregate_fragment_step_counters(fragments))
         stats.update(timings)
 
         if self.scheduler is not None:

@@ -6,6 +6,12 @@ import torch.nn as nn
 
 from MockedEnv.policy_batch import make_policy_batch
 from agent_core.policy_protocol import (
+    ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET,
+    ACTION_FEEDBACK_ENEMY_HEALTH_DROP_OFFSET,
+    ACTION_FEEDBACK_EXECUTED_SMART_OFFSET,
+    ACTION_FEEDBACK_MOVED_TOWARD_TARGET_OFFSET,
+    ACTION_FEEDBACK_TARGET_NEAR_ENEMY_OFFSET,
+    BRIDGE_ACTION_RIGHT_CLICK,
     META_AVAILABLE_ACTION_OFFSET,
     META_VECTOR_DIM,
     POLICY_ACTION_LEFT_CLICK,
@@ -691,6 +697,63 @@ def test_set_final_next_requires_bootstrap_recurrent_state():
         match="Bootstrap observation must carry the recurrent state after the final rollout step",
     ):
         ppo.set_final_next(batch)
+
+
+def test_finalize_fragment_records_action_effect_feedback_counters():
+    ppo = PPO(FakeNet(), lr=1e-4)
+
+    action_ids = [
+        POLICY_ACTION_NO_OP,
+        POLICY_ACTION_RIGHT_CLICK,
+        POLICY_ACTION_RIGHT_CLICK,
+    ]
+    feedback_overrides = [
+        {},
+        {
+            ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET: BRIDGE_ACTION_RIGHT_CLICK,
+            ACTION_FEEDBACK_EXECUTED_SMART_OFFSET: 1.0,
+            ACTION_FEEDBACK_TARGET_NEAR_ENEMY_OFFSET: 1.0,
+            ACTION_FEEDBACK_ENEMY_HEALTH_DROP_OFFSET: 0.5,
+        },
+        {
+            ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET: BRIDGE_ACTION_RIGHT_CLICK,
+            ACTION_FEEDBACK_EXECUTED_SMART_OFFSET: 1.0,
+            ACTION_FEEDBACK_MOVED_TOWARD_TARGET_OFFSET: 0.0,
+            ACTION_FEEDBACK_ENEMY_HEALTH_DROP_OFFSET: 0.0,
+        },
+    ]
+
+    for step, action_id in enumerate(action_ids):
+        batch = make_policy_batch(batch_size=1, with_state=True, zeros=True)
+        for offset, value in feedback_overrides[step].items():
+            batch.action_feedback_tokens[0, 0, offset] = float(value)
+        ppo.store_transition(
+            batch,
+            torch.tensor(action_id),
+            torch.tensor(0),
+            torch.tensor(0),
+            torch.tensor(-1.0),
+            torch.tensor(1.0),
+            torch.tensor(0.0),
+            torch.tensor(float(step == len(action_ids) - 1)),
+        )
+
+    fragment = ppo.finalize_fragment()
+
+    assert fragment is not None
+    assert fragment.step_counters["rollout_policy_no_op_count"] == 1
+    assert fragment.step_counters["rollout_policy_left_click_count"] == 0
+    assert fragment.step_counters["rollout_policy_right_click_count"] == 2
+    assert fragment.step_counters["rollout_feedback_smart_executed_count"] == 2
+    assert fragment.step_counters["rollout_feedback_near_enemy_smart_count"] == 1
+    assert fragment.step_counters["rollout_feedback_moved_toward_target_count"] == 0
+    assert (
+        fragment.step_counters[
+            "rollout_feedback_enemy_health_drop_after_smart_count"
+        ]
+        == 1
+    )
+    assert fragment.step_counters["rollout_feedback_null_unclear_smart_count"] == 1
 
 
 def test_update_policy_replays_state_and_clears_memory():

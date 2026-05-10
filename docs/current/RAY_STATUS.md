@@ -41,8 +41,8 @@ migration to Ray, following the plan in [`RAYPLAN.md`](../ideas/RAYPLAN.md).
    - ✅ `validate_policy_protocol()` - Protocol compatibility checker
 
 2. **Fragment Protocol** ([`policy_protocol.py`](../../agent_core/policy_protocol.py))
-   - ✅ `POLICY_PROTOCOL_VERSION = 2`
-   - ✅ `POLICY_INPUT_SCHEMA = "stream_action_feedback_v1"`
+   - ✅ `POLICY_PROTOCOL_VERSION = 3`
+   - ✅ `POLICY_INPUT_SCHEMA = "stream_action_effect_feedback_v2"`
    - ✅ Fragment validation in `__post_init__`
 
 3. **PPO Refactor** ([`ppo_trainer.py`](../../agent_core/ppo_trainer.py))
@@ -271,8 +271,8 @@ distributed:
   learner_gpus: 1
   eval_every_updates: 50
   max_updates: 0
-  required_policy_protocol_version: 2
-  required_policy_input_schema: "stream_action_feedback_v1"
+  required_policy_protocol_version: 3
+  required_policy_input_schema: "stream_action_effect_feedback_v2"
 ```
 
 ### Acceptance Criteria (from RAYPLAN.md §13)

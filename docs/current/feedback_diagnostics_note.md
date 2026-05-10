@@ -213,12 +213,12 @@ The evidence-backed feedback extension then produced a 24-dim `meta_vec`:
 | `score_penalty_bit` | 1 | `1.0` if `score_total_delta < 0` |
 
 That 24-dim layout is now historical. The current protocol is
-`POLICY_INPUT_SCHEMA = "stream_action_feedback_v1"`:
+`POLICY_INPUT_SCHEMA = "stream_action_effect_feedback_v2"`:
 
 | Tensor | Shape | Meaning |
 |--------|-------|---------|
 | `meta_vec` | `[B, 15]` | player features, semantic action availability, PySC2 last-action index |
-| `action_feedback_tokens` | `[B, 1, 9]` | attempted action, click coordinates, execution bits, score-delta feedback |
+| `action_feedback_tokens` | `[B, 1, 12]` | attempted action, click coordinates, execution bits, score-delta feedback, and post-action effect feedback |
 
 For the source of truth, use `agent_core/policy_protocol.py` and
 `docs/current/ACTION_FEEDBACK_PLAN.md`. The old 24-dim bridge plan lives at

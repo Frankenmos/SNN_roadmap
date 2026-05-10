@@ -7,7 +7,7 @@
 >
 > ✅ Token stream docs show 95 tokens, with action feedback at index 93 and meta at index 94.
 > ✅ Token type docs show ACTION_FEEDBACK=3, META=4, and TOKEN_TYPE_GROUPS=5.
-> ✅ PolicyInputBatch docs include `action_feedback_tokens [B, 1, 9]`, `meta_vec [B, 15]`, and `state_in` as `syn/mem [B, 2, 95, 64]`.
+> ✅ PolicyInputBatch docs include `action_feedback_tokens [B, 1, 12]`, `meta_vec [B, 15]`, and `state_in` as `syn/mem [B, 2, 95, 64]`.
 > ✅ PolicyNetwork docs include the action-feedback encoder, the reduced meta encoder, 95-token attention/SNN flow, and config-matching SNN alpha/beta values.
 
 This document ties together the complete architecture of the SNN+PPO DefeatRoaches agent.
@@ -112,7 +112,7 @@ This document ties together the complete architecture of the SNN+PPO DefeatRoach
 │  │  entity_mask:       [B, 24]                                           │    │
 │  │  selection_features:[B, 20, 7]                                       │    │
 │  │  selection_mask:    [B, 20]                                           │    │
-│  │  action_feedback_tokens: [B, 1, 9]                                   │    │
+│  │  action_feedback_tokens: [B, 1, 12]                                  │    │
 │  │  meta_vec:          [B, 15]                                           │    │
 │  │  state_in:          (syn[B, 2, 95, 64], mem[B, 2, 95, 64])           │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
@@ -147,8 +147,8 @@ This document ties together the complete architecture of the SNN+PPO DefeatRoach
 │                                 │                                            │
 │                                 ▼                                            │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                   RewardFunctionV3                                   │    │
-│  │  damage_dealt, damage_taken, kills, positioning, terminal            │    │
+│  │                   RewardFunctionV4                                   │    │
+│  │  V3 combat shaping + Smart/no-op action guidance                     │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                               │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -279,7 +279,7 @@ Combine: mean(mode) or concatenation
 │    ├─ entity_features [B, 24, 21]                                           │
 │    ├─ selection_features [B, 20, 7]                                         │
 │    ├─ entity/selection masks                                                 │
-│    ├─ action_feedback_tokens [B, 1, 9]                                      │
+│    ├─ action_feedback_tokens [B, 1, 12]                                     │
 │    ├─ meta_vec [B, 15]                                                      │
 │    └─ state_in syn/mem [B, 2, 95, 64]                                      │
 │                                                                              │
@@ -394,7 +394,7 @@ PySC2 last-action id.
 | 11:14 | 3 | Available action mask | Computed |
 | 14:15 | 1 | PySC2 last-action index | `obs.observation.last_actions[0]` |
 
-`action_feedback_tokens [B, 1, 9]`:
+`action_feedback_tokens [B, 1, 12]`:
 
 | Offset | Field | Source |
 |--------|-------|--------|
@@ -406,7 +406,10 @@ PySC2 last-action id.
 | 5 | Score delta | `score_cumulative[0]` delta |
 | 6 | Killed value delta | `score_cumulative[5]` delta |
 | 7 | Score penalty bit | `score_delta < 0` |
-| 8 | Reserved | Future use |
+| 8 | Target near enemy | Previous Smart target within 6 screen pixels of a previous-frame enemy |
+| 9 | Friendly moved toward target | Tag-pinned survivors, or tagless unchanged-count median fallback |
+| 10 | Enemy health drop | Clipped alliance-summed enemy health drop, normalized by 100 |
+| 11 | Friendly health drop | Clipped alliance-summed friendly health drop, normalized by 100 |
 
 The token has its own type embedding and attends alongside spatial, entity,
 selection, and meta tokens.
@@ -415,7 +418,11 @@ selection, and meta tokens.
 
 ## Reward Function
 
-### RewardFunctionV3 Components
+### RewardFunctionV4 Components
+
+`RewardFunctionV4` extends `RewardFunctionV3`; it keeps the V3 combat and
+positioning terms, then adds small action-aware guidance for the current
+`RIGHT_CLICK -> Smart_screen(x, y)` policy.
 
 | Component | Formula | Purpose |
 |-----------|---------|---------|
@@ -426,6 +433,9 @@ selection, and meta tokens.
 | `step_penalty` | `-0.005` per step (while enemies exist) | Time pressure |
 | `win_reward` | `+60.0` on win | Terminal reward |
 | `loss_penalty` | `-30.0` on loss | Terminal penalty |
+| `smart_near_enemy_reward` | up to `+0.08` | Reward Smart clicks near visible enemies |
+| `smart_far_enemy_penalty` | `-0.03` | Discourage Smart clicks far from visible enemies |
+| `noop_visible_enemy_penalty` | `-0.02` | Discourage no-op while enemies and Smart are available |
 
 ### Key Design Decisions
 
@@ -541,13 +551,13 @@ Distributed path (future):
 | `entity_mask` | `[T, 24]` | Valid entity slots |
 | `selection_features` | `[T, 20, 7]` | Selected units |
 | `selection_mask` | `[T, 20]` | Valid selection slots |
-| `action_feedback_tokens` | `[T, 1, 9]` | Previous action + outcome |
+| `action_feedback_tokens` | `[T, 1, 12]` | Previous action + outcome |
 | `meta_vec` | `[T, 15]` | Player + available + last-action |
 | `actions`, `rewards`, `values`, ... | `[T]` | PPO data |
 | `tail_next_policy_input` | `PolicyInputBatch` | Bootstrap for GAE |
 | `tail_next_snn_state` | `(syn, mem)` | SNN state after tail |
-| `policy_protocol_version` | scalar | Must equal 2 |
-| `policy_input_schema` | scalar | Must equal "stream_action_feedback_v1" |
+| `policy_protocol_version` | scalar | Must equal 3 |
+| `policy_input_schema` | scalar | Must equal "stream_action_effect_feedback_v2" |
 
 ### Per-Fragment GAE
 
@@ -571,8 +581,8 @@ Every fragment validates protocol compatibility before training:
 
 ```python
 validate_policy_protocol(
-    policy_protocol_version=2,
-    policy_input_schema="stream_action_feedback_v1",
+    policy_protocol_version=3,
+    policy_input_schema="stream_action_effect_feedback_v2",
 )
 ```
 

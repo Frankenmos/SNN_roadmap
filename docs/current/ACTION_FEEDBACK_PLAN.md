@@ -1,8 +1,29 @@
 # Action Feedback Architecture Plan
 
 **Date:** 2026-04-25
-**Status:** Implemented 2026-04-26
+**Status:** Implemented 2026-04-26; bumped to Action Effect Feedback v2 on 2026-05-06
 **Related:** `docs/archive/action_history_bridge_plan.md`, `theta-2/bug_report_theta2.md`
+
+---
+
+## 2026-05-06 Protocol Update
+
+The current protocol is `POLICY_PROTOCOL_VERSION = 3` with
+`POLICY_INPUT_SCHEMA = "stream_action_effect_feedback_v2"`.
+
+`action_feedback_tokens` is now `[B, 1, 12]`: the original offsets `0..7` are
+unchanged, and offsets `8..11` add post-action effect feedback:
+
+| Offset | Field | Meaning |
+|--------|-------|---------|
+| 8 | `target_near_enemy` | Previous Smart target was within 6 screen pixels of a previous-frame enemy |
+| 9 | `friendly_moved_toward_target` | Surviving tagged friendlies moved toward the Smart target; tagless fallback uses unchanged-count median movement |
+| 10 | `enemy_health_drop_norm` | Alliance-summed enemy health drop, clipped to 100 and normalized |
+| 11 | `friendly_health_drop_norm` | Alliance-summed friendly health drop, clipped to 100 and normalized |
+
+`peek_observation()` computes these bits without advancing tracker state, and
+`reset()` clears the effect tracker. The 2026-04-26 plan below remains useful
+historical context for why action feedback is a stream token rather than meta.
 
 ---
 
@@ -260,14 +281,14 @@ class PolicyInputBatch:
 ## Open Questions
 
 1. **Feedback token dimensionality:** How large should each feedback token be?
-   - Implemented: 9 raw fields, projected to policy embedding dimension
+   - Current: 12 raw fields, projected to policy embedding dimension
 
 2. **History length:** How many past actions to keep as tokens?
    - Current: 1 stream token
    - Future: expand to 3-5 if longer action memory becomes useful
 
-3. **Checkpoint migration:** Old checkpoints will be incompatible with META_VECTOR_DIM change
-   - Implemented as fresh-training-only via `POLICY_PROTOCOL_VERSION = 2`
+3. **Checkpoint migration:** Old checkpoints will be incompatible with META_VECTOR_DIM / feedback-width changes
+   - Implemented as fresh-training-only via `POLICY_PROTOCOL_VERSION = 3`
 
 ---
 

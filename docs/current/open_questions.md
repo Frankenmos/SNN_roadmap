@@ -1,6 +1,6 @@
 # Help Needed
 
-Updated: 2026-05-06
+Updated: 2026-05-10
 
 This note is the practical follow-up to the semantic-action /
 stream-action-feedback and `coarse_to_fine` migration.
@@ -37,16 +37,23 @@ would make the next round of fixes much easier or safer to land.
   combination
 - sanity-check whether the current `RIGHT_CLICK` semantics are learning the
   behavior you actually want, especially under deterministic eval
+- review whether the V5 action-effect feedback protocol helped or hurt; the
+  latest local V5 artifact regressed badly despite using the same V4 reward
+  implementation
 
 ## What I Need You To Test
 
-- overnight candidate:
-  run `banana_smart_v4_b2048_e4_a10` from a fresh checkpoint and inspect
-  whether stochastic and deterministic policies actually emit `Smart_screen`
-  much more often than `banana_b2048_e4_a10`
-- for that run, prioritize action mix and click quality before reward:
+- latest artifact to inspect:
+  `banana_smart_v5_b2048_e4_a10`
+- compare it directly against `banana_smart_v4_b2048_e4_a10`; V5 is protocol 3
+  / action-effect feedback v2, while V4 used the older 9-dim feedback-token
+  protocol
+- for the comparison, prioritize action mix and click quality before reward:
   Smart frequency, no-op frequency while enemies are visible, and whether
   clicks land near roaches
+- inspect the V5 late-update instability:
+  non-finite gradients, skipped optimizer steps, high clip fraction, and any
+  correlation with action/effect feedback counters
 - a small live run on the current `coarse_to_fine` head
 - an optional before/after comparison against `token_pointer` if the current
   run looks worse or ambiguous

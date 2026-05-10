@@ -3,11 +3,14 @@ import numpy as np
 from agent_core.policy_protocol import (
     ACTION_FEEDBACK_ANY_EXECUTED_OFFSET,
     ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET,
+    ACTION_FEEDBACK_ENEMY_HEALTH_DROP_OFFSET,
     ACTION_FEEDBACK_EXECUTED_SMART_OFFSET,
+    ACTION_FEEDBACK_FRIENDLY_HEALTH_DROP_OFFSET,
     ACTION_FEEDBACK_KILL_DELTA_OFFSET,
+    ACTION_FEEDBACK_MOVED_TOWARD_TARGET_OFFSET,
     ACTION_FEEDBACK_PENALTY_BIT_OFFSET,
-    ACTION_FEEDBACK_RESERVED_OFFSET,
     ACTION_FEEDBACK_SCORE_DELTA_OFFSET,
+    ACTION_FEEDBACK_TARGET_NEAR_ENEMY_OFFSET,
     ACTION_FEEDBACK_TOKEN_DIM,
     ACTION_FEEDBACK_X_NORM_OFFSET,
     ACTION_FEEDBACK_Y_NORM_OFFSET,
@@ -28,10 +31,12 @@ class ActionFeedbackEncoder:
         last_action_token=None,
         last_action_ids=None,
         score_delta=None,
+        action_effect=None,
     ):
         action_token = self._normalize_last_action_token(last_action_token)
         action_ids = self._as_int_set(last_action_ids)
         delta = self._normalize_score_delta(score_delta)
+        effect = self._normalize_action_effect(action_effect)
 
         feedback = np.zeros(ACTION_FEEDBACK_TOKEN_DIM, dtype=np.float32)
         feedback[ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET] = action_token[0]
@@ -50,7 +55,18 @@ class ActionFeedbackEncoder:
         feedback[ACTION_FEEDBACK_PENALTY_BIT_OFFSET] = (
             1.0 if float(delta[0]) < 0.0 else 0.0
         )
-        feedback[ACTION_FEEDBACK_RESERVED_OFFSET] = 0.0
+        feedback[ACTION_FEEDBACK_TARGET_NEAR_ENEMY_OFFSET] = effect[
+            "target_near_enemy"
+        ]
+        feedback[ACTION_FEEDBACK_MOVED_TOWARD_TARGET_OFFSET] = effect[
+            "friendly_moved_toward_target"
+        ]
+        feedback[ACTION_FEEDBACK_ENEMY_HEALTH_DROP_OFFSET] = effect[
+            "enemy_health_drop_norm"
+        ]
+        feedback[ACTION_FEEDBACK_FRIENDLY_HEALTH_DROP_OFFSET] = effect[
+            "friendly_health_drop_norm"
+        ]
         return feedback
 
     def _normalize_last_action_token(self, token):
@@ -101,3 +117,34 @@ class ActionFeedbackEncoder:
         else:
             delta = delta[:13]
         return delta
+
+    @staticmethod
+    def _normalize_action_effect(action_effect):
+        if action_effect is None:
+            action_effect = {}
+        return {
+            "target_near_enemy": float(
+                np.clip(float(action_effect.get("target_near_enemy", 0.0)), 0.0, 1.0),
+            ),
+            "friendly_moved_toward_target": float(
+                np.clip(
+                    float(action_effect.get("friendly_moved_toward_target", 0.0)),
+                    0.0,
+                    1.0,
+                ),
+            ),
+            "enemy_health_drop_norm": float(
+                np.clip(
+                    float(action_effect.get("enemy_health_drop_norm", 0.0)),
+                    0.0,
+                    1.0,
+                ),
+            ),
+            "friendly_health_drop_norm": float(
+                np.clip(
+                    float(action_effect.get("friendly_health_drop_norm", 0.0)),
+                    0.0,
+                    1.0,
+                ),
+            ),
+        }

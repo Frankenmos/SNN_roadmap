@@ -3,6 +3,7 @@ import sqlite3
 import pytest
 
 from Utility.logger_utils import LogListener, _safe_add_column, initialize_db
+from agent_core.policy_protocol import POLICY_INPUT_SCHEMA, POLICY_PROTOCOL_VERSION
 
 
 class _StaticQueue:
@@ -31,8 +32,8 @@ def test_log_listener_persists_tbptt_update_metrics(tmp_path):
                 "actor_id": 3,
                 "policy_version": 4,
                 "fragment_id": 5,
-                "policy_protocol_version": 2,
-                "policy_input_schema": "stream_action_feedback_v1",
+                "policy_protocol_version": POLICY_PROTOCOL_VERSION,
+                "policy_input_schema": POLICY_INPUT_SCHEMA,
                 "rew": 1.5,
                 "cum_rew": 1.5,
             },
@@ -42,8 +43,8 @@ def test_log_listener_persists_tbptt_update_metrics(tmp_path):
                 "episode_index": 12,
                 "global_update_index": 2,
                 "policy_version": 4,
-                "policy_protocol_version": 2,
-                "policy_input_schema": "stream_action_feedback_v1",
+                "policy_protocol_version": POLICY_PROTOCOL_VERSION,
+                "policy_input_schema": POLICY_INPUT_SCHEMA,
                 "mean_policy_loss": 0.1,
                 "mean_value_loss": 0.2,
                 "mean_entropy": 0.3,
@@ -117,8 +118,8 @@ def test_log_listener_persists_tbptt_update_metrics(tmp_path):
     assert update_row == (
         2,
         4,
-        2,
-        "stream_action_feedback_v1",
+        POLICY_PROTOCOL_VERSION,
+        POLICY_INPUT_SCHEMA,
         64,
         60,
         3,
@@ -138,7 +139,7 @@ def test_log_listener_persists_tbptt_update_metrics(tmp_path):
         4096,
         "float32",
     )
-    assert step_row == (3, 4, 5, 2, "stream_action_feedback_v1")
+    assert step_row == (3, 4, 5, POLICY_PROTOCOL_VERSION, POLICY_INPUT_SCHEMA)
 
 
 def test_safe_add_column_does_not_hide_real_schema_errors(tmp_path):
