@@ -43,7 +43,7 @@ environment:
   steps_per_episode: 3600
   target_reward: 25.0
   reward_window: 200
-  run_name: "banana_smart_v4_b2048_e4_a10"
+  run_name: "banana_glasses_v6_b2048_e4_a10"
   models_dir: "models"
   analysis_dir: "analysis_results"
   checkpoint_path: "checkpoint.pth"
@@ -110,3 +110,9 @@ model:
   coarse_grid_size: 7
   local_grid_size: 12
   target_decode_mode: "center"
+  # Stage 1 spatial fix: feed pre-pool conv2 features (84x84x32) to the fine
+  # stage so sub-cell clicks can depend on the observation. Checkpoints made
+  # with this off cannot be loaded while it is on (new head parameters), so
+  # flip back to false to eval pre-V6 checkpoints.
+  fine_skip_connection: true
+  fine_skip_dim: 32

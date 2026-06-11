@@ -5,6 +5,89 @@ Compressed current-memory version.
 Verbose pre-compression snapshot:
 `docs/archive/working_log_2026-04-20_pre_compress.md`
 
+## 2026-06-11
+
+- Stage 0 verification of the fine-stage spatial-blindness diagnosis, using a
+  deterministic eval of `banana_smart_v5_b2048_e4_a10` (`checkpoint.pth`;
+  `best_checkpoint.pth` was never written for this run):
+  - 99.5% of dispatched actions are `Smart_screen`; 1,094 of 1,099 clicks land
+    on just two coords, `(10,72)` and `(22,72)` (bottom-left corner exploit)
+  - **fine sub-index is the constant `10` for all 1,099 clicks**, across 7
+    different coarse cells and 5 episodes — the fine head's argmax does not
+    depend on the observation or the chosen cell
+  - cross-check on the 2026-05-10 stochastic eval: fine indices cover 139/144
+    nearly uniformly (top index `10` at only 2.2%), while coarse concentrates
+    58% of mass in bottom-row cells 42/43 — coarse learned a (bad) preference,
+    fine stayed at its uniform prior. Exactly the static-prior signature
+    predicted by the architecture analysis of `CoarseToFineTargetHead`.
+  - ground-truth click quality: joining clicks with sampled enemy positions,
+    nearest enemy is >=27px away on every joinable step; 0% within 12px.
+    Enemy health drops on only 5.1% of steps (incidental idle auto-attack);
+    1 kill across 7 episodes.
+- found a diagnostics-only bug while analyzing:
+  `Utility/policy_input_diagnostics_wrapper.py` re-extracts observations with
+  its own `ObservationExtractor` and never passes `last_action_token`, so
+  `bridge_type` / `x_norm` / `y_norm` / `target_near_enemy` /
+  `friendly_moved_toward_target` in `policy_input_diagnostics*.jsonl` are
+  ALWAYS zero. These fields cannot be trusted in any past dump. The agent's
+  real policy input is unaffected (`agent.py` passes the real token).
+  `Utility/smart_outcome_diagnostics_wrapper.py` does NOT share the flaw — it
+  parses dispatched actions from `env.step()` directly.
+- analysis script kept at
+  `analysis_results/banana_smart_v5_b2048_e4_a10/stage0_analysis.py`
+- conclusion: Stage 0 passed; proceed with Stage 1 (skip connection feeding
+  per-pixel conv features to the fine stage).
+- implemented Stage 1: fine skip connection for `CoarseToFineTargetHead`,
+  config-gated via `model.fine_skip_connection` (+ `fine_skip_dim: 32`):
+  - `spiking_policy.encode_step_tensors` taps conv2 output (84×84×32, the
+    last full-resolution point before MaxPool) and returns it inside a
+    `SpatialContextBundle(tokens, fine_features)` in the spatial_context
+    slot; `build_target_head` unwraps it, so the PPO trainer, replay path,
+    and other heads are untouched
+  - head side: per-pixel keys = `LayerNorm(Linear(32 -> fine_skip_dim))`,
+    query from the existing `(latent, action_emb, coarse_token)` fine input,
+    scores = `q·k/sqrt(d)` reshaped so cell/fine indices line up 1:1 with
+    `encode_xy_to_target` (84 = 7×12); scores are ADDED to the existing
+    `fine_mlp` logits (the old path becomes a learned prior)
+  - flag OFF (default): byte-identical behavior, no new parameters, old
+    checkpoints load. Flag ON: new head parameters, so checkpoints made
+    without the flag cannot be loaded — flip `fine_skip_connection: true`
+    only when launching the next training run, flip back to eval old runs
+  - sampling/evaluate/teacher-forcing semantics unchanged (only the fine
+    logit values changed); per-step replay cost adds keys
+    `[B, 49, 144, 32]` (~29 MB fp32 at the typical replay group size of
+    ~64 rows) — watch for OOM if replay groups degenerate to many tiny
+    chunks
+  - verification: `pytest tests/test_coarse_to_fine_head.py -q` -> 28 passed
+    (new: obs-dependence of fine logits, cell-locality, single-pixel-to-
+    fine-index alignment, bundle integration, sample/evaluate consistency);
+    full `pytest tests -q` -> 144 passed, 1 failed
+    (`test_eval_diagnostic_paths_split_by_mode`, pre-existing Windows
+    path-separator issue, unrelated); gradient smoke test: fine-logit loss
+    reaches 100% of fine_features elements, all finite
+  - note: `tools/analysis/analyze_eval_trace.py` rebuilds the policy without
+    passing `spatial_head_type` (pre-existing); its conv-activation probe
+    still works for flag-off checkpoints
+- prepared the Stage 1 verification run `banana_glasses_v6_b2048_e4_a10`
+  ("the fine stage got glasses"):
+  - config: flipped `fine_skip_connection: true` and set
+    `environment.run_name`; ALL other hyperparameters identical to V5 for a
+    clean single-variable A/B (deliberately did not touch `entropy_coef` or
+    the right-click curriculum — if V6 still corner-locks with working fine
+    vision, entropy is the next single knob)
+  - launch: `python -m distributed.ray_train --num-actors 10 --run-name
+    banana_glasses_v6_b2048_e4_a10`
+  - reminder: to eval pre-V6 checkpoints, flip `fine_skip_connection` back
+    to false first (strict state-dict load)
+  - confirmed while preparing: the Ray training path never runs
+    deterministic eval and never writes `best_checkpoint.pth`
+    (`distributed/ray_train.py` only passes `best_eval_reward` through;
+    `distributed.num_eval_actors` / `eval_every_updates` are dead config
+    keys referenced nowhere) — V5's missing eval_runs rows were structural.
+    V6 success checks therefore run through manual `eval.py` passes:
+    clicks-near-enemy rate > 0, fine_index obs-dependent (not constant in
+    deterministic mode), no bottom-left corner lock.
+
 ## 2026-05-10
 
 - reviewed the V5 run family artifact `banana_smart_v5_b2048_e4_a10`:
@@ -16,6 +99,14 @@ Verbose pre-compression snapshot:
     11,447 episodes and 672 PPO updates
   - headline read is bad: max reward `0.00`, final-100 average `-49.76`,
     and late non-finite-gradient / skipped-optimizer warnings
+- inspected V5 stochastic eval diagnostics after the live visual read that the
+  policy runs to the left-bottom corner and sidesteps there:
+  - confirmed dispatch itself is clean: `Smart_screen` is accepted/executed and
+    `last_actions` reports function `451`
+  - confirmed the semantic failure: accepted `Smart_screen` does not mean the
+    click became an attack
+  - added `docs/current/action-detection-problem.md` to capture Smart attack
+    detection options, reward guardrails, and protocol cautions
 - refreshed docs so Claude / future agents do not confuse the V5 run family
   with a nonexistent `defeat_roaches_v5` implementation
 

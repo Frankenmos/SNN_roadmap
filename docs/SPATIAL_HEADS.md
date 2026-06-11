@@ -29,6 +29,13 @@ selected by the current `config.yaml`.
 - **Fine**: `secondary_logits[B, 49, 144]` (12×12 per cell)
 - Full 84×84 precision = 7056 unique positions
 - **Critical**: `evaluate()` uses **recorded** `coarse_index` for fine-head (teacher-forcing)
+- **Fine skip connection** (`fine_skip_connection: true`, 2026-06-11): without
+  it the fine stage sees only the pooled per-cell token and degenerates to a
+  static prior over sub-positions (verified on the V5 checkpoint: fine argmax
+  was the constant `10` for every click). With it, pre-pool conv2 features
+  (84×84×32) are projected per pixel and scored against a query, so each fine
+  logit reads the actual screen content at its own pixel. Old checkpoints
+  cannot load while the flag is on (new parameters).
 
 ## To Switch Heads
 
