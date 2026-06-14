@@ -21,20 +21,22 @@ class RewardFunctionV3:
         damage_dealt_coef=0.10,
         damage_taken_coef=0.15,
         kill_reward_coef=30.0,
+        roach_kill_score_value=100.0,
         win_reward=60.0,
         loss_penalty=30.0,
         step_penalty=0.02,
-        target_distance=9.0,
-        distance_band_low=7.0,
-        distance_band_high=11.0,
+        target_distance=17.0,
+        distance_band_low=14.0,
+        distance_band_high=21.0,
         distance_reward_coef=0.20,
         distance_reward_clip=1.0,
         distance_hold_bonus=0.05,
-        distance_gate=18.0,
+        distance_gate=30.0,
     ):
         self.damage_dealt_coef = float(damage_dealt_coef)
         self.damage_taken_coef = float(damage_taken_coef)
         self.kill_reward_coef = float(kill_reward_coef)
+        self.roach_kill_score_value = float(roach_kill_score_value)
         self.win_reward = float(win_reward)
         self.loss_penalty = float(loss_penalty)
         self.step_penalty = float(step_penalty)
@@ -47,6 +49,7 @@ class RewardFunctionV3:
         self.distance_gate = float(distance_gate)
         self.previous_agent_health = None
         self.previous_enemy_health = None
+        self.previous_killed_value = None
         self.previous_mean_distance = None
         self.enemy_unit_count = 0
         self.last_reward_components = None
@@ -57,6 +60,7 @@ class RewardFunctionV3:
             "damage_dealt_coef": self.damage_dealt_coef,
             "damage_taken_coef": self.damage_taken_coef,
             "kill_reward_coef": self.kill_reward_coef,
+            "roach_kill_score_value": self.roach_kill_score_value,
             "win_reward": self.win_reward,
             "loss_penalty": self.loss_penalty,
             "step_penalty": self.step_penalty,
@@ -72,6 +76,7 @@ class RewardFunctionV3:
     def reset(self):
         self.previous_agent_health = None
         self.previous_enemy_health = None
+        self.previous_killed_value = None
         self.previous_mean_distance = None
         self.enemy_unit_count = 0
         self.last_reward_components = None
@@ -137,6 +142,15 @@ class RewardFunctionV3:
             ),
         )
 
+    def _score_cumulative(self, obs):
+        score = getattr(obs.observation, "score_cumulative", None)
+        if score is None:
+            return np.zeros(13, dtype=np.float32)
+        score_arr = np.asarray(score, dtype=np.float32).reshape(-1)
+        if score_arr.size < 13:
+            score_arr = np.pad(score_arr, (0, 13 - score_arr.size))
+        return score_arr[:13]
+
     def calculate_reward(self, obs, vector_observation):
         del vector_observation
 
@@ -144,6 +158,7 @@ class RewardFunctionV3:
         current_agent_health = get_friendly_health(obs)
         current_enemy_health = float(sum(float(unit.health) for unit in enemy_units))
         current_enemy_count = len(enemy_units)
+        current_killed_value = float(self._score_cumulative(obs)[5])
         current_mean_distance = self._mean_closest_enemy_distance(
             friendly_units,
             enemy_units,
@@ -154,6 +169,8 @@ class RewardFunctionV3:
         if self.previous_enemy_health is None:
             self.previous_enemy_health = current_enemy_health
             self.enemy_unit_count = current_enemy_count
+        if self.previous_killed_value is None:
+            self.previous_killed_value = current_killed_value
         if self.previous_mean_distance is None:
             self.previous_mean_distance = current_mean_distance
 
@@ -181,8 +198,12 @@ class RewardFunctionV3:
             total_reward -= r
             health_reward -= r
 
-        if current_enemy_count < self.enemy_unit_count:
-            r = self.kill_reward_coef * (self.enemy_unit_count - current_enemy_count)
+        count_drop_units = max(0.0, float(self.enemy_unit_count - current_enemy_count))
+        score_delta = max(0.0, current_killed_value - self.previous_killed_value)
+        score_delta_units = score_delta / max(self.roach_kill_score_value, 1.0e-6)
+        kill_units = max(count_drop_units, score_delta_units)
+        if kill_units > 0.0:
+            r = self.kill_reward_coef * kill_units
             total_reward += r
             kill_reward += r
 
@@ -196,12 +217,13 @@ class RewardFunctionV3:
             if current_enemy_count == 0:
                 total_reward += self.win_reward
                 win_loss_reward += self.win_reward
-            else:
+            elif current_agent_health <= 0.0 or not friendly_units:
                 total_reward -= self.loss_penalty
                 win_loss_reward -= self.loss_penalty
 
         self.previous_agent_health = current_agent_health
         self.previous_enemy_health = current_enemy_health
+        self.previous_killed_value = current_killed_value
         self.previous_mean_distance = current_mean_distance
         self.enemy_unit_count = current_enemy_count
 

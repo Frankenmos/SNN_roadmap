@@ -156,6 +156,7 @@ class DefeatRoaches(base_agent.BaseAgent):
             target_decode_mode=getattr(cfg.model, "target_decode_mode", "center"),
             fine_skip_connection=getattr(cfg.model, "fine_skip_connection", False),
             fine_skip_dim=getattr(cfg.model, "fine_skip_dim", 32),
+            amp_dtype=getattr(cfg.model, "amp_dtype", "auto"),
         )
         self.policy.to(self.policy.device)
 

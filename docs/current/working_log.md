@@ -5,7 +5,94 @@ Compressed current-memory version.
 Verbose pre-compression snapshot:
 `docs/archive/working_log_2026-04-20_pre_compress.md`
 
-## 2026-06-11
+## 2026-06-13 — V7 fix-batch adversarial review (19-agent audit)
+
+Reviewed the user's V7 bug-fix batch (normalizer merge, Ray eval, reward
+fixes, bf16, entity sort). 14 findings confirmed, 0 refuted; verifiers
+downgraded several severities (calibrated, not rubber-stamp). Batch is
+fundamentally sound. ONE real functional bug found + FIXED:
+
+- FIXED: `SmartOutcomeDetector` read the wrong feature_unit column for
+  weapon_cooldown — `_FEATURE_UNIT_WEAPON_COOLDOWN = 8` is actually
+  `shield_ratio`; the real index is 25 (verified against
+  `features.FeatureUnit`). On the numeric production path (feature_units is a
+  NamedNumpyArray -> numeric branch) the `fired_likely` outcome read
+  shield_ratio (~always 0 for marines) instead of weapon cooldown, so the
+  `smart_fired_likely_reward` (0.06) was DEAD in the live V7 reward. The
+  `attack_likely` (0.12, keys off enemy health drop) term was unaffected.
+  Fix: derive all six column indices from `features.FeatureUnit` in
+  smart_outcome_detector.py (mirrors obs_space_2.py), so they can't drift.
+  The test helper `raw_unit` in tests/test_smart_outcome_detector.py
+  ENCODED THE SAME BUG (wrote cooldown to row[8]), which is why CI was blind
+  — fixed it to index by the enum too, so the existing
+  `test_fired_likely_uses_real_cooldown_change` now actually guards it.
+  Full suite still 170 pass.
+
+Other 13 findings (NOT fixed — latent, known, or design choice):
+- Resume-sync heterogeneous-baseline (3 findings, ray_train.py:246-268):
+  `_merge_extractor_sync_states` subtracts each actor's OWN baseline but
+  re-adds only the first actor's once -> drops/double-counts if baselines
+  ever differ. LATENT: cannot fire (baseline broadcast identically once,
+  max_restarts=0). User already flagged this as "optional hardening" in the
+  V7 note. One-line fix available (subtract against the shared baseline +
+  assert equality) if ever enabling fault tolerance / async eval actors.
+- Eval std_reward (ray_train.py:311): understates variance when
+  eval_episodes > num_actors; EXACT under shipped config (5 eps, 10 actors
+  -> 1 ep/actor). Diagnostic-only, doesn't affect best-ckpt selection.
+- Eval leaves SmartOutcomeDetector pending clicks undrained (run_eval_sweep
+  never calls calculate_reward); bounded per-episode, reset between
+  episodes. Really a symptom that ALL reward observe_action work is wasted
+  during eval (eval scores native reward). Perf nit, not correctness.
+- Per-step clamp on smart-outcome reward squashes simultaneous resolutions
+  to [-0.02,0.12] (sum, not per-outcome); bounded, arguably intended.
+- fp16 scaler.update() after clip-skip mis-tracks scale — DEAD on bf16
+  (scaler disabled); only matters if amp_dtype reverted to fp16.
+- Entity-sort NaN poisons determinism; merge_state_dicts lacks the shape
+  guard subtract has; a few test-coverage gaps (round-trip, multi-outcome
+  clamp, real-class reset pin). All low/nit, defensive.
+
+## 2026-06-11 (later) — architecture deep review (10-agent audit), verified bugs
+
+Full review of the whole experiment (curriculum-readiness / full-game
+viability / SNN-vs-ANN). Bugs VERIFIED in code during the review:
+
+1. CRITICAL (eval confound): Ray checkpoints ship a count=0 feature
+   normalizer — the learner's extractor never sees observations, and
+   `_broadcast_weights(include_extractor_state=False)` never syncs actor
+   stats back. `normalize()` is a passthrough below `min_count_for_normalize`
+   (obs_space_2.py:133-134), so EVERY deterministic eval ever run on a Ray
+   checkpoint fed the policy raw unnormalized entity/selection features it
+   never trained on. V5-vs-V6 eval comparisons remain internally consistent
+   (same confound both sides) and training-time DB counters are unaffected
+   (actor-side normalizers live), but absolute eval numbers are suspect.
+2. Reward: the wave-clearing kill is systematically uncredited — when the
+   last roach dies and the new wave spawns within one frame, enemy count
+   jumps 1->4 and `current < previous` never fires (defeat_roaches_v3.py:184).
+   The single most valuable event in the game gives zero reward.
+3. Reward: `win_reward` is unreachable (enemy_count==0 at obs.last() never
+   happens due to respawn); every episode ends with a flat -30 loss penalty
+   (defeat_roaches_v3.py:195-201) regardless of kills.
+4. Reward: distance band 7-11px is ~2-3 game units (84px ~ 24 game units)
+   = standing inside roach melee; marine max range is ~17px. Probable
+   pixels-vs-game-units confusion — the shaping rewards brawling, not kiting.
+5. Entity cap: MAX_ENTITY_TOKENS=24 with first-N truncation drops freshly
+   spawned roaches exactly when the agent clears a wave.
+6. fp16 AMP everywhere on a Blackwell card — the GradScaler/nonfinite-skip
+   machinery exists only because of fp16; bf16 would delete it.
+7. Replay perf: TBPTT replay re-runs the FULL encoder sequentially per step
+   at tiny effective batch; convs/encoders/attention are non-recurrent and
+   could be precomputed in one batched pass (only the (syn,mem) token loop
+   needs sequencing) — an order-of-magnitude update speedup left on the table.
+
+Review verdicts (full reasoning with the agents): the PPO/TBPTT core and
+protocol boundary are solid; the task periphery (action vocab, reward,
+availability mask offsets) is frozen to DefeatRoaches by Final constants;
+full SC2 is out of reach for ANY substrate on this rig (3 actions vs 573
+functions, no minimap/camera path, 24-entity cap, ~34 env-steps/s measured);
+at num_steps=1 with attention computed once outside the loop the network has
+never actually run as an SNN (the loop is a quantizer — the 'fair SNN test'
+of num_steps 8-16 with input inside the loop + rate readouts has never been
+performed).
 
 - Stage 0 verification of the fine-stage spatial-blindness diagnosis, using a
   deterministic eval of `banana_smart_v5_b2048_e4_a10` (`checkpoint.pth`;

@@ -189,31 +189,51 @@ class DummyQueue:
         self.items.append(item)
 
 
-def _make_reward_obs(friendly_health, enemy_health=100, enemy_count=1, last=False):
+def _make_reward_obs(
+    friendly_health,
+    enemy_health=100,
+    enemy_count=1,
+    last=False,
+    *,
+    score_killed_value=0,
+    available_actions=None,
+    friendly_x=0,
+    friendly_y=0,
+    enemy_x=10,
+    enemy_y=10,
+    friendly_cooldown=0.0,
+):
     friendly = SimpleNamespace(
         alliance=1,
         health=friendly_health,
-        x=0,
-        y=0,
+        x=friendly_x,
+        y=friendly_y,
         unit_type=48,
         attack_range=5,
+        weapon_cooldown=friendly_cooldown,
+        tag=101,
     )
     enemies = [
         SimpleNamespace(
             alliance=4,
-            health=enemy_health // enemy_count,
-            x=10,
-            y=10,
+            health=enemy_health / max(1, enemy_count),
+            x=enemy_x + idx,
+            y=enemy_y,
             unit_type=110,
             attack_range=5,
+            weapon_cooldown=0.0,
+            tag=201 + idx,
         )
-        for _ in range(enemy_count)
+        for idx in range(enemy_count)
     ]
+    score_cumulative = [0] * 13
+    score_cumulative[5] = score_killed_value
     return SimpleNamespace(
         observation=SimpleNamespace(
             player=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             feature_units=[friendly] + enemies,
-            score_cumulative=[0] * 13,
+            score_cumulative=score_cumulative,
+            available_actions=set() if available_actions is None else available_actions,
         ),
         reward=0,
         last=lambda: last,
@@ -275,6 +295,82 @@ def test_reward_v3_uses_enemy_count_for_terminal_win_detection():
     assert components["end_of_episode_reward"] == 60.0
 
 
+def test_reward_v3_credits_wave_clear_kill_from_score_delta():
+    reward_fn = RewardFunctionV3(
+        damage_dealt_coef=0.0,
+        damage_taken_coef=0.0,
+        kill_reward_coef=30.0,
+        roach_kill_score_value=100.0,
+        win_reward=0.0,
+        loss_penalty=0.0,
+        step_penalty=0.0,
+        distance_reward_coef=0.0,
+        distance_hold_bonus=0.0,
+    )
+
+    reward_fn.calculate_reward(
+        _make_reward_obs(100, enemy_health=100, enemy_count=1),
+        None,
+    )
+    total_reward = reward_fn.calculate_reward(
+        _make_reward_obs(
+            100,
+            enemy_health=400,
+            enemy_count=4,
+            score_killed_value=100,
+        ),
+        None,
+    )
+    components = reward_fn.get_last_reward_components()
+
+    assert total_reward == pytest.approx(30.0)
+    assert components["score_reward"] == pytest.approx(30.0)
+
+
+def test_reward_v3_terminal_timeout_is_not_false_loss():
+    reward_fn = RewardFunctionV3(
+        damage_dealt_coef=0.0,
+        damage_taken_coef=0.0,
+        kill_reward_coef=0.0,
+        win_reward=60.0,
+        loss_penalty=30.0,
+        step_penalty=0.0,
+        distance_reward_coef=0.0,
+        distance_hold_bonus=0.0,
+    )
+
+    total_reward = reward_fn.calculate_reward(
+        _make_reward_obs(100, enemy_health=100, enemy_count=1, last=True),
+        None,
+    )
+    components = reward_fn.get_last_reward_components()
+
+    assert total_reward == pytest.approx(0.0)
+    assert components["end_of_episode_reward"] == pytest.approx(0.0)
+
+
+def test_reward_v3_terminal_loss_requires_friendly_death():
+    reward_fn = RewardFunctionV3(
+        damage_dealt_coef=0.0,
+        damage_taken_coef=0.0,
+        kill_reward_coef=0.0,
+        win_reward=60.0,
+        loss_penalty=30.0,
+        step_penalty=0.0,
+        distance_reward_coef=0.0,
+        distance_hold_bonus=0.0,
+    )
+
+    total_reward = reward_fn.calculate_reward(
+        _make_reward_obs(0, enemy_health=100, enemy_count=1, last=True),
+        None,
+    )
+    components = reward_fn.get_last_reward_components()
+
+    assert total_reward == pytest.approx(-30.0)
+    assert components["end_of_episode_reward"] == pytest.approx(-30.0)
+
+
 def test_reward_v3_positioning_reward_is_positive_when_entering_band():
     reward_fn = RewardFunctionV3(
         damage_dealt_coef=0.0,
@@ -324,6 +420,48 @@ def test_reward_v3_positioning_reward_is_positive_when_entering_band():
     total_reward = reward_fn.calculate_reward(close_obs, None)
     components = reward_fn.get_last_reward_components()
 
+    assert components["positioning_reward"] > 0.0
+    assert total_reward > 0.0
+
+
+def test_reward_v3_default_distance_band_prefers_kiting_range():
+    reward_fn = RewardFunctionV3(
+        damage_dealt_coef=0.0,
+        damage_taken_coef=0.0,
+        kill_reward_coef=0.0,
+        win_reward=0.0,
+        loss_penalty=0.0,
+        step_penalty=0.0,
+        distance_reward_coef=0.5,
+        distance_reward_clip=10.0,
+        distance_hold_bonus=0.1,
+    )
+
+    reward_fn.calculate_reward(
+        _make_reward_obs(
+            100,
+            enemy_health=100,
+            enemy_count=1,
+            enemy_x=9,
+            enemy_y=0,
+        ),
+        None,
+    )
+    total_reward = reward_fn.calculate_reward(
+        _make_reward_obs(
+            100,
+            enemy_health=100,
+            enemy_count=1,
+            enemy_x=17,
+            enemy_y=0,
+        ),
+        None,
+    )
+    components = reward_fn.get_last_reward_components()
+
+    assert reward_fn.target_distance == pytest.approx(17.0)
+    assert reward_fn.distance_band_low == pytest.approx(14.0)
+    assert reward_fn.distance_band_high == pytest.approx(21.0)
     assert components["positioning_reward"] > 0.0
     assert total_reward > 0.0
 
@@ -382,6 +520,91 @@ def test_reward_v4_penalizes_noop_when_enemy_and_smart_are_visible():
         obs=obs,
     )
     total_reward = reward_fn.calculate_reward(obs, None)
+    components = reward_fn.get_last_reward_components()
+
+    assert total_reward == pytest.approx(-0.02)
+    assert components["bonus_reward"] == pytest.approx(-0.02)
+
+
+def _smart_outcome_reward_fn(**kwargs):
+    return RewardFunctionV4(
+        damage_dealt_coef=0.0,
+        damage_taken_coef=0.0,
+        kill_reward_coef=0.0,
+        win_reward=0.0,
+        loss_penalty=0.0,
+        step_penalty=0.0,
+        distance_reward_coef=0.0,
+        distance_hold_bonus=0.0,
+        smart_near_enemy_reward=0.0,
+        smart_far_enemy_penalty=0.0,
+        noop_visible_enemy_penalty=0.0,
+        **kwargs,
+    )
+
+
+def test_reward_v4_adds_attack_likely_outcome_bonus():
+    reward_fn = _smart_outcome_reward_fn()
+    previous = _make_reward_obs(100, enemy_health=100, enemy_x=10, enemy_y=10)
+    current = _make_reward_obs(100, enemy_health=80, enemy_x=10, enemy_y=10)
+
+    reward_fn.calculate_reward(previous, None)
+    reward_fn.observe_action(POLICY_ACTION_RIGHT_CLICK, 10, 10, previous)
+    total_reward = reward_fn.calculate_reward(current, None)
+    components = reward_fn.get_last_reward_components()
+
+    assert total_reward == pytest.approx(0.12)
+    assert components["bonus_reward"] == pytest.approx(0.12)
+
+
+def test_reward_v4_adds_fired_likely_outcome_bonus():
+    reward_fn = _smart_outcome_reward_fn()
+    previous = _make_reward_obs(
+        100,
+        enemy_health=100,
+        enemy_x=10,
+        enemy_y=10,
+        friendly_cooldown=0.0,
+    )
+    current = _make_reward_obs(
+        100,
+        enemy_health=100,
+        enemy_x=10,
+        enemy_y=10,
+        friendly_cooldown=15.0,
+    )
+
+    reward_fn.calculate_reward(previous, None)
+    reward_fn.observe_action(POLICY_ACTION_RIGHT_CLICK, 10, 10, previous)
+    total_reward = reward_fn.calculate_reward(current, None)
+    components = reward_fn.get_last_reward_components()
+
+    assert total_reward == pytest.approx(0.06)
+    assert components["bonus_reward"] == pytest.approx(0.06)
+
+
+def test_reward_v4_adds_attack_intent_after_window_without_damage():
+    reward_fn = _smart_outcome_reward_fn(smart_outcome_window=1)
+    previous = _make_reward_obs(100, enemy_health=100, enemy_x=10, enemy_y=10)
+    current = _make_reward_obs(100, enemy_health=100, enemy_x=10, enemy_y=10)
+
+    reward_fn.calculate_reward(previous, None)
+    reward_fn.observe_action(POLICY_ACTION_RIGHT_CLICK, 10, 10, previous)
+    total_reward = reward_fn.calculate_reward(current, None)
+    components = reward_fn.get_last_reward_components()
+
+    assert total_reward == pytest.approx(0.02)
+    assert components["bonus_reward"] == pytest.approx(0.02)
+
+
+def test_reward_v4_penalizes_null_unclear_smart_outcome():
+    reward_fn = _smart_outcome_reward_fn(smart_outcome_window=1)
+    previous = _make_reward_obs(100, enemy_health=100, enemy_x=10, enemy_y=10)
+    current = _make_reward_obs(100, enemy_health=100, enemy_x=10, enemy_y=10)
+
+    reward_fn.calculate_reward(previous, None)
+    reward_fn.observe_action(POLICY_ACTION_RIGHT_CLICK, 70, 70, previous)
+    total_reward = reward_fn.calculate_reward(current, None)
     components = reward_fn.get_last_reward_components()
 
     assert total_reward == pytest.approx(-0.02)

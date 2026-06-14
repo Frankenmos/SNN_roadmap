@@ -15,6 +15,7 @@ from agent_core.policy_protocol import POLICY_INPUT_SCHEMA, POLICY_PROTOCOL_VERS
 from distributed.learner import LearnerCoordinator
 from distributed.protocol import EpisodeSummary, RolloutFragment
 from distributed.ray_actor import RolloutActor
+from obs_space.obs_space_2 import ObservationExtractor
 from Utility.config import cfg
 from Utility.logger_utils import LogListener
 
@@ -211,6 +212,181 @@ def _broadcast_weights(
     ray.get([actor.set_weights.remote(weights_ref) for actor in actors])
 
 
+def _sync_extractor_state_from_actors(
+    ray,
+    actors,
+    learner: LearnerCoordinator,
+) -> None:
+    """Fold the actors' running normalizer stats into the learner's extractor.
+
+    The learner never extracts observations, so its normalizer stays at
+    count=0. Without this sync, every Ray checkpoint ships count=0 stats and
+    eval silently feeds the policy raw (un-normalized) features it never
+    trained on.
+
+    Actors may have been initialized from a non-empty checkpoint extractor
+    state. In that case we merge that shared baseline once, plus each actor's
+    post-baseline delta, so resumed runs do not count the saved history once
+    per actor.
+    """
+    sync_states = ray.get(
+        [actor.get_extractor_sync_state.remote() for actor in actors],
+    )
+    merged = _merge_extractor_sync_states(sync_states)
+    if merged:
+        learner.agent.extractor.load_state_dict(merged)
+
+
+def _merge_extractor_sync_states(sync_states: list[dict]) -> dict:
+    """Merge one loaded baseline plus each actor's post-baseline delta."""
+    sync_states = [state for state in sync_states if state]
+    if not sync_states:
+        return {}
+
+    baseline = {}
+    for state in sync_states:
+        baseline = ObservationExtractor.copy_state_dict(state.get("baseline"))
+        if baseline:
+            break
+
+    delta_states = []
+    for state in sync_states:
+        current = state.get("current")
+        if not current:
+            continue
+        delta = ObservationExtractor.subtract_state_dict(
+            current,
+            state.get("baseline"),
+        )
+        if delta:
+            delta_states.append(delta)
+
+    states_to_merge = []
+    if baseline:
+        states_to_merge.append(baseline)
+    states_to_merge.extend(delta_states)
+    return ObservationExtractor.merge_state_dicts(states_to_merge)
+
+
+def _split_episodes(total: int, n: int) -> list[int]:
+    """Split `total` eval episodes across `n` actors, every slot >= 1.
+
+    n is clamped to min(total, n); counts are distributed as evenly as
+    possible (they differ by at most one).
+    """
+    total = max(1, int(total))
+    n = max(1, min(int(n), total))
+    base, remainder = divmod(total, n)
+    return [base + (1 if i < remainder else 0) for i in range(n)]
+
+
+def _aggregate_eval_summaries(
+    summaries: list[dict],
+) -> dict[str, float | int | bool]:
+    """Pool per-actor eval summaries into one summary.
+
+    Exact when every actor ran the same number of episodes (the common
+    one-episode-per-actor case): each actor's mean is then that episode's
+    reward, so the spread of per-actor means is the true population std. With
+    unequal/multi-episode actors the std understates within-actor variance - an
+    accepted approximation; mean/min/max/num_episodes stay exact.
+    """
+    summaries = [s for s in summaries if s]
+    if not summaries:
+        return {
+            "num_episodes": 0,
+            "mean_reward": 0.0,
+            "std_reward": 0.0,
+            "min_reward": 0.0,
+            "max_reward": 0.0,
+            "deterministic": True,
+        }
+    counts = np.asarray([float(s.get("num_episodes", 0)) for s in summaries])
+    means = np.asarray([float(s.get("mean_reward", 0.0)) for s in summaries])
+    total = float(counts.sum())
+    pooled_mean = float((means * counts).sum() / total) if total > 0 else 0.0
+    return {
+        "num_episodes": int(total),
+        "mean_reward": pooled_mean,
+        "std_reward": float(means.std()) if means.size else 0.0,
+        "min_reward": float(
+            min(float(s.get("min_reward", 0.0)) for s in summaries),
+        ),
+        "max_reward": float(
+            max(float(s.get("max_reward", 0.0)) for s in summaries),
+        ),
+        "deterministic": bool(summaries[0].get("deterministic", True)),
+    }
+
+
+def _run_eval_and_maybe_save(
+    ray,
+    actors,
+    learner: LearnerCoordinator,
+    *,
+    log_queue,
+    episode_index: int,
+    episode_rewards,
+    best_eval_reward: float,
+    num_actors: int,
+    eval_episodes: int,
+    eval_steps: int,
+    update_index: int,
+) -> float:
+    """Run deterministic eval on borrowed training actors and save the best.
+
+    Runs AFTER the end-of-loop weight broadcast, so the actors hold the
+    just-updated policy and their live normalizer stats make the sweep
+    unconfounded. The extractor sync MUST precede the best-checkpoint save: the
+    checkpoint serializes the learner's extractor, which stays count=0 until
+    folded in - skipping the sync would reship the normalizer confound.
+    """
+    from train import maybe_save_best_checkpoint
+
+    n_eval_actors = min(int(eval_episodes), int(num_actors))
+    episode_counts = _split_episodes(eval_episodes, n_eval_actors)
+    eval_started = time.perf_counter()
+    eval_summaries = ray.get(
+        [
+            actors[i].run_eval.remote(episode_counts[i], int(eval_steps))
+            for i in range(n_eval_actors)
+        ],
+    )
+    eval_summary = _aggregate_eval_summaries(eval_summaries)
+    eval_wall_seconds = time.perf_counter() - eval_started
+    avg_reward = float(np.mean(episode_rewards)) if episode_rewards else 0.0
+
+    log_queue.put(
+        {
+            "type": "EVAL",
+            "episode_index": int(episode_index),
+            "policy_version": int(learner.policy_version),
+            "policy_protocol_version": POLICY_PROTOCOL_VERSION,
+            "policy_input_schema": POLICY_INPUT_SCHEMA,
+            **eval_summary,
+        },
+    )
+    print(
+        f"Eval @ update {update_index + 1} | "
+        f"mean={eval_summary['mean_reward']:.2f} "
+        f"std={eval_summary['std_reward']:.2f} "
+        f"min={eval_summary['min_reward']:.2f} "
+        f"max={eval_summary['max_reward']:.2f} | "
+        f"episodes={eval_summary['num_episodes']} | "
+        f"{eval_wall_seconds:.1f}s | "
+        "NATIVE game score (not comparable to shaped training avg)",
+    )
+    _sync_extractor_state_from_actors(ray, actors, learner)
+    return maybe_save_best_checkpoint(
+        learner.agent,
+        int(episode_index),
+        avg_reward,
+        eval_summary,
+        best_eval_reward,
+        episode_rewards,
+    )
+
+
 def _collect_sync_fragments(
     ray,
     actors,
@@ -385,6 +561,7 @@ def main() -> None:
                     float(np.mean(episode_rewards)) if episode_rewards else None
                 )
                 checkpoint_started = time.perf_counter()
+                _sync_extractor_state_from_actors(ray, actors, learner)
                 save_checkpoint(
                     learner.agent,
                     episode_index,
@@ -436,8 +613,37 @@ def main() -> None:
                 include_extractor_state=False,
             )
 
+            eval_every = int(_distributed_value("eval_every_updates", 0) or 0)
+            eval_episodes = int(getattr(cfg.environment, "eval_episodes", 0) or 0)
+            if (
+                eval_every > 0
+                and eval_episodes > 0
+                and (update_index + 1) % eval_every == 0
+            ):
+                eval_steps = int(
+                    getattr(
+                        cfg.environment,
+                        "eval_steps_per_episode",
+                        cfg.environment.steps_per_episode,
+                    ),
+                )
+                best_eval_reward = _run_eval_and_maybe_save(
+                    ray,
+                    actors,
+                    learner,
+                    log_queue=log_queue,
+                    episode_index=episode_index,
+                    episode_rewards=episode_rewards,
+                    best_eval_reward=best_eval_reward,
+                    num_actors=num_actors,
+                    eval_episodes=eval_episodes,
+                    eval_steps=eval_steps,
+                    update_index=update_index,
+                )
+
         if learner is not None and not interrupted:
             avg_reward = float(np.mean(episode_rewards)) if episode_rewards else None
+            _sync_extractor_state_from_actors(ray, actors, learner)
             save_checkpoint(
                 learner.agent,
                 episode_index,

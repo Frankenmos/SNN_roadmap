@@ -18,6 +18,8 @@ from agent_core.policy_protocol import (
     ACTION_FEEDBACK_X_NORM_OFFSET,
     ACTION_FEEDBACK_Y_NORM_OFFSET,
     BRIDGE_ACTION_SMART,
+    CURATED_FEATURE_UNIT_FIELDS,
+    MAX_ENTITY_TOKENS,
     META_VECTOR_DIM,
     META_LAST_ACTION_INDEX_OFFSET,
     NO_ACTION_SENTINEL_INDEX,
@@ -80,6 +82,29 @@ def test_running_feature_normalizer_skips_low_variance_dims_and_clips_active_dim
 
     assert abs(float(normalized[0, 0])) <= 10.0
     assert float(normalized[0, 1]) == pytest.approx(1.0)
+
+
+def test_entity_sorting_keeps_tail_enemies_under_token_cap(make_obs):
+    extractor = obs_space_2.ObservationExtractor()
+    friendlies = [
+        _unit(alliance=1, health=45, x=float(idx), y=0.0)
+        for idx in range(MAX_ENTITY_TOKENS + 4)
+    ]
+    enemies = [
+        _unit(alliance=4, health=145, x=60.0, y=10.0),
+        _unit(alliance=4, health=145, x=62.0, y=10.0),
+    ]
+
+    batch = extractor.peek_observation(
+        _obs_with_units(make_obs, friendlies + enemies),
+    )
+
+    alliance_idx = CURATED_FEATURE_UNIT_FIELDS.index("alliance")
+    alliances = batch.entity_features[0, :, alliance_idx].detach().cpu().tolist()
+    active_count = int(batch.entity_mask[0].sum().item())
+    assert active_count == MAX_ENTITY_TOKENS
+    assert alliances[:2] == [4.0, 4.0]
+    assert alliances.count(4.0) == 2
 
 
 def test_observation_extractor_fails_fast_on_unknown_feature_unit_field(monkeypatch):

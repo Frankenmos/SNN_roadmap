@@ -41,6 +41,18 @@ def _small_policy():
     return net
 
 
+def test_bf16_amp_uses_autocast_without_grad_scaler():
+    use_amp, dtype = PolicyNetwork._resolve_amp_settings(
+        "bf16",
+        torch.device("cuda"),
+    )
+    scaler = PolicyNetwork._make_grad_scaler(use_amp=use_amp, amp_dtype=dtype)
+
+    assert use_amp is True
+    assert dtype == torch.bfloat16
+    assert scaler.is_enabled() is False
+
+
 def _policy_batch(
     batch_size=2,
     spatial_shape=SPATIAL_OBS_SHAPE,

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Final
 
 import numpy as np
+from pysc2.lib import features
 
 from agent_core.policy_protocol import BRIDGE_ACTION_RIGHT_CLICK
 from obs_space.action_effects import (
@@ -22,12 +23,17 @@ from obs_space.action_effects import (
 )
 
 
-_FEATURE_UNIT_ALLIANCE: Final[int] = 1
-_FEATURE_UNIT_HEALTH: Final[int] = 2
-_FEATURE_UNIT_WEAPON_COOLDOWN: Final[int] = 8
-_FEATURE_UNIT_X: Final[int] = 12
-_FEATURE_UNIT_Y: Final[int] = 13
-_FEATURE_UNIT_TAG: Final[int] = 29
+# Derive feature_unit column indices from the live PySC2 enum rather than
+# hardcoding them — the literals drift across PySC2 versions (weapon_cooldown
+# in particular was wrongly pinned to 8, which is shield_ratio, silently
+# killing the fired_likely outcome on the numeric path). Mirrors the dynamic
+# lookup obs_space_2 already uses.
+_FEATURE_UNIT_ALLIANCE: Final[int] = int(features.FeatureUnit.alliance)
+_FEATURE_UNIT_HEALTH: Final[int] = int(features.FeatureUnit.health)
+_FEATURE_UNIT_WEAPON_COOLDOWN: Final[int] = int(features.FeatureUnit.weapon_cooldown)
+_FEATURE_UNIT_X: Final[int] = int(features.FeatureUnit.x)
+_FEATURE_UNIT_Y: Final[int] = int(features.FeatureUnit.y)
+_FEATURE_UNIT_TAG: Final[int] = int(features.FeatureUnit.tag)
 
 
 @dataclass(slots=True)

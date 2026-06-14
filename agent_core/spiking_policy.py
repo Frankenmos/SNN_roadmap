@@ -389,6 +389,7 @@ class PolicyNetwork(nn.Module):
         target_decode_mode="center",
         fine_skip_connection=False,
         fine_skip_dim=32,
+        amp_dtype="auto",
     ):
         super().__init__()
 
@@ -478,6 +479,7 @@ class PolicyNetwork(nn.Module):
             "target_decode_mode": self._target_decode_mode,
             "fine_skip_connection": bool(self._fine_skip_connection),
             "fine_skip_dim": int(self._fine_skip_dim),
+            "requested_amp_dtype": str(amp_dtype),
             "meta_input_dim": self._meta_input_dim,
             "action_feedback_token_count": int(ACTION_FEEDBACK_TOKEN_COUNT),
             "action_feedback_token_dim": int(ACTION_FEEDBACK_TOKEN_DIM),
@@ -566,11 +568,65 @@ class PolicyNetwork(nn.Module):
         self.critic_fc = nn.Linear(self._latent_dim, 1)
         self.target_head = self._build_target_head_module()
 
-        self.use_amp = torch.cuda.is_available()
-        self.amp_dtype = torch.float16 if self.use_amp else torch.float32
-        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
+        self._requested_amp_dtype = str(amp_dtype)
+        self.use_amp = False
+        self.amp_dtype = torch.float32
+        self.scaler = self._make_grad_scaler(
+            use_amp=False,
+            amp_dtype=torch.float32,
+        )
+        self.configure_amp(self._requested_amp_dtype)
 
         self.to(self.device)
+
+    @staticmethod
+    def _resolve_amp_settings(requested, device):
+        device = torch.device(device)
+        if device.type != "cuda":
+            return False, torch.float32
+
+        normalized = str(requested or "auto").strip().lower().replace("torch.", "")
+        if normalized == "auto":
+            supports_bf16 = bool(
+                getattr(torch.cuda, "is_bf16_supported", lambda: False)(),
+            )
+            return True, torch.bfloat16 if supports_bf16 else torch.float16
+        aliases = {
+            "bf16": torch.bfloat16,
+            "bfloat16": torch.bfloat16,
+            "fp16": torch.float16,
+            "float16": torch.float16,
+            "half": torch.float16,
+            "fp32": torch.float32,
+            "float32": torch.float32,
+            "full": torch.float32,
+        }
+        if normalized not in aliases:
+            raise ValueError(
+                "model.amp_dtype must be one of auto|bf16|fp16|fp32, "
+                f"got {requested!r}",
+            )
+        dtype = aliases[normalized]
+        return dtype != torch.float32, dtype
+
+    @staticmethod
+    def _make_grad_scaler(*, use_amp: bool, amp_dtype: torch.dtype):
+        return torch.amp.GradScaler(
+            "cuda",
+            enabled=bool(use_amp and amp_dtype == torch.float16),
+        )
+
+    def configure_amp(self, requested=None):
+        if requested is not None:
+            self._requested_amp_dtype = str(requested)
+        self.use_amp, self.amp_dtype = self._resolve_amp_settings(
+            self._requested_amp_dtype,
+            self.device,
+        )
+        self.scaler = self._make_grad_scaler(
+            use_amp=self.use_amp,
+            amp_dtype=self.amp_dtype,
+        )
 
     def resolved_config(self):
         return {

@@ -3,6 +3,7 @@ import sys
 from types import SimpleNamespace
 
 import numpy as np
+from pysc2.lib import features
 
 if "torch" not in sys.modules:
     sys.modules["torch"] = SimpleNamespace(
@@ -28,14 +29,21 @@ FRIENDLY = 1
 ENEMY = 4
 
 
+# Index columns by the live PySC2 enum so the test layout matches what the
+# detector reads in production (a hardcoded cooldown index of 8 — shield_ratio —
+# previously hid a real bug because both sides agreed on the wrong column).
+_FU = features.FeatureUnit
+_RAW_UNIT_WIDTH = max(int(f) for f in _FU) + 1
+
+
 def raw_unit(*, alliance, health, cooldown, x, y, tag):
-    row = np.zeros(30, dtype=np.float32)
-    row[1] = alliance
-    row[2] = health
-    row[8] = cooldown
-    row[12] = x
-    row[13] = y
-    row[29] = tag
+    row = np.zeros(_RAW_UNIT_WIDTH, dtype=np.float32)
+    row[int(_FU.alliance)] = alliance
+    row[int(_FU.health)] = health
+    row[int(_FU.weapon_cooldown)] = cooldown
+    row[int(_FU.x)] = x
+    row[int(_FU.y)] = y
+    row[int(_FU.tag)] = tag
     return row
 
 

@@ -35,9 +35,7 @@ def move_agent_to_device(
     agent.policy.to(device)
     agent.policy.device = device
     agent.ppo.device = device
-    agent.policy.use_amp = device.type == "cuda"
-    agent.policy.amp_dtype = torch.float16 if agent.policy.use_amp else torch.float32
-    agent.policy.scaler = torch.amp.GradScaler("cuda", enabled=agent.policy.use_amp)
+    agent.policy.configure_amp(getattr(cfg.model, "amp_dtype", "auto"))
     _move_optimizer_state(agent.ppo.optimizer, device)
     agent.extractor.device = device
     agent.snn_state = agent.policy.init_concrete_state(batch_size=1, device=device)

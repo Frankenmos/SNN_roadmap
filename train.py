@@ -368,13 +368,31 @@ def save_initial_config():
         print(f"Warning: config.yaml not found at {src_config}")
 
 
-def run_eval_sweep(env, agent, episodes, steps_per_episode, deterministic=True):
+def run_eval_sweep(
+    env,
+    agent,
+    episodes,
+    steps_per_episode,
+    deterministic=True,
+    reset_lock=None,
+):
+    """Run `episodes` deterministic eval episodes and summarize native reward.
+
+    `reset_lock`, when given, is a zero-arg callable returning a context manager
+    that guards each `env.reset()`. Ray actors pass the cross-process SC2
+    create-game lock so parallel eval resets stay serialized exactly like
+    training resets; the single-process caller leaves it None.
+    """
     rewards = []
     was_training = agent.policy.training
     agent.policy.eval()
     try:
         for _ in range(episodes):
-            obs = env.reset()[0]
+            if reset_lock is not None:
+                with reset_lock():
+                    obs = env.reset()[0]
+            else:
+                obs = env.reset()[0]
             agent.reset()
             ep_reward = 0.0
             steps = 0
