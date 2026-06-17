@@ -1,17 +1,10 @@
 import unittest
-import sys
 from types import SimpleNamespace
 
 import numpy as np
 from pysc2.lib import features
 
-if "torch" not in sys.modules:
-    sys.modules["torch"] = SimpleNamespace(
-        Tensor=object,
-        float32="float32",
-        zeros=lambda *args, **kwargs: None,
-    )
-
+from obs_space._numeric import safe_float
 from obs_space.action_effects import FrameSnapshot, UnitSnapshot
 from obs_space.smart_outcome_detector import (
     CooldownSnapshot,
@@ -21,7 +14,6 @@ from obs_space.smart_outcome_detector import (
     check_cooldowns_fired_production,
     extract_cooldown_snapshots_from_feature_units,
     nearest_enemy_distance,
-    _safe_float,
 )
 
 
@@ -298,9 +290,9 @@ class MiscTests(unittest.TestCase):
         self.assertEqual(result["resolution_reason"], "enemy_health_drop")
 
     def test_safe_float(self):
-        self.assertEqual(_safe_float(3.14), 3.14)
-        self.assertEqual(_safe_float(None), 0.0)
-        self.assertEqual(_safe_float("invalid"), 0.0)
+        self.assertEqual(safe_float(3.14), 3.14)
+        self.assertEqual(safe_float(None), 0.0)
+        self.assertEqual(safe_float("invalid"), 0.0)
 
 
 if __name__ == "__main__":

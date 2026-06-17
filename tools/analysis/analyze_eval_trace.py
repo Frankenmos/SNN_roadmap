@@ -41,6 +41,7 @@ SEMANTIC_CLICK_ACTION_LABELS = {
     1: "left_click",
     2: "right_click",
 }
+SEMANTIC_CLICK_HEADS = {"token_pointer", "coarse_to_fine"}
 
 
 def _cfg_defaults() -> dict:
@@ -167,6 +168,25 @@ def _load_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _config_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 class EvalTraceAnalyzer:
     def __init__(self, trace_path: str | Path):
         self.trace_path = Path(trace_path)
@@ -191,9 +211,13 @@ class EvalTraceAnalyzer:
                 try:
                     if int(model_cfg.get("action_dim")) == 2:
                         return SMART_ACTION_LABELS.copy()
-                    if int(model_cfg.get("action_dim")) == 3 and str(
+                    spatial_head_type = str(
                         model_cfg.get("spatial_head_type", ""),
-                    ).lower() == "token_pointer":
+                    ).lower()
+                    if (
+                        int(model_cfg.get("action_dim")) == 3
+                        and spatial_head_type in SEMANTIC_CLICK_HEADS
+                    ):
                         return SEMANTIC_CLICK_ACTION_LABELS.copy()
                 except (TypeError, ValueError):
                     pass
@@ -487,6 +511,15 @@ class EvalTraceAnalyzer:
             attention_embed_dim=int(model_cfg.get("attention_embed_dim", 64)),
             attention_pool_size=int(model_cfg.get("attention_pool_size", 7)),
             attention_beta=float(model_cfg.get("attention_beta", 0.5)),
+            spatial_head_type=str(model_cfg.get("spatial_head_type", "token_pointer")),
+            coarse_grid_size=_optional_int(model_cfg.get("coarse_grid_size")),
+            local_grid_size=_optional_int(model_cfg.get("local_grid_size")),
+            target_decode_mode=str(model_cfg.get("target_decode_mode", "center")),
+            fine_skip_connection=_config_bool(
+                model_cfg.get("fine_skip_connection"),
+                default=False,
+            ),
+            fine_skip_dim=_optional_int(model_cfg.get("fine_skip_dim")) or 32,
         )
         policy.load_state_dict(state_dict)
         policy = policy.to(device="cpu", dtype=torch.float32)

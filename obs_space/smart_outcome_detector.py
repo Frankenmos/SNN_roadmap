@@ -14,6 +14,7 @@ import numpy as np
 from pysc2.lib import features
 
 from agent_core.policy_protocol import BRIDGE_ACTION_RIGHT_CLICK
+from obs_space._numeric import coerce_numeric_rows, safe_float
 from obs_space.action_effects import (
     FRIENDLY_ALLIANCE,
     FrameSnapshot,
@@ -412,41 +413,41 @@ def extract_cooldown_snapshots_from_feature_units(
     if feature_units is None:
         return ()
 
-    numeric_rows = _coerce_numeric_rows(feature_units)
+    numeric_rows = coerce_numeric_rows(feature_units)
     if numeric_rows is not None:
         snapshots = []
         for row in numeric_rows:
             row = np.asarray(row).reshape(-1)
             if row.size <= _FEATURE_UNIT_TAG:
                 continue
-            alliance = int(_safe_float(row[_FEATURE_UNIT_ALLIANCE]))
-            tag = int(_safe_float(row[_FEATURE_UNIT_TAG]))
+            alliance = int(safe_float(row[_FEATURE_UNIT_ALLIANCE]))
+            tag = int(safe_float(row[_FEATURE_UNIT_TAG]))
             if alliance != friendly_alliance or tag <= 0:
                 continue
             snapshots.append(
                 CooldownSnapshot(
                     unit_tag=tag,
-                    cooldown=float(_safe_float(row[_FEATURE_UNIT_WEAPON_COOLDOWN])),
-                    health=float(_safe_float(row[_FEATURE_UNIT_HEALTH])),
-                    x=float(_safe_float(row[_FEATURE_UNIT_X])),
-                    y=float(_safe_float(row[_FEATURE_UNIT_Y])),
+                    cooldown=float(safe_float(row[_FEATURE_UNIT_WEAPON_COOLDOWN])),
+                    health=float(safe_float(row[_FEATURE_UNIT_HEALTH])),
+                    x=float(safe_float(row[_FEATURE_UNIT_X])),
+                    y=float(safe_float(row[_FEATURE_UNIT_Y])),
                 ),
             )
         return tuple(snapshots)
 
     snapshots = []
     for unit in list(feature_units):
-        alliance = int(_safe_float(getattr(unit, "alliance", 0)))
-        tag = int(_safe_float(getattr(unit, "tag", 0)))
+        alliance = int(safe_float(getattr(unit, "alliance", 0)))
+        tag = int(safe_float(getattr(unit, "tag", 0)))
         if alliance != friendly_alliance or tag <= 0:
             continue
         snapshots.append(
             CooldownSnapshot(
                 unit_tag=tag,
-                cooldown=float(_safe_float(getattr(unit, "weapon_cooldown", 0.0))),
-                health=float(_safe_float(getattr(unit, "health", 0.0))),
-                x=float(_safe_float(getattr(unit, "x", 0.0))),
-                y=float(_safe_float(getattr(unit, "y", 0.0))),
+                cooldown=float(safe_float(getattr(unit, "weapon_cooldown", 0.0))),
+                health=float(safe_float(getattr(unit, "health", 0.0))),
+                x=float(safe_float(getattr(unit, "x", 0.0))),
+                y=float(safe_float(getattr(unit, "y", 0.0))),
             ),
         )
     return tuple(snapshots)
@@ -515,21 +516,3 @@ def _read_feature_units(obs):
     observation = getattr(obs, "observation", obs)
     return getattr(observation, "feature_units", None)
 
-
-def _coerce_numeric_rows(rows):
-    try:
-        arr = np.asarray(rows)
-    except Exception:
-        return None
-    if arr.ndim == 1:
-        arr = arr.reshape(1, -1)
-    if arr.ndim == 2 and arr.dtype != object:
-        return arr
-    return None
-
-
-def _safe_float(value) -> float:
-    try:
-        return float(0.0 if value is None else value)
-    except (TypeError, ValueError):
-        return 0.0

@@ -17,7 +17,7 @@ from agent_core.policy_protocol import (
     ACTION_FEEDBACK_TOKEN_DIM,
     ACTION_FEEDBACK_X_NORM_OFFSET,
     ACTION_FEEDBACK_Y_NORM_OFFSET,
-    BRIDGE_ACTION_SMART,
+    BRIDGE_ACTION_RIGHT_CLICK,
     CURATED_FEATURE_UNIT_FIELDS,
     MAX_ENTITY_TOKENS,
     META_VECTOR_DIM,
@@ -49,7 +49,7 @@ def _obs_with_units(make_obs, units, **kwargs):
 
 
 def _smart_token(x, y):
-    return np.asarray([BRIDGE_ACTION_SMART, x, y, 0], dtype=np.float32)
+    return np.asarray([BRIDGE_ACTION_RIGHT_CLICK, x, y, 0], dtype=np.float32)
 
 
 def _feedback_value(batch, offset):
@@ -152,13 +152,13 @@ def test_observation_extractor_emits_action_feedback_token(make_obs):
     extractor = obs_space_2.ObservationExtractor()
     batch = extractor.peek_observation(
         make_obs(),
-        last_action_token=np.asarray([BRIDGE_ACTION_SMART, 42, 21, 0], dtype=np.int32),
+        last_action_token=np.asarray([BRIDGE_ACTION_RIGHT_CLICK, 42, 21, 0], dtype=np.int32),
     )
 
     token = batch.action_feedback_tokens[0, 0]
     assert batch.meta_vec.shape[-1] == META_VECTOR_DIM
     assert batch.action_feedback_tokens.shape[-1] == ACTION_FEEDBACK_TOKEN_DIM
-    assert float(token[ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET].item()) == pytest.approx(float(BRIDGE_ACTION_SMART))
+    assert float(token[ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET].item()) == pytest.approx(float(BRIDGE_ACTION_RIGHT_CLICK))
     assert float(token[ACTION_FEEDBACK_X_NORM_OFFSET].item()) == pytest.approx(42.0 / 83.0)
     assert float(token[ACTION_FEEDBACK_Y_NORM_OFFSET].item()) == pytest.approx(21.0 / 83.0)
 

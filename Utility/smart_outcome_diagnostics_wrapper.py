@@ -10,8 +10,9 @@ import numpy as np
 from pysc2.env import base_env_wrapper
 
 from agent_core.policy_protocol import SMART_SCREEN_FUNCTION_ID
+from obs_space._numeric import safe_float
 from obs_space.action_effects import FrameSnapshot, extract_frame_snapshot
-from obs_space.smart_outcome_detector import SmartOutcomeDetector, _safe_float
+from obs_space.smart_outcome_detector import SmartOutcomeDetector
 
 
 class SmartOutcomeDiagnosticsWrapper(base_env_wrapper.BaseEnvWrapper):
@@ -144,7 +145,7 @@ class SmartOutcomeDiagnosticsWrapper(base_env_wrapper.BaseEnvWrapper):
             if "target" in action:
                 return _target_pair(action["target"])
             if "x" in action and "y" in action:
-                return (_safe_float(action["x"]), _safe_float(action["y"]))
+                return (safe_float(action["x"]), safe_float(action["y"]))
 
         arguments = getattr(action, "arguments", None)
         if arguments is None:
@@ -267,7 +268,7 @@ def _target_pair(value) -> tuple[float, float] | None:
             return None
     if len(items) < 2:
         return None
-    return (_safe_float(items[0]), _safe_float(items[1]))
+    return (safe_float(items[0]), safe_float(items[1]))
 
 
 def _safe_int(value) -> int | None:

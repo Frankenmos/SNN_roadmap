@@ -4,12 +4,14 @@ from dataclasses import dataclass
 from typing import Final
 
 import numpy as np
+from pysc2.lib import features
 
 from agent_core.policy_protocol import (
     AGENT_ACTION_TOKEN_DIM,
     BRIDGE_ACTION_NO_OP,
     BRIDGE_ACTION_RIGHT_CLICK,
 )
+from obs_space._numeric import coerce_numeric_rows, safe_float
 
 
 FRIENDLY_ALLIANCE: Final[int] = 1
@@ -18,11 +20,11 @@ NEAR_ENEMY_RADIUS: Final[float] = 6.0
 MOVEMENT_EPSILON: Final[float] = 0.25
 HEALTH_NORM: Final[float] = 100.0
 
-_FEATURE_UNIT_ALLIANCE_INDEX: Final[int] = 1
-_FEATURE_UNIT_HEALTH_INDEX: Final[int] = 2
-_FEATURE_UNIT_X_INDEX: Final[int] = 12
-_FEATURE_UNIT_Y_INDEX: Final[int] = 13
-_FEATURE_UNIT_TAG_INDEX: Final[int] = 29
+_FEATURE_UNIT_ALLIANCE_INDEX: Final[int] = int(features.FeatureUnit.alliance)
+_FEATURE_UNIT_HEALTH_INDEX: Final[int] = int(features.FeatureUnit.health)
+_FEATURE_UNIT_X_INDEX: Final[int] = int(features.FeatureUnit.x)
+_FEATURE_UNIT_Y_INDEX: Final[int] = int(features.FeatureUnit.y)
+_FEATURE_UNIT_TAG_INDEX: Final[int] = int(features.FeatureUnit.tag)
 
 
 @dataclass(slots=True, frozen=True)
@@ -245,7 +247,7 @@ def extract_frame_snapshot(obs) -> FrameSnapshot:
 def _iter_unit_snapshots(feature_units):
     if feature_units is None:
         return
-    numeric_rows = _coerce_numeric_rows(feature_units)
+    numeric_rows = coerce_numeric_rows(feature_units)
     if numeric_rows is not None:
         for row in numeric_rows:
             yield _unit_snapshot_from_numeric_row(row)
@@ -260,19 +262,19 @@ def _unit_snapshot_from_numeric_row(row) -> UnitSnapshot:
     row = np.asarray(row).reshape(-1)
     tag = None
     if row.size > _FEATURE_UNIT_TAG_INDEX:
-        raw_tag = int(row[_FEATURE_UNIT_TAG_INDEX])
+        raw_tag = int(safe_float(row[_FEATURE_UNIT_TAG_INDEX]))
         tag = raw_tag if raw_tag > 0 else None
     return UnitSnapshot(
-        alliance=int(_safe_float(row[_FEATURE_UNIT_ALLIANCE_INDEX]))
+        alliance=int(safe_float(row[_FEATURE_UNIT_ALLIANCE_INDEX]))
         if row.size > _FEATURE_UNIT_ALLIANCE_INDEX
         else 0,
-        health=float(_safe_float(row[_FEATURE_UNIT_HEALTH_INDEX]))
+        health=float(safe_float(row[_FEATURE_UNIT_HEALTH_INDEX]))
         if row.size > _FEATURE_UNIT_HEALTH_INDEX
         else 0.0,
-        x=float(_safe_float(row[_FEATURE_UNIT_X_INDEX]))
+        x=float(safe_float(row[_FEATURE_UNIT_X_INDEX]))
         if row.size > _FEATURE_UNIT_X_INDEX
         else 0.0,
-        y=float(_safe_float(row[_FEATURE_UNIT_Y_INDEX]))
+        y=float(safe_float(row[_FEATURE_UNIT_Y_INDEX]))
         if row.size > _FEATURE_UNIT_Y_INDEX
         else 0.0,
         tag=tag,
@@ -291,31 +293,12 @@ def _unit_snapshot_from_object(unit) -> UnitSnapshot | None:
         except (TypeError, ValueError):
             tag = None
     return UnitSnapshot(
-        alliance=int(_safe_float(getattr(unit, "alliance", 0.0))),
-        health=float(_safe_float(getattr(unit, "health", 0.0))),
-        x=float(_safe_float(getattr(unit, "x", 0.0))),
-        y=float(_safe_float(getattr(unit, "y", 0.0))),
+        alliance=int(safe_float(getattr(unit, "alliance", 0.0))),
+        health=float(safe_float(getattr(unit, "health", 0.0))),
+        x=float(safe_float(getattr(unit, "x", 0.0))),
+        y=float(safe_float(getattr(unit, "y", 0.0))),
         tag=tag,
     )
-
-
-def _coerce_numeric_rows(rows):
-    try:
-        arr = np.asarray(rows)
-    except Exception:
-        return None
-    if arr.ndim == 1:
-        arr = arr.reshape(1, -1)
-    if arr.ndim == 2 and arr.dtype != object:
-        return arr
-    return None
-
-
-def _safe_float(value) -> float:
-    try:
-        return float(0.0 if value is None else value)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def _median_position(units: tuple[UnitSnapshot, ...]) -> np.ndarray:

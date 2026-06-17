@@ -1,7 +1,10 @@
+import json
+
 import torch
 
 from MockedEnv.policy_batch import make_policy_batch
 from agent_core.policy_protocol import META_VECTOR_DIM, SPATIAL_OBS_SHAPE
+from agent_core.spiking_policy import PolicyNetwork
 from tools.analysis.analyze_eval_trace import EvalTraceAnalyzer
 
 
@@ -111,3 +114,126 @@ def test_eval_trace_analyzer_exports_basic_bundle(tmp_path):
     report_text = (out_dir / "trace_report.txt").read_text(encoding="utf-8")
     assert "Dispatched action counts:" in report_text
     assert "Smart_screen" in report_text
+
+
+def test_eval_trace_analyzer_labels_coarse_to_fine_semantic_clicks(tmp_path):
+    ckpt_path = tmp_path / "best_checkpoint.pth"
+    ckpt_path.write_bytes(b"checkpoint placeholder")
+    (tmp_path / "effective_config.json").write_text(
+        json.dumps(
+            {
+                "model": {
+                    "action_dim": 3,
+                    "spatial_head_type": "coarse_to_fine",
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+    trace_path = tmp_path / "episode_0001_det.pt"
+    torch.save(
+        {
+            "format_version": 1,
+            "run_name": "coarse-run",
+            "checkpoint_path": str(ckpt_path),
+            "records": [
+                {
+                    "step_index": 1,
+                    "action": 2,
+                    "policy_step": True,
+                    "learnable": True,
+                    "reward": 0.0,
+                    "cumulative_reward": 0.0,
+                    "dispatched_action": {
+                        "function_id": 451,
+                        "function_name": "Smart_screen",
+                    },
+                    "policy_input": {},
+                },
+            ],
+        },
+        trace_path,
+    )
+
+    analyzer = EvalTraceAnalyzer(trace_path)
+    summary = analyzer.summarize()
+
+    assert analyzer.action_labels[0] == "no-op"
+    assert analyzer.action_labels[1] == "left_click"
+    assert analyzer.action_labels[2] == "right_click"
+    assert summary["action_counts"]["right_click"] == 1
+    assert "attack" not in summary["action_counts"]
+
+
+def test_eval_trace_activation_policy_rebuild_uses_target_head_config(tmp_path):
+    batch = make_policy_batch(
+        batch_size=1,
+        spatial_shape=SPATIAL_OBS_SHAPE,
+        meta_dim=META_VECTOR_DIM,
+        zeros=True,
+    ).with_state(None)
+    model_cfg = {
+        "action_dim": 3,
+        "num_steps": 1,
+        "screen_size": 84,
+        "attention_embed_dim": 64,
+        "attention_pool_size": 7,
+        "spatial_head_type": "coarse_to_fine",
+        "coarse_grid_size": 7,
+        "local_grid_size": 12,
+        "target_decode_mode": "center",
+        "fine_skip_connection": True,
+        "fine_skip_dim": 8,
+    }
+    policy = PolicyNetwork(
+        spatial_input_shape=SPATIAL_OBS_SHAPE,
+        vector_input_dim=META_VECTOR_DIM,
+        **model_cfg,
+    )
+    ckpt_path = tmp_path / "best_checkpoint.pth"
+    torch.save({"agent_state": policy.state_dict()}, ckpt_path)
+    (tmp_path / "effective_config.json").write_text(
+        json.dumps({"model": model_cfg}),
+        encoding="utf-8",
+    )
+    trace_path = tmp_path / "episode_0001_det.pt"
+    torch.save(
+        {
+            "format_version": 1,
+            "run_name": "coarse-run",
+            "checkpoint_path": str(ckpt_path),
+            "records": [
+                {
+                    "step_index": 1,
+                    "action": 2,
+                    "policy_step": True,
+                    "learnable": True,
+                    "reward": 0.0,
+                    "cumulative_reward": 0.0,
+                    "dispatched_action": {
+                        "function_id": 451,
+                        "function_name": "Smart_screen",
+                    },
+                    "policy_input": {
+                        "spatial_obs": batch.spatial_obs[0].clone(),
+                        "entity_features": batch.entity_features[0].clone(),
+                        "entity_mask": batch.entity_mask[0].clone(),
+                        "selection_features": batch.selection_features[0].clone(),
+                        "selection_mask": batch.selection_mask[0].clone(),
+                        "meta_vec": batch.meta_vec[0].clone(),
+                    },
+                },
+            ],
+        },
+        trace_path,
+    )
+
+    analyzer = EvalTraceAnalyzer(trace_path)
+    rebuilt = analyzer._instantiate_policy(ckpt_path)
+
+    assert rebuilt._spatial_head_type == "coarse_to_fine"
+    assert rebuilt._coarse_grid_size == 7
+    assert rebuilt._local_grid_size == 12
+    assert rebuilt._target_decode_mode == "center"
+    assert rebuilt._fine_skip_connection is True
+    assert rebuilt._fine_skip_dim == 8

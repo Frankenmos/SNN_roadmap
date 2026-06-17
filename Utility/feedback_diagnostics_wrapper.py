@@ -7,6 +7,8 @@ from collections.abc import Mapping, Sequence
 import numpy as np
 from pysc2.env import base_env_wrapper
 
+from obs_space._numeric import safe_float
+
 
 SCORE_CUMULATIVE_NAMES = (
     "score",
@@ -234,7 +236,7 @@ class ScoreDiagnosticsWrapper(base_env_wrapper.BaseEnvWrapper):
             obs = timestep.observation
             score = _as_float_list(_read_field(obs, "score_cumulative"))
             current_scores.append(score)
-            reward = _safe_float(getattr(timestep, "reward", 0.0))
+            reward = safe_float(getattr(timestep, "reward", 0.0))
             if event == "step":
                 self._episode_rewards[agent_idx] += reward
 
@@ -377,13 +379,6 @@ def _named_values(values, names):
         names[idx] if idx < len(names) else f"field_{idx}": value
         for idx, value in enumerate(values)
     }
-
-
-def _safe_float(value):
-    try:
-        return float(value)
-    except Exception:
-        return 0.0
 
 
 def _safe_last(timestep):
