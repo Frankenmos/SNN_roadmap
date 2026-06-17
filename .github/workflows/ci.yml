@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install ruff
+        run: python -m pip install --upgrade pip ruff
+      # Build gate: fail only on real correctness errors (syntax,
+      # undefined names, broken f-strings, invalid comparisons).
+      - name: Ruff - critical errors (gate)
+        run: ruff check --select=E9,F63,F7,F82 .
+      # Informational: full lint + format drift, surfaced but not blocking
+      # while the existing codebase is brought up to the configured style.
+      - name: Ruff - full lint (informational)
+        run: ruff check .
+        continue-on-error: true
+      - name: Ruff - format check (informational)
+        run: ruff format --check .
+        continue-on-error: true
+
+  test:
+    name: Tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      # CPU-only torch keeps CI fast and avoids the CUDA nightly pin
+      # used on dev/GPU machines. The test suite mocks PySC2 (see
+      # tests/MockedEnv), so the SC2 client/game is not required.
+      - name: Install CPU PyTorch
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - name: Install test dependencies
+        run: |
+          pip install numpy pandas matplotlib seaborn scikit-learn \
+            snntorch PyYAML dotmap absl-py ray pytest
+      - name: Run test suite
+        run: pytest tests/ -q
