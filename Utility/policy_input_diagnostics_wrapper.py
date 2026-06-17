@@ -8,12 +8,8 @@ import numpy as np
 from pysc2.env import base_env_wrapper
 
 from agent_core.policy_protocol import (
-    ACTION_FEEDBACK_ENEMY_HEALTH_DROP_OFFSET,
     ACTION_FEEDBACK_FIELD_NAMES,
-    ACTION_FEEDBACK_MOVED_TOWARD_TARGET_OFFSET,
-    ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET,
     ACTION_FEEDBACK_TOKEN_DIM,
-    BRIDGE_ACTION_RIGHT_CLICK,
     CURATED_FEATURE_UNIT_FIELDS,
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
@@ -23,7 +19,6 @@ from agent_core.policy_protocol import (
     META_PLAYER_FEATURE_DIM,
     SELECTION_FEATURE_NAMES,
 )
-from obs_space.action_effects import classify_action_effect
 from obs_space.obs_space_2 import ObservationExtractor
 
 
@@ -119,6 +114,14 @@ class PolicyInputDiagnosticsWrapper(base_env_wrapper.BaseEnvWrapper):
             "episode": self.episode_index,
             "step": self.step_index,
             "agent_index": agent_idx,
+            "diagnostic_scope": {
+                "extractor": "wrapper_local_observation_extractor",
+                "action_feedback": (
+                    "not agent-faithful: wrapper does not receive the policy's "
+                    "real last_action_token; use eval traces for action-effect "
+                    "attribution"
+                ),
+            },
             "raw": {
                 "available_action_ids": available_action_ids,
                 "available_action_count": len(available_action_ids),
@@ -154,13 +157,13 @@ class PolicyInputDiagnosticsWrapper(base_env_wrapper.BaseEnvWrapper):
                 "meta_available_action_mask_active": int(round(float(avail_slice.sum().item()))),
                 "action_feedback_token_dim": ACTION_FEEDBACK_TOKEN_DIM,
                 "action_feedback_token": action_feedback_token.tolist(),
+                "action_feedback_provenance": (
+                    "wrapper_local_extractor_without_agent_last_action_token"
+                ),
                 "action_feedback_named": {
                     name: float(action_feedback_token[idx].item())
                     for idx, name in enumerate(ACTION_FEEDBACK_FIELD_NAMES)
                 },
-                "action_feedback_effect_class": self._effect_class(
-                    action_feedback_token,
-                ),
                 "entity_feature_sample": batch.entity_features[
                     0, : min(entity_count, self.max_entity_samples)
                 ].detach().cpu().tolist(),
@@ -232,27 +235,6 @@ class PolicyInputDiagnosticsWrapper(base_env_wrapper.BaseEnvWrapper):
                 }
             )
         return samples
-
-    def _effect_class(self, action_feedback_token):
-        bridge_type = int(
-            round(float(action_feedback_token[ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET].item())),
-        )
-        moved = (
-            float(
-                action_feedback_token[
-                    ACTION_FEEDBACK_MOVED_TOWARD_TARGET_OFFSET
-                ].item(),
-            )
-            > 0.5
-        )
-        enemy_drop = float(
-            action_feedback_token[ACTION_FEEDBACK_ENEMY_HEALTH_DROP_OFFSET].item(),
-        )
-        return classify_action_effect(
-            is_smart=bridge_type == BRIDGE_ACTION_RIGHT_CLICK,
-            moved_toward_target=moved,
-            enemy_health_drop_norm=enemy_drop,
-        )
 
     def _append_jsonl(self, record):
         with open(self.output_path, "a", encoding="utf-8") as handle:

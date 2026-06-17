@@ -1,3 +1,4 @@
+import math
 import random
 
 import numpy as np
@@ -169,6 +170,113 @@ class RunningFeatureNormalizer:
         self.mean = np.asarray(state.get("mean", self.mean.tolist()), dtype=np.float64)
         self.m2 = np.asarray(state.get("m2", self.m2.tolist()), dtype=np.float64)
 
+    @staticmethod
+    def copy_state_dict(state):
+        if not state:
+            return None
+        count = float(state.get("count", 0.0))
+        mean = np.asarray(state.get("mean", []), dtype=np.float64)
+        m2 = np.asarray(state.get("m2", []), dtype=np.float64)
+        return {
+            "count": count,
+            "mean": mean.tolist(),
+            "m2": m2.tolist(),
+        }
+
+    @staticmethod
+    def merge_state_dicts(states):
+        """Combine independent running stats via the parallel Welford merge.
+
+        Each distributed actor accumulates its own (count, mean, m2) over the
+        run; this folds them into a single set equivalent to having observed
+        the concatenation of all their samples. Returns None if no state
+        carries any samples (count == 0), so callers can skip empty merges.
+        """
+        merged_count = 0.0
+        merged_mean = None
+        merged_m2 = None
+        for state in states:
+            if not state:
+                continue
+            count = float(state.get("count", 0.0))
+            if count <= 0.0:
+                continue
+            mean = np.asarray(state.get("mean", []), dtype=np.float64)
+            m2 = np.asarray(state.get("m2", []), dtype=np.float64)
+            if merged_mean is None:
+                merged_count = count
+                merged_mean = mean.copy()
+                merged_m2 = m2.copy()
+                continue
+            total = merged_count + count
+            delta = mean - merged_mean
+            merged_mean = merged_mean + delta * (count / total)
+            merged_m2 = (
+                merged_m2 + m2 + (delta ** 2) * merged_count * count / total
+            )
+            merged_count = total
+        if merged_mean is None:
+            return None
+        return {
+            "count": float(merged_count),
+            "mean": merged_mean.tolist(),
+            "m2": merged_m2.tolist(),
+        }
+
+    @staticmethod
+    def subtract_state_dict(current, baseline):
+        """Return the Welford state for samples in current but not baseline.
+
+        Distributed actors may resume from a checkpoint with non-empty
+        normalizer stats. If each actor reports its full current stats, merging
+        them would count the checkpoint baseline once per actor. This computes
+        the actor-local post-baseline delta so callers can merge:
+        one checkpoint baseline + each actor delta.
+        """
+        if not current:
+            return None
+        current_count = float(current.get("count", 0.0))
+        if current_count <= 0.0:
+            return None
+        if not baseline or float(baseline.get("count", 0.0)) <= 0.0:
+            return RunningFeatureNormalizer.copy_state_dict(current)
+
+        baseline_count = float(baseline.get("count", 0.0))
+        delta_count = current_count - baseline_count
+        if delta_count <= 0.0:
+            return None
+
+        current_mean = np.asarray(current.get("mean", []), dtype=np.float64)
+        current_m2 = np.asarray(current.get("m2", []), dtype=np.float64)
+        baseline_mean = np.asarray(baseline.get("mean", []), dtype=np.float64)
+        baseline_m2 = np.asarray(baseline.get("m2", []), dtype=np.float64)
+        if current_mean.shape != baseline_mean.shape:
+            raise ValueError(
+                "Cannot subtract normalizer states with different mean shapes: "
+                f"{current_mean.shape} != {baseline_mean.shape}",
+            )
+        if current_m2.shape != baseline_m2.shape:
+            raise ValueError(
+                "Cannot subtract normalizer states with different m2 shapes: "
+                f"{current_m2.shape} != {baseline_m2.shape}",
+            )
+
+        delta_mean = (
+            current_mean * current_count - baseline_mean * baseline_count
+        ) / delta_count
+        mean_gap = delta_mean - baseline_mean
+        delta_m2 = (
+            current_m2
+            - baseline_m2
+            - (mean_gap ** 2) * baseline_count * delta_count / current_count
+        )
+        delta_m2 = np.maximum(delta_m2, 0.0)
+        return {
+            "count": float(delta_count),
+            "mean": delta_mean.tolist(),
+            "m2": delta_m2.tolist(),
+        }
+
 
 def get_friendly_health(obs):
     """Sum of health across all friendly units."""
@@ -252,6 +360,7 @@ class ObservationExtractor:
             )
 
         entity_rows = self._extract_entity_rows(obs)
+        entity_rows = self._sort_entity_rows(entity_rows)
         if update_stats:
             self.entity_normalizer.update(entity_rows)
         entity_rows = self.entity_normalizer.normalize(entity_rows)
@@ -332,6 +441,54 @@ class ObservationExtractor:
             feature_units,
             field_names=CURATED_FEATURE_UNIT_FIELDS,
         )
+
+    def _sort_entity_rows(self, rows):
+        rows = np.asarray(rows, dtype=np.float32)
+        if rows.size == 0 or rows.ndim != 2:
+            return rows
+
+        alliance_idx = CURATED_FEATURE_UNIT_FIELDS.index("alliance")
+        x_idx = CURATED_FEATURE_UNIT_FIELDS.index("x")
+        y_idx = CURATED_FEATURE_UNIT_FIELDS.index("y")
+        selected_idx = CURATED_FEATURE_UNIT_FIELDS.index("is_selected")
+        unit_type_idx = CURATED_FEATURE_UNIT_FIELDS.index("unit_type")
+
+        friendly_rows = rows[rows[:, alliance_idx] == 1]
+        if friendly_rows.size:
+            center_x = float(np.mean(friendly_rows[:, x_idx]))
+            center_y = float(np.mean(friendly_rows[:, y_idx]))
+        else:
+            center_x = float(np.mean(rows[:, x_idx]))
+            center_y = float(np.mean(rows[:, y_idx]))
+
+        order = []
+        for row_idx, row in enumerate(rows):
+            alliance = int(row[alliance_idx])
+            is_selected = float(row[selected_idx]) > 0.5
+            if alliance == 4:
+                group = 0
+            elif is_selected:
+                group = 1
+            elif alliance == 1:
+                group = 2
+            else:
+                group = 3
+            distance = math.hypot(
+                float(row[x_idx]) - center_x,
+                float(row[y_idx]) - center_y,
+            )
+            order.append(
+                (
+                    group,
+                    distance,
+                    float(row[x_idx]),
+                    float(row[y_idx]),
+                    float(row[unit_type_idx]),
+                    row_idx,
+                ),
+            )
+        indices = [idx for *_prefix, idx in sorted(order)]
+        return rows[indices]
 
     def _extract_selection_rows(self, obs):
         selection = getattr(obs.observation, "multi_select", None)
@@ -520,3 +677,62 @@ class ObservationExtractor:
         selection_state = state.get("selection_normalizer")
         if selection_state:
             self.selection_normalizer.load_state_dict(selection_state)
+
+    @staticmethod
+    def merge_state_dicts(states):
+        """Merge a list of extractor state_dicts into one.
+
+        Used to fold the per-actor running normalizer stats back into the
+        learner before checkpointing, so saved checkpoints carry real stats
+        instead of the learner's never-updated count=0 placeholder.
+        """
+        states = [s for s in states if s]
+        merged = {}
+        entity = RunningFeatureNormalizer.merge_state_dicts(
+            [s.get("entity_normalizer") for s in states],
+        )
+        if entity is not None:
+            merged["entity_normalizer"] = entity
+        selection = RunningFeatureNormalizer.merge_state_dicts(
+            [s.get("selection_normalizer") for s in states],
+        )
+        if selection is not None:
+            merged["selection_normalizer"] = selection
+        return merged
+
+    @staticmethod
+    def copy_state_dict(state):
+        if not state:
+            return {}
+        copied = {}
+        entity_state = RunningFeatureNormalizer.copy_state_dict(
+            state.get("entity_normalizer"),
+        )
+        if entity_state is not None:
+            copied["entity_normalizer"] = entity_state
+        selection_state = RunningFeatureNormalizer.copy_state_dict(
+            state.get("selection_normalizer"),
+        )
+        if selection_state is not None:
+            copied["selection_normalizer"] = selection_state
+        return copied
+
+    @staticmethod
+    def subtract_state_dict(current, baseline):
+        if not current:
+            return {}
+        baseline = baseline or {}
+        delta = {}
+        entity = RunningFeatureNormalizer.subtract_state_dict(
+            current.get("entity_normalizer"),
+            baseline.get("entity_normalizer"),
+        )
+        if entity is not None:
+            delta["entity_normalizer"] = entity
+        selection = RunningFeatureNormalizer.subtract_state_dict(
+            current.get("selection_normalizer"),
+            baseline.get("selection_normalizer"),
+        )
+        if selection is not None:
+            delta["selection_normalizer"] = selection
+        return delta

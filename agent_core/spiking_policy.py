@@ -1,3 +1,5 @@
+from typing import NamedTuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -37,6 +39,18 @@ from agent_core.target_heads import (
     TargetSample,
     TokenPointerTargetHead,
 )
+
+
+class SpatialContextBundle(NamedTuple):
+    """Spatial context plus pre-pool per-pixel features for the fine skip.
+
+    Returned by encode_step_tensors instead of a bare spatial-context tensor
+    only when the fine skip connection is enabled; build_target_head unwraps
+    it, so downstream code that treats spatial_context as opaque is unchanged.
+    """
+
+    tokens: torch.Tensor
+    fine_features: torch.Tensor
 
 
 class EntityEncoder(nn.Module):
@@ -373,6 +387,9 @@ class PolicyNetwork(nn.Module):
         coarse_grid_size=None,
         local_grid_size=None,
         target_decode_mode="center",
+        fine_skip_connection=False,
+        fine_skip_dim=32,
+        amp_dtype="auto",
     ):
         super().__init__()
 
@@ -433,6 +450,16 @@ class PolicyNetwork(nn.Module):
                 "coarse_grid_size must match attention_pool_size for the current spatial tokenizer, "
                 f"got coarse_grid_size={self._coarse_grid_size} and attention_pool_size={self._pool_size}",
             )
+        self._fine_skip_connection = bool(fine_skip_connection)
+        self._fine_skip_dim = max(1, int(fine_skip_dim))
+        if (
+            self._fine_skip_connection
+            and self._spatial_head_type != "coarse_to_fine"
+        ):
+            raise ValueError(
+                "fine_skip_connection is only supported with "
+                f"spatial_head_type='coarse_to_fine', got {self._spatial_head_type!r}",
+            )
         self._config = {
             "num_steps": self.num_steps,
             "screen_size": self.screen_size,
@@ -450,6 +477,9 @@ class PolicyNetwork(nn.Module):
             "coarse_grid_size": int(self._coarse_grid_size),
             "local_grid_size": int(self._local_grid_size),
             "target_decode_mode": self._target_decode_mode,
+            "fine_skip_connection": bool(self._fine_skip_connection),
+            "fine_skip_dim": int(self._fine_skip_dim),
+            "requested_amp_dtype": str(amp_dtype),
             "meta_input_dim": self._meta_input_dim,
             "action_feedback_token_count": int(ACTION_FEEDBACK_TOKEN_COUNT),
             "action_feedback_token_dim": int(ACTION_FEEDBACK_TOKEN_DIM),
@@ -538,11 +568,65 @@ class PolicyNetwork(nn.Module):
         self.critic_fc = nn.Linear(self._latent_dim, 1)
         self.target_head = self._build_target_head_module()
 
-        self.use_amp = torch.cuda.is_available()
-        self.amp_dtype = torch.float16 if self.use_amp else torch.float32
-        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
+        self._requested_amp_dtype = str(amp_dtype)
+        self.use_amp = False
+        self.amp_dtype = torch.float32
+        self.scaler = self._make_grad_scaler(
+            use_amp=False,
+            amp_dtype=torch.float32,
+        )
+        self.configure_amp(self._requested_amp_dtype)
 
         self.to(self.device)
+
+    @staticmethod
+    def _resolve_amp_settings(requested, device):
+        device = torch.device(device)
+        if device.type != "cuda":
+            return False, torch.float32
+
+        normalized = str(requested or "auto").strip().lower().replace("torch.", "")
+        if normalized == "auto":
+            supports_bf16 = bool(
+                getattr(torch.cuda, "is_bf16_supported", lambda: False)(),
+            )
+            return True, torch.bfloat16 if supports_bf16 else torch.float16
+        aliases = {
+            "bf16": torch.bfloat16,
+            "bfloat16": torch.bfloat16,
+            "fp16": torch.float16,
+            "float16": torch.float16,
+            "half": torch.float16,
+            "fp32": torch.float32,
+            "float32": torch.float32,
+            "full": torch.float32,
+        }
+        if normalized not in aliases:
+            raise ValueError(
+                "model.amp_dtype must be one of auto|bf16|fp16|fp32, "
+                f"got {requested!r}",
+            )
+        dtype = aliases[normalized]
+        return dtype != torch.float32, dtype
+
+    @staticmethod
+    def _make_grad_scaler(*, use_amp: bool, amp_dtype: torch.dtype):
+        return torch.amp.GradScaler(
+            "cuda",
+            enabled=bool(use_amp and amp_dtype == torch.float16),
+        )
+
+    def configure_amp(self, requested=None):
+        if requested is not None:
+            self._requested_amp_dtype = str(requested)
+        self.use_amp, self.amp_dtype = self._resolve_amp_settings(
+            self._requested_amp_dtype,
+            self.device,
+        )
+        self.scaler = self._make_grad_scaler(
+            use_amp=self.use_amp,
+            amp_dtype=self.amp_dtype,
+        )
 
     def resolved_config(self):
         return {
@@ -581,6 +665,10 @@ class PolicyNetwork(nn.Module):
                 local_grid_size=self._local_grid_size,
                 screen_size=self.screen_size,
                 target_decode_mode=self._target_decode_mode,
+                fine_skip_dim=(
+                    self._fine_skip_dim if self._fine_skip_connection else None
+                ),
+                fine_feature_channels=self.conv2.out_channels,
             )
         raise ValueError(
             f"Unsupported spatial_head_type: {self._spatial_head_type!r}",
@@ -762,6 +850,10 @@ class PolicyNetwork(nn.Module):
 
         x = F.relu(self.conv1(spatial_input))
         x = F.relu(self.conv2(x))
+        # Pre-pool per-pixel features for the fine skip connection; pooling
+        # below this line destroys sub-cell position, so this is the last
+        # tap with full spatial resolution.
+        fine_features = x if self._fine_skip_connection else None
         x = self.pool(x)
         x = F.relu(self.conv3(x))
         x = self.pool(x)
@@ -892,6 +984,16 @@ class PolicyNetwork(nn.Module):
         latent = F.relu(self.shared_fc2(latent))
         state_value = self.critic_fc(latent).squeeze(-1)
         next_state = (syn_tok, mem_tok)
+        if fine_features is not None:
+            return (
+                latent,
+                state_value,
+                next_state,
+                SpatialContextBundle(
+                    tokens=spatial_context,
+                    fine_features=fine_features,
+                ),
+            )
         return latent, state_value, next_state, spatial_context
 
     def action_head(self, latent: torch.Tensor) -> torch.Tensor:
@@ -900,9 +1002,13 @@ class PolicyNetwork(nn.Module):
     def build_target_head(
         self,
         latent: torch.Tensor,
-        spatial_context: torch.Tensor,
+        spatial_context: torch.Tensor | SpatialContextBundle,
         action_ids: torch.Tensor | None,
     ) -> TargetHeadState:
+        fine_features = None
+        if isinstance(spatial_context, SpatialContextBundle):
+            fine_features = spatial_context.fine_features
+            spatial_context = spatial_context.tokens
         if action_ids is None:
             action_ids = torch.full(
                 (latent.size(0),),
@@ -913,7 +1019,12 @@ class PolicyNetwork(nn.Module):
         else:
             action_ids = action_ids.to(device=latent.device, dtype=torch.long)
         action_ids = action_ids.clamp(0, self._action_dim - 1)
-        return self.target_head.build(latent, spatial_context, action_ids)
+        return self.target_head.build(
+            latent,
+            spatial_context,
+            action_ids,
+            fine_features=fine_features,
+        )
 
     def sample_target(
         self,

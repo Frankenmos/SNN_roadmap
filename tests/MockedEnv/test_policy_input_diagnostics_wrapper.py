@@ -85,13 +85,11 @@ def test_policy_input_diagnostics_wrapper_logs_raw_and_batch_fields(
     assert second["batch"]["meta_dim"] == META_VECTOR_DIM
     assert second["batch"]["action_feedback_token_dim"] == ACTION_FEEDBACK_TOKEN_DIM
     assert len(second["batch"]["action_feedback_token"]) == ACTION_FEEDBACK_TOKEN_DIM
+    assert second["batch"]["action_feedback_provenance"] == (
+        "wrapper_local_extractor_without_agent_last_action_token"
+    )
     assert set(second["batch"]["action_feedback_named"]) == set(
         ACTION_FEEDBACK_FIELD_NAMES,
     )
-    assert second["batch"]["action_feedback_effect_class"] in {
-        "not_smart",
-        "move_like",
-        "damage_like",
-        "move_and_damage",
-        "null_or_unclear",
-    }
+    assert "action_feedback_effect_class" not in second["batch"]
+    assert "not agent-faithful" in second["diagnostic_scope"]["action_feedback"]

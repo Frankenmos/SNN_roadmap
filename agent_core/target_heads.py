@@ -40,6 +40,7 @@ class BaseSpatialTargetHead(nn.Module):
         latent: torch.Tensor,
         spatial_context: torch.Tensor,
         action_ids: torch.Tensor,
+        fine_features: torch.Tensor | None = None,
     ) -> TargetHeadState:
         raise NotImplementedError
 
@@ -118,7 +119,9 @@ class FactorizedXYTargetHead(BaseSpatialTargetHead):
         latent: torch.Tensor,
         spatial_context: torch.Tensor,
         action_ids: torch.Tensor,
+        fine_features: torch.Tensor | None = None,
     ) -> TargetHeadState:
+        del fine_features
         action_ids = action_ids.clamp(
             0,
             self.action_condition_embedding.num_embeddings - 1,
@@ -283,7 +286,9 @@ class TokenPointerTargetHead(BaseSpatialTargetHead):
         latent: torch.Tensor,
         spatial_context: torch.Tensor,
         action_ids: torch.Tensor,
+        fine_features: torch.Tensor | None = None,
     ) -> TargetHeadState:
+        del fine_features
         batch_size, embed_dim, height, width = spatial_context.shape
         if embed_dim != self.embed_dim:
             raise ValueError(
@@ -421,6 +426,8 @@ class CoarseToFineTargetHead(BaseSpatialTargetHead):
         local_grid_size: int,
         screen_size: int,
         target_decode_mode: str = "center",
+        fine_skip_dim: int | None = None,
+        fine_feature_channels: int = 32,
     ) -> None:
         super().__init__()
         self.embed_dim = int(embed_dim)
@@ -462,6 +469,27 @@ class CoarseToFineTargetHead(BaseSpatialTargetHead):
             nn.Linear(self.embed_dim // 2, self.local_grid_size * self.local_grid_size),
         )
 
+        # Optional fine skip connection: per-pixel pre-pool conv features are
+        # scored against a query so the fine stage can see sub-cell content.
+        # Without this the fine stage only receives pooled per-cell tokens and
+        # can express nothing beyond a static prior over sub-cell positions.
+        self.fine_skip_dim = None if fine_skip_dim is None else int(fine_skip_dim)
+        self.fine_feature_channels = int(fine_feature_channels)
+        if self.fine_skip_dim is not None:
+            if self.fine_skip_dim <= 0:
+                raise ValueError("fine_skip_dim must be positive when set")
+            self.fine_key_proj = nn.Linear(
+                self.fine_feature_channels,
+                self.fine_skip_dim,
+                bias=False,
+            )
+            self.fine_key_norm = nn.LayerNorm(self.fine_skip_dim)
+            self.fine_query_mlp = nn.Sequential(
+                nn.Linear(self.latent_dim * 2 + self.embed_dim, self.embed_dim),
+                nn.ReLU(),
+                nn.Linear(self.embed_dim, self.fine_skip_dim),
+            )
+
     @property
     def token_count(self) -> int:
         return self.coarse_grid_size * self.coarse_grid_size
@@ -475,6 +503,7 @@ class CoarseToFineTargetHead(BaseSpatialTargetHead):
         latent: torch.Tensor,
         spatial_context: torch.Tensor,
         action_ids: torch.Tensor,
+        fine_features: torch.Tensor | None = None,
     ) -> TargetHeadState:
         batch_size, embed_dim, height, width = spatial_context.shape
         if embed_dim != self.embed_dim:
@@ -512,11 +541,59 @@ class CoarseToFineTargetHead(BaseSpatialTargetHead):
             self.fine_count,
         )
 
+        if self.fine_skip_dim is not None:
+            fine_logits = fine_logits + self._fine_skip_scores(
+                fine_input,
+                fine_features,
+            )
+
         return TargetHeadState(
             head_type=self.head_type,
             primary_logits=coarse_logits,  # [B, 49]
             secondary_logits=fine_logits,  # [B, 49, 144]
         )
+
+    def _fine_skip_scores(
+        self,
+        fine_input: torch.Tensor,
+        fine_features: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if fine_features is None:
+            raise RuntimeError(
+                "Coarse-to-fine head was built with fine_skip_dim set but "
+                "build() received no fine_features tensor",
+            )
+        batch_size, channels, height, width = fine_features.shape
+        if channels != self.fine_feature_channels:
+            raise ValueError(
+                "Fine skip expected "
+                f"{self.fine_feature_channels} channels, got {channels}",
+            )
+        if height != self.screen_size or width != self.screen_size:
+            raise ValueError(
+                "Fine skip expected "
+                f"{self.screen_size}x{self.screen_size} features, "
+                f"got {height}x{width}",
+            )
+        # [B, C, 84, 84] -> [B, 49, 144, C] with cell = row*7+col and
+        # fine = fine_row*12+fine_col, matching encode_xy_to_target.
+        per_cell = fine_features.view(
+            batch_size,
+            channels,
+            self.coarse_grid_size,
+            self.local_grid_size,
+            self.coarse_grid_size,
+            self.local_grid_size,
+        ).permute(0, 2, 4, 3, 5, 1).reshape(
+            batch_size,
+            self.token_count,
+            self.fine_count,
+            channels,
+        )
+        keys = self.fine_key_norm(self.fine_key_proj(per_cell))
+        fine_query = self.fine_query_mlp(fine_input)
+        scores = torch.einsum("bnd,bnkd->bnk", fine_query, keys)
+        return scores / math.sqrt(float(self.fine_skip_dim))
 
     def sample(
         self,

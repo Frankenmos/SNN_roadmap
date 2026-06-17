@@ -1,0 +1,66 @@
+======================================================================
+SNN-PPO Training Instability Report
+======================================================================
+
+Summary:
+  episodes:              38071
+  avg episode length:    179.4
+  avg total reward:      14.03
+  max total reward:      555.85
+  reward std (full run): 70.43
+  final 100-ep avg:      51.60
+  action semantics:      stream_action_effect_feedback_v2
+  action labels:         0=no-op, 1=left_click, 2=right_click
+
+Plateau detection: ep 31667
+Late-stage CoV (last 200 eps): 1.248
+
+----------------------------------------------------------------------
+Data-driven flags:
+----------------------------------------------------------------------
+  [HIGH] Late-stage instability: mean CoV over last 200 eps = 1.25 (> 0.5) after plateau at ep 31667.
+        suggested knob: lr: 1e-4 -> 5e-5; epochs: 20 -> 10
+
+----------------------------------------------------------------------
+Interpretation Notes:
+----------------------------------------------------------------------
+  1. Current code has already fixed two older structural suspects:
+     - state-replay PPO training now uses stored SNN state
+     - entropy bonus is normalized per head instead of favoring move samples
+  2. If you are analyzing a run produced before those fixes landed,
+     older collapse patterns may reflect historical bugs rather than the
+     current trainer.
+
+----------------------------------------------------------------------
+Instrumentation status:
+----------------------------------------------------------------------
+  ppo_updates: 2161 rows logged.
+  Late-stage (last 540 updates) means:
+    mean_entropy        = 0.182
+    mean_kl (approx)    = 0.0014
+    clip_fraction       = 0.022
+    explained_variance  = 0.673
+    update_wall_sec     = 41.12
+    rollout_wall_sec    = 54.37
+    learner steps/sec   = 85.66
+    rollout steps/sec   = 59.76
+    tbptt fwd calls     = 1043.6
+    active chunks       = 12.26
+    replay_forward_s    = 18.02
+    backward_opt_s      = 21.20
+    chunk_pack_s        = 0.10
+    cpu_to_gpu_s        = 0.78
+    payload MiB         = 2648.2
+    cuda peak GiB       = 16.74
+    grad_norm (finite)  = 1307.432
+    grad_norm inf cnt   = 0
+    lr                  = 4.87e-05
+    nonfinite_grad_steps= 0
+    skipped_opt_steps   = 0
+    transitions/update  = 3196.7
+    entity_mask_util    = 0.441
+    entity_count_p50    = 12.54
+    entity_count_p99    = 13.25
+    selection_mask_util = 0.352
+  eval_runs: 12 rows logged.
+  latest eval @ ep 37094 (n=5, det=True): mean=0.00, std=0.00

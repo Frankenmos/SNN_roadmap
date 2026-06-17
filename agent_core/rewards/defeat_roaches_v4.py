@@ -6,6 +6,8 @@ from agent_core.policy_protocol import (
     SMART_SCREEN_FUNCTION_ID,
 )
 from agent_core.rewards.defeat_roaches_v3 import RewardFunctionV3
+from obs_space.action_effects import extract_frame_snapshot
+from obs_space.smart_outcome_detector import SmartOutcomeDetector
 
 
 class RewardFunctionV4(RewardFunctionV3):
@@ -25,6 +27,11 @@ class RewardFunctionV4(RewardFunctionV3):
         smart_near_enemy_reward=0.08,
         smart_far_enemy_penalty=0.03,
         noop_visible_enemy_penalty=0.02,
+        smart_outcome_window=5,
+        smart_attack_likely_reward=0.12,
+        smart_fired_likely_reward=0.06,
+        smart_attack_intent_reward=0.02,
+        smart_null_unclear_penalty=0.02,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -32,6 +39,15 @@ class RewardFunctionV4(RewardFunctionV3):
         self.smart_near_enemy_reward = float(smart_near_enemy_reward)
         self.smart_far_enemy_penalty = float(smart_far_enemy_penalty)
         self.noop_visible_enemy_penalty = float(noop_visible_enemy_penalty)
+        self.smart_attack_likely_reward = float(smart_attack_likely_reward)
+        self.smart_fired_likely_reward = float(smart_fired_likely_reward)
+        self.smart_attack_intent_reward = float(smart_attack_intent_reward)
+        self.smart_null_unclear_penalty = float(smart_null_unclear_penalty)
+        self.smart_outcome_detector = SmartOutcomeDetector(
+            outcome_window=int(smart_outcome_window),
+            near_enemy_threshold=float(smart_target_radius),
+        )
+        self._reward_step = 0
         self._last_action_context = None
 
     def resolved_config(self):
@@ -45,12 +61,29 @@ class RewardFunctionV4(RewardFunctionV3):
                 "noop_visible_enemy_penalty": float(
                     self.noop_visible_enemy_penalty,
                 ),
+                "smart_outcome_window": int(
+                    self.smart_outcome_detector.outcome_window,
+                ),
+                "smart_attack_likely_reward": float(
+                    self.smart_attack_likely_reward,
+                ),
+                "smart_fired_likely_reward": float(
+                    self.smart_fired_likely_reward,
+                ),
+                "smart_attack_intent_reward": float(
+                    self.smart_attack_intent_reward,
+                ),
+                "smart_null_unclear_penalty": float(
+                    self.smart_null_unclear_penalty,
+                ),
             },
         )
         return config
 
     def reset(self):
         super().reset()
+        self.smart_outcome_detector.reset()
+        self._reward_step = 0
         self._last_action_context = None
 
     def observe_action(self, action_id, target_x, target_y, obs, action_call=None):
@@ -77,18 +110,54 @@ class RewardFunctionV4(RewardFunctionV3):
             ],
             "smart_available": SMART_SCREEN_FUNCTION_ID in available_set,
         }
+        if action_id is not None and int(action_id) == POLICY_ACTION_RIGHT_CLICK:
+            self.smart_outcome_detector.observe_smart_click(
+                previous_frame=extract_frame_snapshot(obs),
+                target=(float(target_x), float(target_y)),
+                click_step=int(self._reward_step),
+                previous_feature_units=getattr(obs.observation, "feature_units", None),
+            )
 
     def calculate_reward(self, obs, vector_observation):
         total_reward = float(super().calculate_reward(obs, vector_observation))
         action_reward = self._action_guidance_reward()
+        outcome_reward = self._smart_outcome_reward(obs)
         self._last_action_context = None
-        total_reward += action_reward
+        total_reward += action_reward + outcome_reward
 
         if self.last_reward_components is not None:
-            self.last_reward_components["bonus_reward"] += action_reward
+            self.last_reward_components["bonus_reward"] += (
+                action_reward + outcome_reward
+            )
             self.last_reward_components["total_reward"] = total_reward
 
+        self._reward_step += 1
         return total_reward
+
+    def _smart_outcome_reward(self, obs):
+        current_frame = extract_frame_snapshot(obs)
+        outcomes = self.smart_outcome_detector.resolve(
+            current_frame=current_frame,
+            resolution_step=int(self._reward_step) + 1,
+            current_feature_units=getattr(obs.observation, "feature_units", None),
+        )
+        reward = 0.0
+        for outcome in outcomes:
+            if outcome.outcome_class == "attack_likely":
+                reward += self.smart_attack_likely_reward
+            elif outcome.outcome_class == "fired_likely":
+                reward += self.smart_fired_likely_reward
+            elif outcome.outcome_class == "attack_intent":
+                reward += self.smart_attack_intent_reward
+            elif outcome.outcome_class in {"null_unclear", "null_or_unclear"}:
+                reward -= self.smart_null_unclear_penalty
+
+        return float(
+            max(
+                -self.smart_null_unclear_penalty,
+                min(self.smart_attack_likely_reward, reward),
+            ),
+        )
 
     def _action_guidance_reward(self):
         context = self._last_action_context

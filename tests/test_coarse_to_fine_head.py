@@ -386,6 +386,265 @@ def test_coarse_to_fine_validates_config():
         )
 
 
+class TestFineSkipConnection:
+    """Test the per-pixel fine skip connection (Stage 1 spatial fix)."""
+
+    @pytest.fixture
+    def skip_head(self):
+        torch.manual_seed(7)
+        return CoarseToFineTargetHead(
+            embed_dim=64,
+            latent_dim=64,
+            action_dim=3,
+            coarse_grid_size=7,
+            local_grid_size=12,
+            screen_size=84,
+            fine_skip_dim=32,
+            fine_feature_channels=32,
+        )
+
+    @pytest.fixture
+    def skip_inputs(self):
+        torch.manual_seed(11)
+        batch_size = 2
+        latent = torch.randn(batch_size, 64)
+        spatial_context = torch.randn(batch_size, 64, 7, 7)
+        action_ids = torch.full((batch_size,), POLICY_ACTION_RIGHT_CLICK)
+        return latent, spatial_context, action_ids
+
+    def test_disabled_head_has_no_skip_parameters(self, head):
+        assert head.fine_skip_dim is None
+        assert not hasattr(head, "fine_key_proj")
+        assert not any(
+            name.startswith(("fine_key_proj", "fine_key_norm", "fine_query_mlp"))
+            for name in head.state_dict()
+        )
+
+    def test_enabled_head_requires_fine_features(self, skip_head, skip_inputs):
+        latent, spatial_context, action_ids = skip_inputs
+        with pytest.raises(RuntimeError, match="no fine_features"):
+            skip_head.build(latent, spatial_context, action_ids)
+
+    def test_enabled_head_validates_feature_shape(self, skip_head, skip_inputs):
+        latent, spatial_context, action_ids = skip_inputs
+        with pytest.raises(ValueError, match="channels"):
+            skip_head.build(
+                latent,
+                spatial_context,
+                action_ids,
+                fine_features=torch.randn(2, 16, 84, 84),
+            )
+        with pytest.raises(ValueError, match="84x84"):
+            skip_head.build(
+                latent,
+                spatial_context,
+                action_ids,
+                fine_features=torch.randn(2, 32, 42, 42),
+            )
+
+    def test_fine_logits_depend_on_fine_features(self, skip_head, skip_inputs):
+        """The exact property the V5 head lacked: fine logits must change
+        when the screen content changes and nothing else does."""
+        latent, spatial_context, action_ids = skip_inputs
+
+        state_a = skip_head.build(
+            latent,
+            spatial_context,
+            action_ids,
+            fine_features=torch.randn(2, 32, 84, 84),
+        )
+        state_b = skip_head.build(
+            latent,
+            spatial_context,
+            action_ids,
+            fine_features=torch.randn(2, 32, 84, 84),
+        )
+
+        assert not torch.allclose(
+            state_a.secondary_logits,
+            state_b.secondary_logits,
+        )
+        # Coarse stage is untouched by the skip connection
+        assert torch.allclose(state_a.primary_logits, state_b.primary_logits)
+
+    def test_skip_scores_are_cell_local(self, skip_head, skip_inputs):
+        """Features inside one coarse cell's patch only move that cell's
+        fine logits (zero features give zero keys at init)."""
+        latent, spatial_context, action_ids = skip_inputs
+        baseline = skip_head.build(
+            latent,
+            spatial_context,
+            action_ids,
+            fine_features=torch.zeros(2, 32, 84, 84),
+        )
+
+        cell_row, cell_col = 3, 5
+        cell_index = cell_row * 7 + cell_col
+        features = torch.zeros(2, 32, 84, 84)
+        features[
+            :,
+            :,
+            cell_row * 12 : (cell_row + 1) * 12,
+            cell_col * 12 : (cell_col + 1) * 12,
+        ] = 5.0
+        touched = skip_head.build(
+            latent,
+            spatial_context,
+            action_ids,
+            fine_features=features,
+        )
+
+        diff = (touched.secondary_logits - baseline.secondary_logits).abs()
+        assert diff[:, cell_index].max() > 0
+        untouched_mask = torch.ones(49, dtype=torch.bool)
+        untouched_mask[cell_index] = False
+        assert torch.allclose(
+            touched.secondary_logits[:, untouched_mask],
+            baseline.secondary_logits[:, untouched_mask],
+        )
+
+    def test_skip_scores_align_pixel_to_fine_index(self, skip_head, skip_inputs):
+        """A single hot pixel moves exactly one fine logit, and it is the
+        fine index that encode_xy_to_target assigns to that pixel."""
+        latent, spatial_context, action_ids = skip_inputs
+        baseline = skip_head.build(
+            latent,
+            spatial_context,
+            action_ids,
+            fine_features=torch.zeros(2, 32, 84, 84),
+        )
+
+        x_pix, y_pix = 67, 31  # arbitrary, not on a cell boundary
+        encoded = skip_head.encode_xy_to_target(
+            torch.tensor([x_pix]),
+            torch.tensor([y_pix]),
+        )
+        cell_index = int(encoded["coarse_index"].item())
+        fine_index = int(encoded["fine_index"].item())
+
+        features = torch.zeros(2, 32, 84, 84)
+        features[:, :, y_pix, x_pix] = 5.0
+        touched = skip_head.build(
+            latent,
+            spatial_context,
+            action_ids,
+            fine_features=features,
+        )
+
+        diff = (
+            touched.secondary_logits - baseline.secondary_logits
+        ).abs()[0, cell_index]
+        assert diff[fine_index] > 0
+        other_mask = torch.ones(144, dtype=torch.bool)
+        other_mask[fine_index] = False
+        assert torch.all(diff[other_mask] == 0)
+
+    def test_sample_and_evaluate_consistent_with_skip(
+        self,
+        skip_head,
+        skip_inputs,
+    ):
+        latent, spatial_context, action_ids = skip_inputs
+        state = skip_head.build(
+            latent,
+            spatial_context,
+            action_ids,
+            fine_features=torch.randn(2, 32, 84, 84),
+        )
+        sample = skip_head.sample(state, deterministic=False)
+        evaluation = skip_head.evaluate(
+            state,
+            x=sample.x,
+            y=sample.y,
+            coarse_index=sample.coarse_index,
+            fine_index=sample.fine_index,
+        )
+        assert torch.allclose(sample.log_prob, evaluation.log_prob, atol=1e-5)
+
+
+def test_policy_network_rejects_fine_skip_without_coarse_to_fine():
+    from agent_core.spiking_policy import PolicyNetwork
+    from agent_core.policy_protocol import SPATIAL_OBS_SHAPE, META_VECTOR_DIM, POLICY_ACTION_DIM
+
+    with pytest.raises(ValueError, match="fine_skip_connection"):
+        PolicyNetwork(
+            SPATIAL_OBS_SHAPE,
+            vector_input_dim=META_VECTOR_DIM,
+            action_dim=POLICY_ACTION_DIM,
+            spatial_head_type="token_pointer",
+            fine_skip_connection=True,
+        )
+
+
+def test_policy_forward_with_fine_skip_connection():
+    """Integration: encode returns a bundle, build unwraps it, and the
+    sampled target evaluates to the same log_prob."""
+    from agent_core.spiking_policy import PolicyNetwork, SpatialContextBundle
+    from agent_core.policy_protocol import (
+        SPATIAL_OBS_SHAPE,
+        META_VECTOR_DIM,
+        POLICY_ACTION_DIM,
+    )
+    from MockedEnv.policy_batch import make_policy_batch
+
+    net = PolicyNetwork(
+        SPATIAL_OBS_SHAPE,
+        vector_input_dim=META_VECTOR_DIM,
+        action_dim=POLICY_ACTION_DIM,
+        spatial_head_type="coarse_to_fine",
+        num_steps=2,
+        screen_size=84,
+        attention_embed_dim=64,
+        attention_pool_size=7,
+        fine_skip_connection=True,
+        fine_skip_dim=32,
+    )
+    net.device = torch.device("cpu")
+    net.to("cpu")
+
+    assert net.resolved_config()["fine_skip_connection"] is True
+
+    batch = make_policy_batch(
+        batch_size=2,
+        spatial_shape=SPATIAL_OBS_SHAPE,
+        meta_dim=META_VECTOR_DIM,
+        with_state=True,
+    )
+
+    latent, state_value, next_state, spatial_context = net.encode_step_tensors(
+        spatial_obs=batch.spatial_obs,
+        entity_features=batch.entity_features,
+        entity_mask=batch.entity_mask,
+        selection_features=batch.selection_features,
+        selection_mask=batch.selection_mask,
+        action_feedback_tokens=batch.action_feedback_tokens,
+        meta_vec=batch.meta_vec,
+        state_in=batch.state_in,
+    )
+    assert isinstance(spatial_context, SpatialContextBundle)
+    assert spatial_context.tokens.shape == (2, 64, 7, 7)
+    assert spatial_context.fine_features.shape == (2, 32, 84, 84)
+
+    action_logits, target_head_state, state_value, next_state = net(batch)
+    assert action_logits.shape == (2, POLICY_ACTION_DIM)
+    assert target_head_state.primary_logits.shape == (2, 49)
+    assert target_head_state.secondary_logits.shape == (2, 49, 144)
+
+    sample = net.sample_target(target_head_state, None, deterministic=False)
+    evaluation = net.evaluate_target(
+        target_head_state,
+        {
+            "x": sample.x,
+            "y": sample.y,
+            "target_index": None,
+            "coarse_index": sample.coarse_index,
+            "fine_index": sample.fine_index,
+        },
+        None,
+    )
+    assert torch.allclose(sample.log_prob, evaluation.log_prob, atol=1e-5)
+
+
 def test_policy_network_instantiates_with_coarse_to_fine():
     """Smoke test: PolicyNetwork can be created with coarse_to_fine head."""
     from agent_core.spiking_policy import PolicyNetwork

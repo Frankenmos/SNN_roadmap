@@ -55,10 +55,6 @@ class ActionSpace:
             return actions.FUNCTIONS.select_army("select")
         return self.no_op()
 
-    def find_units(self, feature_layer, condition):
-        units = np.argwhere(feature_layer == condition)
-        return [tuple(unit) for unit in units]
-
     def left_click(self, obs, target_x, target_y, screen_size=None):
         del obs, target_x, target_y, screen_size
         return self.no_op()

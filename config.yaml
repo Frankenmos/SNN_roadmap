@@ -20,20 +20,26 @@ reward:
   damage_dealt_coef: 0.15
   damage_taken_coef: 0.10
   kill_reward_coef: 30.0
+  roach_kill_score_value: 100.0
   win_reward: 60.0
   loss_penalty: 30.0
   step_penalty: 0.005
-  target_distance: 9.0
-  distance_band_low: 7.0
-  distance_band_high: 11.0
+  target_distance: 17.0
+  distance_band_low: 14.0
+  distance_band_high: 21.0
   distance_reward_coef: 0.20
   distance_reward_clip: 1.0
   distance_hold_bonus: 0.05
-  distance_gate: 18.0
+  distance_gate: 30.0
   smart_target_radius: 6.0
   smart_near_enemy_reward: 0.08
   smart_far_enemy_penalty: 0.03
   noop_visible_enemy_penalty: 0.02
+  smart_outcome_window: 5
+  smart_attack_likely_reward: 0.12
+  smart_fired_likely_reward: 0.06
+  smart_attack_intent_reward: 0.02
+  smart_null_unclear_penalty: 0.02
 
 environment:
   map_name: "DefeatRoaches"
@@ -43,7 +49,7 @@ environment:
   steps_per_episode: 3600
   target_reward: 25.0
   reward_window: 200
-  run_name: "banana_smart_v4_b2048_e4_a10"
+  run_name: "banana_glasses_v6_b2048_e4_a10"
   models_dir: "models"
   analysis_dir: "analysis_results"
   checkpoint_path: "checkpoint.pth"
@@ -71,10 +77,15 @@ environment:
   score_diagnostics_every_n_steps: 1
   eval_frequency: 50
   eval_episodes: 5
+  # Per-episode step cap for deterministic eval (Ray path); defaults to
+  # steps_per_episode. Lower it to shorten the periodic eval stall.
+  eval_steps_per_episode: 3600
 
 distributed:
   enabled: false
   num_rollout_actors: 10
+  # Reserved for a future async dedicated eval actor. Eval currently runs on
+  # the training actors (their normalizers are live), so this stays 0.
   num_eval_actors: 0
   fragment_steps: 256
   global_rollout_steps: 2560
@@ -87,6 +98,7 @@ distributed:
   object_store_memory_gb: 8
   actor_cpus: 1
   learner_gpus: 1
+  # Cadence (in learner updates) for deterministic eval + best_checkpoint save.
   eval_every_updates: 50
   max_updates: 0
   required_policy_protocol_version: 3
@@ -98,6 +110,7 @@ model:
   action_dim: 3
   screen_size: 84
   num_steps: 1
+  amp_dtype: "bf16"
   fast_token_snn_alpha: 0.55
   fast_token_snn_beta: 0.65
   slow_token_snn_alpha: 0.92
@@ -110,3 +123,9 @@ model:
   coarse_grid_size: 7
   local_grid_size: 12
   target_decode_mode: "center"
+  # Stage 1 spatial fix: feed pre-pool conv2 features (84x84x32) to the fine
+  # stage so sub-cell clicks can depend on the observation. Checkpoints made
+  # with this off cannot be loaded while it is on (new head parameters), so
+  # flip back to false to eval pre-V6 checkpoints.
+  fine_skip_connection: true
+  fine_skip_dim: 32

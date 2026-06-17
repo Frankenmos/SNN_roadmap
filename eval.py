@@ -222,8 +222,8 @@ def _default_jsonl_path(filename, run_name):
     analysis_dir = getattr(cfg.environment, "analysis_dir", "analysis_results")
     name = run_name or getattr(cfg.environment, "run_name", "")
     if name:
-        return os.path.join(analysis_dir, name, filename)
-    return os.path.join(analysis_dir, filename)
+        return os.path.join(analysis_dir, name, filename).replace(os.sep, "/")
+    return os.path.join(analysis_dir, filename).replace(os.sep, "/")
 
 
 def _resolve_eval_jsonl_path(

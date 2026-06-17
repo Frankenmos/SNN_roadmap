@@ -39,6 +39,7 @@ class RolloutActor:
     ) -> None:
         self.actor_id = int(actor_id)
         self.policy_version = -1
+        self._extractor_baseline_state = None
         self.repo_root = Path(repo_root).resolve()
         self.config_path = Path(config_path).resolve()
         os.environ["SNN_CONFIG_PATH"] = str(self.config_path)
@@ -105,6 +106,11 @@ class RolloutActor:
         extractor_state = payload.get("extractor_state")
         if extractor_state is not None:
             self.agent.extractor.load_state_dict(extractor_state)
+            from obs_space.obs_space_2 import ObservationExtractor
+
+            self._extractor_baseline_state = ObservationExtractor.copy_state_dict(
+                extractor_state,
+            )
         self.policy_version = int(payload["policy_version"])
         self.agent.ppo.update_count = int(self.policy_version)
         self.agent.snn_state = self.agent.policy.init_concrete_state(
@@ -142,6 +148,61 @@ class RolloutActor:
         stats["policy_version"] = int(self.policy_version)
         stats["device"] = str(self.device)
         return stats
+
+    def get_extractor_sync_state(self) -> dict[str, Any]:
+        """Return current extractor stats plus the last loaded checkpoint base."""
+        from obs_space.obs_space_2 import ObservationExtractor
+
+        return {
+            "current": self.agent.extractor.state_dict(),
+            "baseline": ObservationExtractor.copy_state_dict(
+                getattr(self, "_extractor_baseline_state", None),
+            ),
+        }
+
+    def run_eval(
+        self,
+        episodes: int,
+        steps_per_episode: int,
+    ) -> dict[str, Any]:
+        """Run a deterministic eval sweep on this actor's env/agent.
+
+        Eval is read-only (deterministic sampling, update_stats=False, no PPO
+        storage), and this actor's extractor already holds live training
+        normalizer stats, so the sweep is unconfounded without any stat sync.
+
+        Borrowing a training actor leaves its rollout worker mid-episode, so the
+        finally block clears the PPO rollout cache and forces a fresh episode on
+        the next collect_fragment - otherwise pre-eval transitions could splice
+        onto a post-eval episode.
+        """
+        from distributed.sc2_runtime import sc2_create_game_lock
+        from train import run_eval_sweep
+
+        serialize_resets = bool(self.worker.serialize_env_resets)
+        try:
+            with torch.no_grad():
+                return run_eval_sweep(
+                    self.env,
+                    self.agent,
+                    int(episodes),
+                    int(steps_per_episode),
+                    deterministic=True,
+                    reset_lock=lambda: sc2_create_game_lock(
+                        enabled=serialize_resets,
+                    ),
+                )
+        finally:
+            self.agent.ppo._clear_rollout_cache()
+            self.worker.current_obs = None
+            self.worker.step_count = 0
+            self.worker.episode_reward = 0.0
+            self.worker.cumulative_reward = 0.0
+            self.agent.snn_state = self.agent.policy.init_concrete_state(
+                batch_size=1,
+                device=self.device,
+            )
+            self.agent.policy.eval()
 
     def close(self) -> None:
         self.env.close()
