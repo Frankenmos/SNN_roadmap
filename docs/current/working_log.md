@@ -503,6 +503,25 @@ performed).
   `pytest tests -q`
   `63 passed`
 
+## 2026-06-17 Repo Cleanup
+
+- removed the old `PPO_CNN/` package and root `PPO_CNN_*` launchers; the
+  canonical entrypoints are now only `train.py`, `eval.py`, and the Ray module
+- removed scratch/obsolete surfaces:
+  `action_space/action_space_preview.py`, `agent_core/rewards/legacy_reward.py`,
+  `Utility/obs_sapce.py`, `Utility/script.py`, and `Utility/valid_actions.py`
+- removed legacy action aliases from `agent_core.policy_protocol`; live code now
+  names the semantic action as `RIGHT_CLICK` rather than `SMART/MOVE/ATTACK`
+- centralized small numeric coercion helpers in `obs_space/_numeric.py` and
+  derived production `FeatureUnit` indices from the PySC2 enum
+- fixed eval-trace analysis so `coarse_to_fine` checkpoints rebuild with the
+  correct target-head config and label actions as `no-op / left_click / right_click`
+- made `PolicyInputDiagnosticsWrapper` explicit that its local extractor does
+  not have the agent's real `last_action_token`; action-effect attribution
+  should come from eval traces
+- retained `factorized_xy` and `_replay_chunk_group_reference` as explicit,
+  tracked compatibility/reference debt rather than silent current architecture
+
 ## Next Checks
 
 - refactor / rebalance the reward function using the newer wrapper-driven env understanding

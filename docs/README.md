@@ -22,6 +22,9 @@
 
 ## Current State
 
+- Repo cleanup note: the old `PPO_CNN/` package and root `PPO_CNN_*`
+  compatibility launchers were removed on 2026-06-17. Use the canonical
+  commands in the root README.
 - Latest local verification artifact: `banana_smart_v5_b2048_e4_a10`
   (11,447 episodes, protocol 3 / `stream_action_effect_feedback_v2`; behavior
   review pending before final conclusions)

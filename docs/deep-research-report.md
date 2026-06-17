@@ -1,5 +1,10 @@
 # Current-state review of the local `BPTT_test` code and what is still worth fixing
 
+> Status note, 2026-06-17: this report predates the repo cleanup that removed
+> the `PPO_CNN/` package and root `PPO_CNN_*` launchers. Treat mentions of
+> those files as historical; current entrypoints are `train.py`, `eval.py`, and
+> `python -m distributed.ray_train`.
+
 ## Executive summary
 
 Your current findings are mostly correct.

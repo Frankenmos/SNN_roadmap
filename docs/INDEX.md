@@ -8,9 +8,9 @@ Start here when you want repo context without spelunking through old plans.
 
 | Document | Lines | Purpose |
 |----------|-------|---------|
-| [REPO_STATE.md](current/REPO_STATE.md) | 325 | Primary source of truth for what the code does today |
-| [SPATIAL_HEADS.md](SPATIAL_HEADS.md) | 52 | Spatial target head comparison and quick setup |
-| [CLAUDE_INSTRUCTIONS.md](CLAUDE_INSTRUCTIONS.md) | 142 | Rules and patterns for AI agents working on this repo |
+| [REPO_STATE.md](current/REPO_STATE.md) | 287 | Primary source of truth for what the code does today |
+| [SPATIAL_HEADS.md](SPATIAL_HEADS.md) | 45 | Spatial target head comparison and quick setup |
+| [CLAUDE_INSTRUCTIONS.md](CLAUDE_INSTRUCTIONS.md) | 108 | Rules and patterns for AI agents working on this repo |
 
 ---
 
@@ -18,7 +18,7 @@ Start here when you want repo context without spelunking through old plans.
 
 ### Repository State & Planning
 - [REPO_STATE.md](current/REPO_STATE.md) - What the repo does today; includes semantic action space, configurable spatial target heads, masked-critic semantics
-- [working_log.md](current/working_log.md) - Compressed implementation history (356 lines)
+- [working_log.md](current/working_log.md) - Compressed implementation history and cleanup log (497 lines)
 - [open_questions.md](current/open_questions.md) - Open questions and items needing user input
 
 ### Fragment-Based PPO & Ray Migration
@@ -155,11 +155,11 @@ Start here when you want repo context without spelunking through old plans.
 | deep-research-report.md | 372 | docs/ |
 | TEST_SNIPPETS.md | 367 | tooling/ |
 | plan.md | 363 | archive/ |
-| working_log.md | 356 | current/ |
-| REPO_STATE.md | 325 | current/ |
+| working_log.md | 497 | current/ |
+| REPO_STATE.md | 287 | current/ |
 | feedback_diagnostics_note.md | 245 | current/ |
 | INSPECTOR_SNIPPETS.md | 200 | tooling/ |
 
 ---
 
-**Last Updated:** 2026-05-10
+**Last Updated:** 2026-06-17

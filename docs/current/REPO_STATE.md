@@ -1,6 +1,6 @@
 # Repo State
 
-Updated: 2026-05-10
+Updated: 2026-06-17
 
 ## What The Repo Does Today
 
@@ -111,15 +111,22 @@ Current interpretation:
   current default knobs
 - live runtime code paths point at:
   `agent.py`, `train.py`, `eval.py`, and `agent_core/`
+- canonical commands:
+  `python train.py`, `python eval.py`,
+  `python -m distributed.ray_train ...`, `python results.py`,
+  `python dashboard.py`, `python analyze_run.py`, and `python analyze_pth.py`
 
 ## What Is Considered Legacy
 
 - `PPO_CNN/`
-  restored older architecture snapshot kept for historical reference,
-  archaeology, and old-code comparison rather than live runtime imports
+  removed in the 2026-06-17 cleanup; historical references remain only in
+  archived docs, logs, and old review notes
 - root `PPO_CNN_*` files
-  compatibility wrappers for old commands; useful for transition, but not
-  the canonical code path going forward
+  removed in the same cleanup; use `train.py`, `eval.py`, and the Ray entrypoint
+  instead
+- `action_space/action_space_preview.py`, `agent_core/rewards/legacy_reward.py`,
+  `Utility/obs_sapce.py`, `Utility/script.py`, and `Utility/valid_actions.py`
+  removed as scratch or obsolete surfaces
 
 ## What Is Done
 
@@ -162,6 +169,10 @@ Current interpretation:
 - stricter recurrent-state protocol:
   `PolicyInputBatch` now rejects malformed state ranks before replay reaches the
   policy
+- repo cleanup:
+  old `PPO_CNN` surfaces were deleted, live action aliases were removed, feature
+  numeric helpers were centralized, and eval-trace reconstruction now passes the
+  current target-head config
 
 ## What Is Not Done
 
@@ -263,11 +274,18 @@ These were discussed, but intentionally not landed with the multi-timescale patc
 - reward-driven neuromodulation of membrane / synaptic state
 - ALIF neuron swaps inside attention or token memory
 - temporal state inside the attention block itself
+- removal of the `factorized_xy` / `conditioned_spatial_head` compatibility path;
+  it remains only because trainer fallback code and tests still exercise it
+- removal of `_replay_chunk_group_reference`; it remains as the packed-replay
+  oracle, with `test_packed_replay_matches_reference_replay` asserting `allclose`
+  parity for action logits, target log-probs, entropy, and values
 
 Reason:
 
 - they are higher-risk objective / state-semantics changes than the dual-pathway patch
 - they would make PPO/TBPTT replay semantics harder to trust without a narrower experiment branch
+- the factorized target-head fallback and replay reference path are tracked debt,
+  not silent current architecture
 
 ## Immediate Priorities
 
@@ -321,5 +339,9 @@ Reason:
   training entrypoint
 - `eval.py`
   evaluation entrypoint
+- `python -m distributed.ray_train`
+  distributed rollout/learner entrypoint
+- `results.py`, `dashboard.py`, `analyze_run.py`, `analyze_pth.py`
+  root analysis launchers backed by `tools/analysis/`
 - `docs/README.md`
   doc map

@@ -6,7 +6,7 @@ It combines state-of-the-art Spiking Neural Networks (SNNs) with Proximal Policy
 
 ---
 
-## 🎯 Project Goals
+## Project Goals
 
 - **Explore SNNs in RL:** Test the viability of Spiking Neural Networks (`snntorch`) as the policy backbone for a PPO agent in a continuous, complex environment.
 - **Modular Architecture:** Maintain a clean separation between the PySC2 environment wrappers, the observation extraction, the reward shaping, and the core PPO math.
@@ -14,7 +14,7 @@ It combines state-of-the-art Spiking Neural Networks (SNNs) with Proximal Policy
 
 ---
 
-## 🏗 Architecture
+## Architecture
 
 The repository is structured into several logical components:
 
@@ -30,11 +30,10 @@ The repository is structured into several logical components:
 - **`PolicyNetwork`:** A hybrid CNN + token encoder policy with spiking attention and dual-timescale token memory. Spatial features become pooled spatial tokens with explicit 2D positional encoding; unit, selection, action-feedback, and meta context become additional token groups before attention and the fast/slow temporal SNN pathways. The action/value heads read a global latent, while the spatial target head keeps a structured spatial branch alive for localization.
 - **`PPO`:** The current PPO path includes fragment-based rollouts, Stage-1 TBPTT with ordered chunk replay, helper-step masking, packed replay, a per-update GPU rollout cache for learner updates, and the SDPA attention fast path.
 
-Canonical entrypoints are now `train.py`, `eval.py`, `agent.py`, and
-the `agent_core/` package. The root-level `PPO_CNN_*` launchers remain
-as compatibility wrappers for old commands, but the `PPO_CNN/` package
-itself is now treated as a legacy snapshot of the older architecture
-rather than a live shim into `agent_core/`.
+Canonical entrypoints are `train.py`, `eval.py`, `agent.py`, and
+the `agent_core/` package. The old root-level `PPO_CNN_*` launchers and
+the `PPO_CNN/` package have been removed; historical docs and archived
+notes may still mention them when describing older experiments.
 
 ### 4. Utilities & Analysis (`Utility/`, `tools/analysis/`, Root)
 - `tools/analysis/`: Home for the actual analysis implementations.
@@ -45,7 +44,7 @@ rather than a live shim into `agent_core/`.
 
 ---
 
-## 🚀 Installation & Setup
+## Installation & Setup
 
 This project uses a standard `requirements.txt` file. We recommend using Python 3.10 - 3.12 within a virtual environment.
 
@@ -75,7 +74,7 @@ Python and gates the Windows-only `pywin32` dependency with a platform marker.
 
 ---
 
-## 🏃‍♂️ Running the Project
+## Running The Project
 
 ### 1. Training the Agent
 To start the original single-process training loop:
@@ -269,7 +268,7 @@ Training-side defaults for these diagnostics can also be centralized in `config.
 
 ---
 
-## 🧪 Testing
+## Testing
 
 The repository includes a suite of unit tests located in the `tests/` directory. Because the environment requires heavy dependencies (`torch`, `pysc2`, `snntorch`), running the tests in a minimal environment requires mocking.
 
@@ -279,7 +278,7 @@ pytest -v tests/
 
 ---
 
-## 📝 Planning & Future Work
+## Planning & Future Work
 
 The repo root is intentionally lighter now. Planning notes and
 historical docs live under [`docs/`](docs/README.md).
