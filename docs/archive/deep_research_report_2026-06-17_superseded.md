@@ -1,5 +1,13 @@
 # Current-state review of the local `BPTT_test` code and what is still worth fixing
 
+> Archived 2026-06-26.
+>
+> This report was useful for the April/early-June repair sequence, but it is no
+> longer a current-state source. It predates the V5 stage-0 fine-head
+> diagnosis, the V6 fine skip connection, bf16 AMP, Ray eval normalizer sync,
+> and the later reward/outcome fixes. See `docs/current/V5_COLLAPSE_AUDIT.md`
+> and `docs/current/REPO_STATE.md`.
+
 > Status note, 2026-06-17: this report predates the repo cleanup that removed
 > the `PPO_CNN/` package and root `PPO_CNN_*` launchers. Treat mentions of
 > those files as historical; current entrypoints are `train.py`, `eval.py`, and

@@ -1,5 +1,11 @@
 # Feedback Diagnostics Note
 
+> Archived 2026-06-26.
+>
+> This describes the first feedback-diagnostics investigation before the
+> current protocol-3 action-effect token settled. Current protocol details live
+> in `docs/current/ACTION_FEEDBACK_PLAN.md`.
+
 Created: 2026-04-24
 
 ## Why This Exists

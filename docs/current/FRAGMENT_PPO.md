@@ -314,13 +314,15 @@ This fails **before** any training happens, preventing silent corruption.
 
 ### Current Caveats
 
-- Live SC2 smoke/throughput validation is still needed for the configured Ray
-  path, especially beyond the smaller 1-actor and 4-actor smoke shapes.
-- Step-level logs are still local-trainer only; Ray logs episode summaries and PPO updates first.
-- Extractor normalizers are synced to actors initially, then actor-local until we add normalizer aggregation.
+- Step-level logs are still richer in the local trainer than the Ray path; Ray
+  currently prioritizes episode summaries and PPO update rows.
 - Windows SC2 can race while creating temporary maps; `distributed.serialize_env_resets`
   serializes `env.reset()`/`create_game` while rollout stepping remains parallel.
-- EvalActor / best-checkpoint promotion is not implemented yet.
+- Dedicated EvalActors are not implemented yet. Current Ray eval borrows
+  training actors.
+- Extractor normalizers are now merged back into the learner before Ray
+  best-checkpoint save; older docs that describe count-0 normalizer
+  checkpoints are superseded.
 
 ---
 

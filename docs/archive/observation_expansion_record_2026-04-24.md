@@ -23,7 +23,7 @@ From PySC2 docs and the `theta-1` diagnostic dump:
 | `action_result` | Error codes for action results | Empty in inspected DefeatRoaches runs |
 | `alerts` | Alert notifications | Empty in inspected DefeatRoaches runs |
 
-See [feedback_diagnostics_note.md](feedback_diagnostics_note.md) for the exact
+See [feedback_diagnostics_note_2026-04-24.md](feedback_diagnostics_note_2026-04-24.md) for the exact
 diagnostic JSONL shape and timing semantics.
 
 ## Phase 1: Inspection

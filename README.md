@@ -285,6 +285,8 @@ historical docs live under [`docs/`](docs/README.md).
 
 Recommended starting points:
 - [`docs/current/REPO_STATE.md`](docs/current/REPO_STATE.md): current repo state and open questions
+- [`docs/current/V5_COLLAPSE_AUDIT.md`](docs/current/V5_COLLAPSE_AUDIT.md): V5 collapse diagnosis and stale-claim cleanup
+- [`docs/current/ARCHITECTURE.md`](docs/current/ARCHITECTURE.md): concise live architecture reference
 - [`docs/current/RAY_STATUS.md`](docs/current/RAY_STATUS.md): current distributed rollout status
 - [`docs/current/FRAGMENT_PPO.md`](docs/current/FRAGMENT_PPO.md): fragment-based PPO contract and invariants
 - [`docs/current/ACTION_FEEDBACK_PLAN.md`](docs/current/ACTION_FEEDBACK_PLAN.md): current stream-token action feedback protocol

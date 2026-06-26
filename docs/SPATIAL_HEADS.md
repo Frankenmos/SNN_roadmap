@@ -1,59 +1,50 @@
 # Spatial Target Heads
 
-Current state: **Phase 2 Complete** - `CoarseToFineTargetHead` implemented and
-selected by the current `config.yaml`.
+Updated: 2026-06-26
+
+Current state: `CoarseToFineTargetHead` is the config default, with
+`fine_skip_connection: true`.
 
 ## Available Heads
 
 | Head | Precision | Status | Config Value |
-|------|-----------|--------|--------------|
-| `FactorizedXYTargetHead` | 84×84 (factorized) | ✅ Legacy | `factorized_xy` |
-| `TokenPointerTargetHead` | 7×7 (49 cells) | ✅ Available fallback | `token_pointer` |
-| `CoarseToFineTargetHead` | 7×7×12×12 = 7056 positions | ✅ Current config default | `coarse_to_fine` |
-| `HeatmapHead` | 84×84 = 7056 positions | 🚧 Future | `heatmap` |
+| --- | --- | --- | --- |
+| `FactorizedXYTargetHead` | 84x84 factorized | Legacy compatibility | `factorized_xy` |
+| `TokenPointerTargetHead` | 7x7 cells | Available fallback | `token_pointer` |
+| `CoarseToFineTargetHead` | 7x7 x 12x12 = 7056 positions | Current default | `coarse_to_fine` |
+| `HeatmapHead` | 84x84 = 7056 positions | Future | `heatmap` |
 
-## Quick Reference
+## Coarse-To-Fine
 
-### FactorizedXYTargetHead
-- Separate `x_logits[B, 84]` and `y_logits[B, 84]`
-- Legacy compatibility head
-- Independent distributions (no joint modeling)
+- Coarse logits: `primary_logits [B, 49]`
+- Fine logits: `secondary_logits [B, 49, 144]`
+- Replay/evaluate uses the recorded `coarse_index` for the fine head.
+- With `fine_skip_connection: true`, pre-pool conv2 features
+  `[B, 32, 84, 84]` feed the fine stage so sub-cell logits can depend on the
+  actual screen content at each pixel.
 
-### TokenPointerTargetHead
-- Single `token_logits[B, 49]` over 7×7 pooled grid
-- Returns cell centers (e.g., pixel 6, 18, 30, ...)
-- Lower precision but efficient
+The fine skip is important. V5 deterministic diagnostics showed the old
+fine-stage path used one constant fine sub-index (`10`) for all 1,099 Smart
+clicks. V5 is therefore a cautionary artifact, not the current architecture.
 
-### CoarseToFineTargetHead (current config default)
-- **Coarse**: `primary_logits[B, 49]` (7×7 grid)
-- **Fine**: `secondary_logits[B, 49, 144]` (12×12 per cell)
-- Full 84×84 precision = 7056 unique positions
-- **Critical**: `evaluate()` uses **recorded** `coarse_index` for fine-head (teacher-forcing)
-- **Fine skip connection** (`fine_skip_connection: true`, 2026-06-11): without
-  it the fine stage sees only the pooled per-cell token and degenerates to a
-  static prior over sub-positions (verified on the V5 checkpoint: fine argmax
-  was the constant `10` for every click). With it, pre-pool conv2 features
-  (84×84×32) are projected per pixel and scored against a query, so each fine
-  logit reads the actual screen content at its own pixel. Old checkpoints
-  cannot load while the flag is on (new parameters).
+See `docs/current/V5_COLLAPSE_AUDIT.md`.
 
-## To Switch Heads
+## Switching Heads
 
 Edit `config.yaml`:
 
 ```yaml
 model:
-  spatial_head_type: "coarse_to_fine"  # or "token_pointer", "factorized_xy"
+  spatial_head_type: "coarse_to_fine"  # token_pointer or factorized_xy also exist
 ```
 
-## File Locations
+If `fine_skip_connection` is on, old no-skip checkpoints cannot load because
+the head has extra parameters. Flip it off only when inspecting pre-V6
+checkpoints.
 
-- Implementation: [`agent_core/target_heads.py`](../agent_core/target_heads.py)
-- Tests: [`tests/test_coarse_to_fine_head.py`](../tests/test_coarse_to_fine_head.py)
-- Working log: [`docs/PHASE2_WORKING_LOG.md`](PHASE2_WORKING_LOG.md)
-- Full spec (archived): [`docs/archive/spatial_target_migration_spec_BPTT_test.md`](archive/spatial_target_migration_spec_BPTT_test.md)
+## Files
 
-## Test Coverage
-
-- `CoarseToFineTargetHead` has dedicated encode/decode, build, sample, evaluate, and policy-integration coverage.
-- Run `pytest tests/test_coarse_to_fine_head.py -q` for focused verification, or `pytest tests -q` before landing broader changes.
+- Implementation: `agent_core/target_heads.py`
+- Policy integration: `agent_core/spiking_policy.py`
+- Tests: `tests/test_coarse_to_fine_head.py`
+- Historical spec: `docs/archive/spatial_target_migration_spec_BPTT_test.md`

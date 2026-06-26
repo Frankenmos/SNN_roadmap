@@ -1,5 +1,12 @@
 # SmartOutcomeDetector Follow-Up
 
+> Archived 2026-06-26.
+>
+> This was a short follow-up checklist. The current code now uses
+> `SmartOutcomeDetector` inside `RewardFunctionV4`, fixes the weapon-cooldown
+> column lookup, and has dedicated tests. Keep this file only as historical
+> context.
+
 Updated: 2026-05-10
 
 ## Status

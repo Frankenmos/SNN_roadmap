@@ -1,5 +1,13 @@
 # BPTT_test branch review
 
+> Archived 2026-06-26.
+>
+> This review captured real issues at the time, but several headline items are
+> now fixed: the click path keeps spatial structure, PPO masks the critic with
+> the training mask, rollout cadence is checked inside the step loop, and eval
+> happens after pending updates. Use `docs/current/REPO_STATE.md` for the live
+> state.
+
 ## Executive summary
 - The recurrent bookkeeping is better than it first looked. The current agent stores the pre-action recurrent state with each observation, the trainer replays chunks in temporal order, and replay conditions the spatial head on the recorded action IDs. Those parts are mostly coherent.
 - The main weaknesses are not in basic TBPTT plumbing. The largest likely performance limit is the policy architecture for spatial action selection: the model compresses all spatial tokens into a global summary before predicting click coordinates. That makes localization unnecessarily hard.

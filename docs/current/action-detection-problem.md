@@ -383,7 +383,7 @@ The clean implementation boundary is probably:
   - optionally add pending Smart attribution
 - `obs_space/action_feedback_encoder.py`
   - expose stable compact feedback bits only if protocol changes are intended
-- `agent_core/rewards/defeat_roaches_v4.py` or a new `v5`
+- `agent_core/rewards/defeat_roaches_v4.py` or a future reward branch
   - use detector outputs for shaping
   - keep reward magnitudes small until verified
 - `Utility/*diagnostics_wrapper.py`
