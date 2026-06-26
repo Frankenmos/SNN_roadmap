@@ -1,0 +1,13 @@
+# Development & CI tooling.
+# Installs the full runtime stack plus test/lint tools.
+#
+#   pip install -r requirements-dev.txt
+#
+# Note: this pulls the runtime stack via requirements.txt, which
+# includes torch. On a GPU box, install the matching CUDA build of
+# torch first (see requirements-windows.txt or pytorch.org), then
+# run this file. CI installs a CPU-only torch build separately.
+-r requirements.txt
+
+pytest>=8.0
+ruff>=0.6

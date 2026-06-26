@@ -1,0 +1,40 @@
+# Tooling configuration for the PySC2 Spiking PPO Agent.
+# This file configures ruff (lint + format) and pytest. Packaging
+# metadata is intentionally omitted for now; the project is run via
+# its root-level entrypoints (train.py, eval.py, agent.py).
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = [
+    "docs",
+    "logs",
+    "analysis_results",
+    "models",
+    "build",
+    "dist",
+    ".venv",
+    "venv",
+]
+
+[tool.ruff.lint]
+# A pragmatic rule set for an existing research codebase. The CI
+# build gate enforces only the critical correctness subset
+# (E9, F63, F7, F82); the full set below runs as informational so
+# style debt is visible without blocking the build.
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",  # line length is guided by the formatter, not hard-enforced
+    "B008",  # function call in argument defaults is common in ML APIs
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests lean on fixtures and star-style imports from the mock env.
+"tests/**" = ["F401", "F811"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

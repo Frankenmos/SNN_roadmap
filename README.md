@@ -1,5 +1,7 @@
 # PySC2 Spiking PPO Agent (DefeatRoaches)
 
+[![CI](https://github.com/Frankenmos/SNN_roadmap/actions/workflows/ci.yml/badge.svg)](https://github.com/Frankenmos/SNN_roadmap/actions/workflows/ci.yml)
+
 Welcome to the **PySC2 Spiking PPO Agent** repository. This project implements a modular reinforcement learning (RL) stack on top of the PySC2 (StarCraft II Learning Environment), specifically targeting the `DefeatRoaches` mini-game.
 
 It combines state-of-the-art Spiking Neural Networks (SNNs) with Proximal Policy Optimization (PPO) to explore how temporal, event-driven architectures perform in a complex, multi-agent micro-management scenario.
@@ -270,9 +272,20 @@ Training-side defaults for these diagnostics can also be centralized in `config.
 
 ## Testing
 
-The repository includes a suite of unit tests located in the `tests/` directory. Because the environment requires heavy dependencies (`torch`, `pysc2`, `snntorch`), running the tests in a minimal environment requires mocking.
+The repository includes a suite of unit tests located in the `tests/` directory. Because the environment requires heavy dependencies (`torch`, `pysc2`, `snntorch`), running the tests in a minimal environment requires mocking. PySC2 is mocked via `tests/MockedEnv/`, so the suite runs without a StarCraft II install.
 
 ```bash
+pytest -v tests/
+```
+
+These tests, plus `ruff` linting, run automatically on every push and pull
+request via GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+CI installs a CPU-only build of PyTorch, so it does not depend on the CUDA
+nightly pinned for local GPU development. To reproduce the CI checks locally:
+
+```bash
+pip install -r requirements-dev.txt
+ruff check .
 pytest -v tests/
 ```
 
