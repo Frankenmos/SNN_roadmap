@@ -44,4 +44,5 @@ model:
 
 ---
 
-**Full spec archived at**: [`archive/spatial_target_migration_spec_BPTT_test.md`](archive/spatial_target_migration_spec_BPTT_test.md)
+This log is retained only as a concise implementation record; superseded
+design details are not part of the tracked docs.

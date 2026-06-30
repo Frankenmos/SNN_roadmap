@@ -2,8 +2,7 @@
 
 Updated: 2026-06-26
 
-This file is intentionally short. Older implementation history is archived in
-`docs/archive/working_log_2026-06-17_pre_docs_cleanup.md`.
+This file is intentionally short and only tracks current-era repo state.
 
 ## 2026-06-26 Docs Cleanup
 

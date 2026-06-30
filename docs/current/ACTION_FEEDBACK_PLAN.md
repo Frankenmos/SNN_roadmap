@@ -2,8 +2,8 @@
 
 Updated: 2026-06-26
 
-This is the current action-feedback source of truth. Older bridge plans live
-in `docs/archive/`.
+This is the current action-feedback source of truth. It supersedes older
+action-history bridge plans.
 
 ## Current Contract
 

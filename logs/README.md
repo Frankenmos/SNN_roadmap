@@ -8,5 +8,5 @@ This folder keeps the long-lived project history that would otherwise clutter th
 The rule of thumb is simple:
 - keep `README.md` in root
 - keep active engineering docs under `docs/current/`
-- keep superseded plans under `docs/archive/`
+- keep superseded plans out of `docs/current/`
 - put historical narrative and debugging journals here

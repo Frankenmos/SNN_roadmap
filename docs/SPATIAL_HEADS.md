@@ -47,4 +47,3 @@ checkpoints.
 - Implementation: `agent_core/target_heads.py`
 - Policy integration: `agent_core/spiking_policy.py`
 - Tests: `tests/test_coarse_to_fine_head.py`
-- Historical spec: `docs/archive/spatial_target_migration_spec_BPTT_test.md`

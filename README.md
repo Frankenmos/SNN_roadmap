@@ -34,8 +34,8 @@ The repository is structured into several logical components:
 
 Canonical entrypoints are `train.py`, `eval.py`, `agent.py`, and
 the `agent_core/` package. The old root-level `PPO_CNN_*` launchers and
-the `PPO_CNN/` package have been removed; historical docs and archived
-notes may still mention them when describing older experiments.
+the `PPO_CNN/` package have been removed; older logs may still mention
+them when describing past experiments.
 
 ### 4. Utilities & Analysis (`Utility/`, `tools/analysis/`, Root)
 - `tools/analysis/`: Home for the actual analysis implementations.

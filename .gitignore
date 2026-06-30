@@ -46,4 +46,13 @@ venv/
 .env
 .env.*
 
+# Personal/local launchers
+claude-glm.ps1
+tools/claude-glm.ps1
+
+# Local documentation clutter
+docs/.archive/
+docs/ideas/
+docs/notes/
+
 

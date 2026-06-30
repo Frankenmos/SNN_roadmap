@@ -2,8 +2,8 @@
 
 Updated: 2026-06-26
 
-This is the concise current architecture reference. The pre-V6 long reference
-is archived at `docs/archive/architecture_2026-05-06_pre_v6.md`.
+This is the concise current architecture reference. It supersedes pre-V6
+long-form architecture notes.
 
 ## Runtime Flow
 

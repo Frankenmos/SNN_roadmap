@@ -2,8 +2,8 @@
 
 Updated: 2026-06-26
 
-Start with the current docs below. Anything in `docs/archive/` is historical
-unless a current doc links to it for background.
+Start with the current docs below. This directory keeps tracked documentation
+focused on current code and active references.
 
 ## Start Here
 
@@ -35,22 +35,3 @@ unless a current doc links to it for background.
 - V6: `banana_glasses_v6_b2048_e4_a10`
   Post-fine-skip/glasses family: positive training reward, but deterministic
   eval still needs trace-level scrutiny.
-
-## Archive
-
-Archived docs preserve old plans, external takes, and superseded reviews. They
-are useful for archaeology, but they should not be read as current state.
-
-Common archived references:
-
-- `archive/architecture_2026-05-06_pre_v6.md`
-- `archive/deep_research_report_2026-06-17_superseded.md`
-- `archive/kimi_v5_autopsy_external_take_2026-06-11.md`
-- `archive/action_feedback_plan_2026-04-25_superseded.md`
-- `archive/working_log_2026-06-17_pre_docs_cleanup.md`
-- `archive/spatial_target_migration_spec_BPTT_test.md`
-
-## Ideas
-
-`docs/ideas/` is speculative. Use it for future branch concepts, not current
-implementation truth.

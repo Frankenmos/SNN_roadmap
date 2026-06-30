@@ -3,7 +3,7 @@
 Updated: 2026-06-26
 
 This is the primary source of truth for the live code. Older architecture
-reviews and CNN/PPO-era run narratives live in `docs/archive/`.
+reviews and CNN/PPO-era run narratives are historical, not tracked current docs.
 
 ## Current Stack
 

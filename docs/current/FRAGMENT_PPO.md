@@ -328,7 +328,5 @@ This fails **before** any training happens, preventing silent corruption.
 
 ## Related Documentation
 
-- [`RAYPLAN.md`](../ideas/RAYPLAN.md) - Full distributed training plan
-- [`THROUGHPUT_PLAN.md`](../ideas/THROUGHPUT_PLAN.md) - Transport and optimization strategy
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) - Current system architecture
 - [`distributed/protocol.py`](../../distributed/protocol.py) - Fragment implementation
