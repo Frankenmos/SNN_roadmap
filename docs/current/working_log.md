@@ -39,6 +39,40 @@ This file is intentionally short and only tracks current-era repo state.
   read-only w.r.t. training artifacts (no torch.save, no models/ writes;
   outputs only under analysis_results/).
 
+- Mock-env audit (`tests/MockedEnv/`): fake pysc2 is installed globally for
+  every test via `conftest.py` `pytest_plugins`; `policy_batch.py` factories
+  are protocol-pinned (good). Gaps found: mocked obs feed an ALL-ZERO
+  spatial stream (the `.player_relative` attribute on `MockFeatureScreen` is
+  consumed by nothing — extractor reads the full 27-layer array); the
+  production numeric entity-row path (`_project_numeric_rows` +
+  `_FEATURE_UNIT_INDEX`) has zero test coverage (mocks always take the
+  object/`getattr` path, which silently defaults 15 of 21 curated fields to
+  0.0); fake `Move_screen` id 13 ≠ real 331 (only mislabels a last-action
+  vocab slot; availability check uses Smart 451, which is correct);
+  `attack_range` on mock units and root-level `ai_test_utils.py` are both
+  orphaned/vestigial.
+- Assessed `E:\SNN\codex-experiment` (TinySkirmish, Codex 2026-06-28): a
+  clean numpy grid-skirmish digital twin of the TENSOR protocol
+  (`PolicyInputBatch` v3 shapes exact, NO_OP/LEFT/RIGHT_CLICK vocab,
+  itemized reward dict that must sum to total) — not of the pysc2 seam
+  (27 spatial channels are hand-authored). `real_snn_bridge/rollout`
+  demonstrably ran the real `PolicyNetwork`+`PPO` end-to-end (CPU+CUDA
+  renders committed). Caveats: NOT under version control (`.git` empty),
+  vendored 405-line copy of `policy_protocol.py` that can drift, LEFT_CLICK
+  is a placeholder. Complementary to the mock: twin covers network+PPO
+  learning dynamics; mock covers the pysc2→extractor seam; only real-env
+  diagnostics cover feature_screen semantics.
+- TinySkirmish IMPORTED into the repo as `envs/tiny_skirmish/` (same day,
+  user-approved): vendored `policy_protocol` copy deleted — bridge modules now
+  import the real `agent_core` directly (sys.path eviction machinery and
+  `--snn-repo` flags removed); self-checks wrapped as
+  `tests/test_tiny_skirmish.py` (6 tests, render/live skip without
+  Pillow/pygame); CLI shim at `scripts/run_tiny_skirmish.py`. Left behind in
+  `E:\SNN\codex-experiment`: renders/, empty `.git`, stray HTML. Verified:
+  bridge forward pass reports `policy_class_module: agent_core.spiking_policy`;
+  full suite 182 pass. Housekeeping/verification tooling — no agent or
+  training-pipeline change (pause respected).
+
 ## 2026-06-30 SIL Implemented
 
 - Feedback-gated SIL in `agent_core/ppo_trainer.py` (trophy deque, `(R−V)+`
