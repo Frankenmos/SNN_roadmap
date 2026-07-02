@@ -1,6 +1,6 @@
 # Repo State
 
-Updated: 2026-06-26
+Updated: 2026-07-02
 
 This is the primary source of truth for the live code. Older architecture
 reviews and CNN/PPO-era run narratives are historical, not tracked current docs.
@@ -20,6 +20,8 @@ reviews and CNN/PPO-era run narratives are historical, not tracked current docs.
 - Fine-stage repair: `fine_skip_connection: true`
 - AMP: `bf16` by default on CUDA
 - Reward: `defeat_roaches_v4`
+- SIL: self-imitation replay of feedback-verified good clicks
+  (`sil_enabled: true` since V7; see `ARCHITECTURE.md` SIL section)
 - Distributed path: synchronous Ray rollout actors plus one learner
 
 ## Policy Input
@@ -66,7 +68,8 @@ See:
 | `banana_b2048_e4_a10` | Historical pre-action-aware baseline. Do not use as a current architecture control. |
 | `banana_smart_v4_b2048_e4_a10` | Historical action-aware reward/protocol-v2 run; better headline reward than V5 but unstable. |
 | `banana_smart_v5_b2048_e4_a10` | Collapse artifact: 11,447 episodes, max reward `0.00`, no eval rows, fp16, no fine skip. |
-| `banana_glasses_v6_b2048_e4_a10` | Post-fine-skip/glasses family; training reward became positive, max reward `555.85`, deterministic eval still needs scrutiny. |
+| `banana_glasses_v6_b2048_e4_a10` | Post-fine-skip/glasses family; training reward became positive, max reward `555.85`, deterministic eval still needs scrutiny. `best_checkpoint` deterministic eval is ALL no-op — best-by-native-score selects the idle auto-attack exploit; do not treat it as behaviorally best. |
+| `banana_glasses_v7_sil_b2048_e4_a10` | Live (SIL enabled). ~ep 1730: first deterministic eval that actually attacks (precise targeting, sparse engagement); shaped reward still fully negative (avg −68, best −12); HIGH flags: clip fraction ~56%, approximate KL 0.066 vs target 0.03; pre-clip grad_norm ~160 vs clip 0.5. |
 
 Old CNN/PPO-era kiting narratives should not be treated as clean current
 controls for V5/SNN architecture decisions.
@@ -90,9 +93,31 @@ controls for V5/SNN architecture decisions.
   and Smart outcome shaping.
 - bf16 AMP default.
 - Repo cleanup removed old `PPO_CNN/` runtime surfaces.
+- SIL (2026-06-30): feedback-gated trophy buffer + `(R−V)+` imitation pass in
+  `ppo_trainer.py`; tests in `tests/test_sil.py`. Uncommitted as of 2026-07-02.
+- Smart-outcome diagnostics wrapper wired into `envs/setup_env.py` behind
+  `use_smart_outcome_diagnostics`; eval flags in `eval.py`.
+- `tools/analysis/probe_action_logits.py`: fidelity-exact replay of eval-trace
+  inputs → per-step action logits/probs/value (built to diagnose det-eval idling).
 
 ## What Is Still Open
 
+Measurement questions flagged 2026-07-02 (see `learning/TUTOR_INSTRUCTIONS.md`
+§7 for the learning-session framing):
+
+- Gradient scale: logged `grad_norm` (pre-clip) averages ~160 against a 0.5
+  clip — every update is direction-only. Suspect: unnormalized value-loss on
+  the shared trunk. Measure policy-loss vs value-loss grad norms separately.
+- SIL trophy staleness: stored pre-step recurrent states age in the FIFO
+  buffer across many policy versions. Log trophy age at replay; check V(s)
+  sanity on old trophies.
+- SIL vs trust region: is SIL's separate optimizer step the cause of the
+  sustained 56% clip fraction / KL 0.066?
+- Ground-click semantics: does a missed `Smart_screen` (move order) cancel
+  in-progress auto-attacks, making exploration actively negative vs NO_OP?
+  Verify in an eval trace before changing anything.
+- Shaped reward has never been positive (best episode −12); `win_reward +60`
+  remains unreachable. Raw-native-score ablation still queued.
 - Deterministic behavior after V6/V7 fixes still needs trace-level validation.
 - Entity identity is not pinned; entity recurrent carry remains intentionally
   disabled.

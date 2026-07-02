@@ -10,6 +10,7 @@ from Utility.feedback_diagnostics_wrapper import (
 )
 from Utility.observation_inspector_wrapper import ObservationInspectorWrapper
 from Utility.policy_input_diagnostics_wrapper import PolicyInputDiagnosticsWrapper
+from Utility.smart_outcome_diagnostics_wrapper import SmartOutcomeDiagnosticsWrapper
 
 
 def create_env(
@@ -34,6 +35,11 @@ def create_env(
     policy_input_diagnostics_every_n_steps=1,
     policy_input_diagnostics_max_entity_samples=3,
     policy_input_diagnostics_max_selection_samples=3,
+    use_smart_outcome_diagnostics=False,
+    smart_outcome_diagnostics_output_path="analysis_results/smart_outcome_diagnostics.jsonl",
+    smart_outcome_diagnostics_every_n_steps=1,
+    smart_outcome_diagnostics_outcome_window=5,
+    smart_outcome_diagnostics_near_enemy_threshold=8.0,
 ):
     """Create and return a PySC2 environment, optionally with wrappers."""
     env = sc2_env.SC2Env(
@@ -86,6 +92,14 @@ def create_env(
             log_every_n_steps=policy_input_diagnostics_every_n_steps,
             max_entity_samples=policy_input_diagnostics_max_entity_samples,
             max_selection_samples=policy_input_diagnostics_max_selection_samples,
+        )
+    if use_smart_outcome_diagnostics:
+        env = SmartOutcomeDiagnosticsWrapper(
+            env=env,
+            output_path=smart_outcome_diagnostics_output_path,
+            outcome_window=smart_outcome_diagnostics_outcome_window,
+            near_enemy_threshold=smart_outcome_diagnostics_near_enemy_threshold,
+            log_every_n_steps=smart_outcome_diagnostics_every_n_steps,
         )
     return env
 

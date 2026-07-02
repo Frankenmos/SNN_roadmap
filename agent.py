@@ -198,6 +198,12 @@ class DefeatRoaches(base_agent.BaseAgent):
                 "right_click_curriculum_noop_logit_penalty",
                 0.0,
             ),
+            sil_enabled=getattr(cfg.hyperparameters, "sil_enabled", False),
+            sil_buffer_size=getattr(cfg.hyperparameters, "sil_buffer_size", 5000),
+            sil_batch_fraction=getattr(
+                cfg.hyperparameters, "sil_batch_fraction", 0.25,
+            ),
+            sil_coef=getattr(cfg.hyperparameters, "sil_coef", 0.0),
         )
 
         self.bootstrap_pending = True

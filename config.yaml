@@ -14,6 +14,14 @@ hyperparameters:
   reward_scale: 1.0
   right_click_curriculum_updates: 120
   right_click_curriculum_noop_logit_penalty: 2.0
+  # Self-Imitation Learning (SIL): replay past high-return attacks with an
+  # auxiliary (R - V)+ gated loss so rare good clicks stop being washed out
+  # (see docs/current/AUDIT_RECONCILIATION_2026-06-29.md for the diagnosis).
+  # Enabled for the SIL experiment run below.
+  sil_enabled: true
+  sil_buffer_size: 5000
+  sil_batch_fraction: 0.25
+  sil_coef: 0.5
 
 reward:
   name: "defeat_roaches_v4"
@@ -49,7 +57,7 @@ environment:
   steps_per_episode: 3600
   target_reward: 25.0
   reward_window: 200
-  run_name: "banana_glasses_v6_b2048_e4_a10"
+  run_name: "banana_glasses_v7_sil_b2048_e4_a10"
   models_dir: "models"
   analysis_dir: "analysis_results"
   checkpoint_path: "checkpoint.pth"
@@ -75,6 +83,9 @@ environment:
   use_score_diagnostics: false
   score_diagnostics_output_path: "analysis_results/score_diagnostics.jsonl"
   score_diagnostics_every_n_steps: 1
+  use_smart_outcome_diagnostics: false
+  smart_outcome_diagnostics_output_path: "analysis_results/smart_outcome_diagnostics.jsonl"
+  smart_outcome_diagnostics_every_n_steps: 1
   eval_frequency: 50
   eval_episodes: 5
   # Per-episode step cap for deterministic eval (Ray path); defaults to

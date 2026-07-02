@@ -2,6 +2,14 @@
 
 Updated: 2026-06-29
 
+> **STATUS 2026-07-02:** Problem 1's verdict ("SIL — not yet") has been
+> overtaken: **SIL was implemented on 2026-06-30** (feedback-gated admission,
+> not pure return-gating — the marine auto-attack confound in Problem 3 is
+> exactly why) and is live in V7. The *teaching content* of every section
+> remains current; only that one "should you add it?" answer is historical.
+> This doc is the reference register and mastery test for Unit 10 in
+> `learning/TUTOR_INSTRUCTIONS.md`.
+
 Companion to `AUDIT_RECONCILIATION_2026-06-29.md`. That document says *what the
 code does*. This one teaches *why* — each problem the research audit pointed at,
 broken down so you can reason about it yourself instead of taking the method

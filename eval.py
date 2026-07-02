@@ -144,6 +144,28 @@ if "score_every" not in FLAGS:
         1,
         "Log every N env steps when --inspect_score is enabled.",
     )
+if "inspect_smart_outcome" not in FLAGS:
+    flags.DEFINE_bool(
+        "inspect_smart_outcome",
+        False,
+        "Enable SmartOutcomeDiagnosticsWrapper to log short-window outcome "
+        "classifications for dispatched Smart_screen calls.",
+    )
+if "smart_outcome_output" not in FLAGS:
+    flags.DEFINE_string(
+        "smart_outcome_output",
+        None,
+        "Path for smart-outcome diagnostics JSONL. Defaults to "
+        "analysis_results/<run_name>/smart_outcome_diagnostics.jsonl when "
+        "--run_name is known, otherwise "
+        "analysis_results/smart_outcome_diagnostics.jsonl.",
+    )
+if "smart_outcome_every" not in FLAGS:
+    flags.DEFINE_integer(
+        "smart_outcome_every",
+        1,
+        "Log every N env steps when --inspect_smart_outcome is enabled.",
+    )
 if "trace_episodes" not in FLAGS:
     flags.DEFINE_integer(
         "trace_episodes",
@@ -264,6 +286,9 @@ def play(
     inspect_score=False,
     score_output_path=None,
     score_every=1,
+    inspect_smart_outcome=False,
+    smart_outcome_output_path=None,
+    smart_outcome_every=1,
     trace_episodes=0,
     trace_output_dir=None,
     run_name=None,
@@ -327,6 +352,16 @@ def play(
             )
         ),
         policy_input_diagnostics_every_n_steps=policy_input_every,
+        use_smart_outcome_diagnostics=inspect_smart_outcome,
+        smart_outcome_diagnostics_output_path=(
+            smart_outcome_output_path
+            or getattr(
+                cfg.environment,
+                "smart_outcome_diagnostics_output_path",
+                "analysis_results/smart_outcome_diagnostics.jsonl",
+            )
+        ),
+        smart_outcome_diagnostics_every_n_steps=smart_outcome_every,
     )
     try:
         obs_ext = ObservationExtractor()
@@ -505,6 +540,14 @@ def main(argv):
         deterministic=FLAGS.deterministic,
         split_by_mode=split_by_mode,
     )
+    smart_outcome_output_path = _resolve_eval_jsonl_path(
+        FLAGS.smart_outcome_output,
+        enabled=FLAGS.inspect_smart_outcome,
+        filename="smart_outcome_diagnostics.jsonl",
+        run_name=run_name,
+        deterministic=FLAGS.deterministic,
+        split_by_mode=split_by_mode,
+    )
 
     trace_output_dir = FLAGS.trace_output_dir
     if FLAGS.trace_episodes > 0 and trace_output_dir is None:
@@ -531,6 +574,9 @@ def main(argv):
         inspect_score=FLAGS.inspect_score,
         score_output_path=score_output_path,
         score_every=FLAGS.score_every,
+        inspect_smart_outcome=FLAGS.inspect_smart_outcome,
+        smart_outcome_output_path=smart_outcome_output_path,
+        smart_outcome_every=FLAGS.smart_outcome_every,
         trace_episodes=FLAGS.trace_episodes,
         trace_output_dir=trace_output_dir,
         run_name=run_name,

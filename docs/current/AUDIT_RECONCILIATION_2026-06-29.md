@@ -2,6 +2,15 @@
 
 Updated: 2026-06-29
 
+> **STATUS 2026-07-02: partially historical.** This document describes the
+> code as of 2026-06-29. Since then, audit recommendation **#1 (SIL) has been
+> implemented** (2026-06-30, feedback-gated variant — see `ARCHITECTURE.md`
+> SIL section) and is live in the V7 run, which produced the first
+> deterministic eval that attacks. Rows/statements below saying "no imitation
+> buffer" or "SIL correctly deferred" were true when written. Recommendations
+> #2–#5 remain parked as described. The reading-aids and the raw-score
+> critique remain fully current.
+
 Question answered: the credit-assignment research audit (SIL / GRPO / RLOO /
 CCA / HCA / RND / e-prop, "stay on Path A with the SNN") — what did it ask for,
 what does the code actually do, and where (if anywhere) are there real mistakes?

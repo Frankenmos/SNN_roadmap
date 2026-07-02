@@ -1,6 +1,7 @@
 import math
 import inspect
 import time
+from collections import deque
 from types import SimpleNamespace
 
 import numpy as np
@@ -46,6 +47,10 @@ class PPO:
         rollout_cache_spatial_dtype: str | torch.dtype = "float32",
         right_click_curriculum_updates: int = 0,
         right_click_curriculum_noop_logit_penalty: float = 0.0,
+        sil_enabled: bool = False,
+        sil_buffer_size: int = 5000,
+        sil_batch_fraction: float = 0.25,
+        sil_coef: float = 0.0,
     ):
         self.policy_net = policy_net
         self.device = policy_net.device
@@ -68,6 +73,11 @@ class PPO:
             0.0,
             float(right_click_curriculum_noop_logit_penalty or 0.0),
         )
+        self.sil_enabled = bool(sil_enabled)
+        self.sil_buffer_size = max(1, int(sil_buffer_size or 5000))
+        self.sil_batch_fraction = max(0.0, float(sil_batch_fraction or 0.0))
+        self.sil_coef = float(sil_coef or 0.0)
+        self.sil_buffer: deque = deque(maxlen=self.sil_buffer_size)
         self.rollout_cache_spatial_dtype = self._resolve_spatial_cache_dtype(
             rollout_cache_spatial_dtype,
         )
@@ -119,6 +129,10 @@ class PPO:
             "right_click_curriculum_noop_logit_penalty": float(
                 self.right_click_curriculum_noop_logit_penalty,
             ),
+            "sil_enabled": bool(self.sil_enabled),
+            "sil_buffer_size": int(self.sil_buffer_size),
+            "sil_batch_fraction": float(self.sil_batch_fraction),
+            "sil_coef": float(self.sil_coef),
         }
 
     @staticmethod
@@ -393,6 +407,31 @@ class PPO:
             available = available[..., : action_logits.size(-1)]
         masked_logits = action_logits.masked_fill(~available, -1.0e4)
         return self._apply_right_click_curriculum(masked_logits, available)
+
+    def _grad_component_norms(self) -> dict[str, float]:
+        """Pre-clip gradient L2 norms split by module group: the actor head,
+        the critic head, the spatial target head, and everything else (trunk).
+        Diagnoses which loss component dominates the shared-trunk gradient.
+        Call after unscale_ and before clip_grad_norm_ (clip mutates grads)."""
+        sums: dict[str, torch.Tensor] = {}
+        for name, param in self.policy_net.named_parameters():
+            grad = param.grad
+            if not param.requires_grad or grad is None:
+                continue
+            if name.startswith("critic_fc"):
+                key = "critic_head"
+            elif name.startswith("actor_fc"):
+                key = "actor_head"
+            elif name.startswith("target_head"):
+                key = "target_head"
+            else:
+                key = "trunk"
+            contribution = grad.detach().float().pow(2).sum()
+            if key in sums:
+                sums[key] = sums[key] + contribution
+            else:
+                sums[key] = contribution
+        return {key: float(value.sqrt().item()) for key, value in sums.items()}
 
     def _right_click_curriculum_penalty(self) -> float:
         if (
@@ -1048,6 +1087,9 @@ class PPO:
             raw_advantages_by_fragment.append(raw_advantages)
             returns_by_fragment.append((raw_advantages + item["values"]).detach())
 
+        if self.sil_enabled:
+            self._admit_to_sil_buffer(fragments, returns_by_fragment)
+
         all_raw_advantages = torch.cat(raw_advantages_by_fragment, dim=0)
         all_sample_masks = torch.cat(
             [item["sample_masks"] for item in fragment_tensors],
@@ -1111,6 +1153,12 @@ class PPO:
         acc_kl = []
         acc_clip_frac = []
         acc_grad_norm = []
+        acc_grad_component_norms: dict[str, list[float]] = {
+            "trunk": [],
+            "actor_head": [],
+            "critic_head": [],
+            "target_head": [],
+        }
         nonfinite_grad_steps = 0
         skipped_optimizer_steps = 0
         epochs_ran = 0
@@ -1259,6 +1307,8 @@ class PPO:
 
                 grad_norm_value = float("inf")
                 if grads_finite:
+                    for key, value in self._grad_component_norms().items():
+                        acc_grad_component_norms[key].append(value)
                     grad_norm = torch.nn.utils.clip_grad_norm_(params, 0.5)
                     grad_norm_value = float(grad_norm.item())
 
@@ -1286,6 +1336,12 @@ class PPO:
             "ppo_epoch_wall_seconds",
             epoch_loop_started,
             sync_cuda=True,
+        )
+
+        sil_stats = (
+            self._run_sil_pass(rollout_size, params, timings)
+            if self.sil_enabled
+            else {}
         )
 
         with torch.no_grad():
@@ -1327,6 +1383,12 @@ class PPO:
             "clip_fraction": float(np.mean(acc_clip_frac)),
             "explained_variance": float(explained_var.item()),
             "grad_norm": float(np.mean(acc_grad_norm)),
+            **{
+                f"grad_norm_{key}": (
+                    float(np.mean(values)) if values else 0.0
+                )
+                for key, values in acc_grad_component_norms.items()
+            },
             "lr": float(self.optimizer.param_groups[0]["lr"]),
             "nonfinite_grad_steps": int(nonfinite_grad_steps),
             "skipped_optimizer_steps": int(skipped_optimizer_steps),
@@ -1371,6 +1433,17 @@ class PPO:
         stats.update(payload_stats)
         stats.update(self._aggregate_fragment_step_counters(fragments))
         stats.update(timings)
+        if self.sil_enabled:
+            stats.update(
+                {
+                    "sil_loss": 0.0,
+                    "sil_gate_open_fraction": 0.0,
+                    "sil_buffer_size": len(self.sil_buffer),
+                    "sil_steps_replayed": 0,
+                    "sil_groups": 0,
+                },
+            )
+            stats.update(sil_stats)
 
         if self.scheduler is not None:
             self.scheduler.step()
@@ -2251,3 +2324,232 @@ class PPO:
         mask = mask.to(device=values.device, dtype=values.dtype)
         denom = mask.sum().clamp_min(1.0)
         return (values * mask).sum() / denom
+
+    def _admit_to_sil_buffer(
+        self,
+        fragments: list[RolloutFragment],
+        returns_by_fragment: list[torch.Tensor],
+    ) -> None:
+        """Admit committed-attack transitions to the SIL trophy buffer.
+
+        The action_feedback_tokens at step i describe the action taken at step
+        i-1 (their effect is what is visible in observation i; see
+        ``action_feedback_encoder.py``). So a RIGHT_CLICK at step j is confirmed
+        to have engaged an enemy by the feedback token at step j+1 (target near
+        an enemy, or an enemy health drop). We admit step j (the click itself,
+        with its own observation / pre-step SNN state / return R) only when that
+        next-step feedback confirms engagement. Idle steps and missed clicks are
+        never admitted, so the buffer cannot fill with the auto-attack-confounded
+        idle behavior that dominates winning episodes.
+        """
+        for fragment, returns in zip(fragments, returns_by_fragment):
+            actions = fragment.actions.detach().cpu().long().reshape(-1)
+            num_steps = int(actions.shape[0])
+            if num_steps < 2:
+                continue  # need a following step's feedback to confirm engagement
+            feedback = fragment.action_feedback_tokens.detach().cpu().float()
+            feedback = feedback.reshape(num_steps, -1)
+            if int(feedback.shape[0]) != num_steps:
+                continue
+            returns_cpu = returns.detach().cpu().float().reshape(-1)
+            sample_mask = (
+                fragment.sample_mask.detach().cpu().float().reshape(-1) > 0.0
+            )
+            if int(sample_mask.shape[0]) != num_steps:
+                continue
+            obs_batch = fragment.as_policy_input_batch(state_in=None)
+            pre_state = fragment.pre_step_snn_state
+            for j in range(num_steps - 1):
+                if not bool(sample_mask[j].item()):
+                    continue
+                if int(actions[j].item()) != POLICY_ACTION_RIGHT_CLICK:
+                    continue
+                fb_next = feedback[j + 1]
+                near_enemy = bool(
+                    fb_next[ACTION_FEEDBACK_TARGET_NEAR_ENEMY_OFFSET].item() > 0.5
+                )
+                health_drop = bool(
+                    fb_next[ACTION_FEEDBACK_ENEMY_HEALTH_DROP_OFFSET].item() > 0.0
+                )
+                if not (near_enemy or health_drop):
+                    continue
+                self.sil_buffer.append(
+                    self._build_sil_entry(
+                        obs_batch, pre_state, fragment, returns_cpu, j,
+                    ),
+                )
+
+    def _build_sil_entry(
+        self,
+        obs_batch: PolicyInputBatch,
+        pre_state,
+        fragment: RolloutFragment,
+        returns_cpu: torch.Tensor,
+        i: int,
+    ) -> dict:
+        index = torch.tensor([int(i)], dtype=torch.long)
+        obs_step = obs_batch.index_select(index).with_state(None)
+        state_step = self._slice_state_row(pre_state, i)
+        if state_step is not None:
+            state_step = (state_step[0].clone(), state_step[1].clone())
+        actions_row = fragment.actions.detach().cpu().long().reshape(-1)
+        move_x_row = fragment.move_x.detach().cpu().long().reshape(-1)
+        move_y_row = fragment.move_y.detach().cpu().long().reshape(-1)
+        target_row = fragment.target_index.detach().cpu().long().reshape(-1)
+        coarse_row = fragment.coarse_index.detach().cpu().long().reshape(-1)
+        fine_row = fragment.fine_index.detach().cpu().long().reshape(-1)
+        old_lp_row = fragment.old_log_probs.detach().cpu().float().reshape(-1)
+        return {
+            "observations": obs_step,
+            "initial_state": state_step,
+            "actions": actions_row[i : i + 1].clone(),
+            "move_x": move_x_row[i : i + 1].clone(),
+            "move_y": move_y_row[i : i + 1].clone(),
+            "target_index": target_row[i : i + 1].clone(),
+            "coarse_index": coarse_row[i : i + 1].clone(),
+            "fine_index": fine_row[i : i + 1].clone(),
+            "old_log_prob": old_lp_row[i : i + 1].clone(),
+            "advantages": torch.zeros(1, dtype=torch.float32),
+            "returns": returns_cpu[i : i + 1].clone(),
+            "dones": torch.ones(1, dtype=torch.float32),
+            "sample_mask": torch.ones(1, dtype=torch.float32),
+            "policy_mask": torch.ones(1, dtype=torch.float32),
+            "length": 1,
+        }
+
+    def _run_sil_pass(
+        self,
+        rollout_size: int,
+        params,
+        timings: dict[str, float] | None,
+    ) -> dict:
+        """One SIL auxiliary update: replay sampled trophy transitions through
+        the current policy and apply the gated imitation loss
+        ``sil_coef * mean( (R - V_current)+ . -log pi(a|s) )`` via its own
+        backward+step. Returns SIL diagnostics, or {} if SIL did not run.
+        """
+        if (
+            not self.sil_enabled
+            or self.sil_coef <= 0.0
+            or self.sil_batch_fraction <= 0.0
+            or len(self.sil_buffer) == 0
+        ):
+            return {}
+
+        sil_started = time.perf_counter()
+        buffer_list = list(self.sil_buffer)
+        sil_batch = max(
+            1,
+            int(self.sil_batch_fraction * max(1, int(rollout_size))),
+        )
+        sil_batch = min(sil_batch, len(buffer_list))
+        order = torch.randperm(len(buffer_list))[:sil_batch].tolist()
+        sampled = [buffer_list[k] for k in order]
+
+        total_sil_loss = 0.0
+        gate_open_sum = 0.0
+        gate_count = 0.0
+        sil_groups = 0
+        sil_grad_norms: list[float] = []
+
+        for chunk_group in self._iter_chunk_groups(sampled, sil_batch):
+            with torch.amp.autocast(
+                "cuda",
+                dtype=self.policy_net.amp_dtype,
+                enabled=self.policy_net.use_amp,
+            ):
+                pack_started = time.perf_counter()
+                packed_group = self._pack_chunk_group(chunk_group)
+                self._record_elapsed(
+                    timings,
+                    "sil_chunk_pack_wall_seconds",
+                    pack_started,
+                    sync_cuda=True,
+                )
+                replay_started = time.perf_counter()
+                replayed_group = self._replay_packed_chunk_group(packed_group)
+                self._record_elapsed(
+                    timings,
+                    "sil_replay_forward_wall_seconds",
+                    replay_started,
+                    sync_cuda=True,
+                )
+
+                active_mask = replayed_group["alive_mask"].reshape(-1)
+                action_logits = replayed_group["action_logits"].reshape(
+                    -1,
+                    replayed_group["action_logits"].size(-1),
+                )[active_mask]
+                target_log_prob = replayed_group["target_log_prob"].reshape(-1)[
+                    active_mask
+                ]
+                state_values = replayed_group["state_values"].reshape(-1)[
+                    active_mask
+                ]
+                actions = replayed_group["actions"].reshape(-1)[active_mask]
+                returns_r = (
+                    replayed_group["returns"].reshape(-1)[active_mask].float()
+                )
+                sample_mask = replayed_group["sample_mask"].reshape(-1)[
+                    active_mask
+                ]
+
+                action_dist = torch.distributions.Categorical(
+                    logits=action_logits.float(),
+                )
+                is_spatial = self._spatial_action_mask(actions)
+                new_log_prob = (
+                    action_dist.log_prob(actions)
+                    + is_spatial * target_log_prob
+                )
+                # Gate = (R - V_current)+, detached: a fixed per-sample weight,
+                # not something we backprop through the critic.
+                weight = (returns_r - state_values.float()).clamp(min=0.0).detach()
+                sil_loss = -self.sil_coef * self._masked_mean(
+                    weight * new_log_prob,
+                    sample_mask,
+                )
+
+            backward_started = time.perf_counter()
+            self.optimizer.zero_grad(set_to_none=True)
+            self.policy_net.scaler.scale(sil_loss).backward()
+            self.policy_net.scaler.unscale_(self.optimizer)
+
+            grads_finite = True
+            for param in params:
+                grad = param.grad
+                if grad is not None and not torch.isfinite(grad).all():
+                    grads_finite = False
+                    break
+            if grads_finite:
+                sil_grad_norm = torch.nn.utils.clip_grad_norm_(params, 0.5)
+                sil_grad_norms.append(float(sil_grad_norm.item()))
+                self.policy_net.scaler.step(self.optimizer)
+            self.policy_net.scaler.update()
+            self._record_elapsed(
+                timings,
+                "sil_backward_optimizer_wall_seconds",
+                backward_started,
+                sync_cuda=True,
+            )
+
+            total_sil_loss += float(sil_loss.item())
+            gate_open_sum += float(
+                ((weight > 0.0).float() * sample_mask).sum().item(),
+            )
+            gate_count += float(sample_mask.sum().item())
+            sil_groups += 1
+
+        self._record_elapsed(
+            timings, "sil_wall_seconds", sil_started, sync_cuda=True,
+        )
+        return {
+            "sil_loss": total_sil_loss / max(1, sil_groups),
+            "sil_gate_open_fraction": gate_open_sum / max(1.0, gate_count),
+            "sil_buffer_size": len(self.sil_buffer),
+            "sil_steps_replayed": int(sil_batch),
+            "sil_groups": int(sil_groups),
+            "sil_grad_norm": (
+                float(np.mean(sil_grad_norms)) if sil_grad_norms else 0.0
+            ),
+        }

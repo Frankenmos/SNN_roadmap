@@ -1,6 +1,6 @@
 # Architecture
 
-Updated: 2026-06-26
+Updated: 2026-07-02
 
 This is the concise current architecture reference. It supersedes pre-V6
 long-form architecture notes.
@@ -82,6 +82,22 @@ One reset bootstrap `select_army` happens outside PPO memory.
 - Time caps are stored as truncations, not terminal `done`, so value bootstrap
   can continue through caps.
 - The same fragment protocol supports local training and Ray training.
+
+## Self-Imitation Learning (SIL, added 2026-06-30)
+
+- Config-gated (`sil_enabled`); live in the V7 run.
+- Trophy buffer: FIFO deque (`sil_buffer_size: 5000`) of single-step
+  verified-good clicks with their pre-step recurrent state.
+- Admission: a `RIGHT_CLICK` at step j is admitted only if step j+1's
+  action-feedback tokens confirm engagement (`TARGET_NEAR_ENEMY` or
+  `ENEMY_HEALTH_DROP`). Return-gating alone was rejected: marine auto-attack
+  inflates returns for idle steps.
+- Replay: `_run_sil_pass` after the PPO epochs, with its own optimizer step.
+  Loss: `-sil_coef * (R - V(s))+.detach() * log pi(a|s)` (Oh et al. 2018,
+  Eq. 2 shape).
+- Known open concerns: the separate optimizer step moves the policy outside
+  PPO's trust-region accounting, and stored recurrent states go stale as the
+  network evolves (see REPO_STATE "What Is Still Open").
 
 ## Current Numerical Defaults
 
