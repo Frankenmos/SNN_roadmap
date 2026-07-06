@@ -1,0 +1,28 @@
+{
+  "name": "snn-arch-explorer",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Interactive 3D explorer of the SNN-PPO DefeatRoaches architecture",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/render_smoke.mjs"
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.114.0",
+    "@react-three/fiber": "^8.17.10",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "puppeteer-core": "^23.10.0",
+    "tailwindcss": "^3.4.15",
+    "vite": "^5.4.11"
+  }
+}
