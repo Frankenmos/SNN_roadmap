@@ -75,6 +75,22 @@ Raw α/β can drift outside [0, 1] during training; snnTorch clamps them
 in the forward pass, so the panel shows the clamped *effective* value
 (with the raw value alongside when they differ).
 
+## Math Lab
+
+The **∑ math lab** button (top right) opens interactive playgrounds for
+the agent's core equations — every page cites its `file:line` source
+and labels anything synthetic:
+
+| Page | What you can do |
+|------|-----------------|
+| LIF neuron | Paint an input spike train, drive α/β sliders, watch (syn, mem) and output spikes; presets jump to the config inits and (with a live bundle) the run's *learned* constants |
+| surrogate grad | The straight-through trick: hard step forward vs `1/(1+k\|U\|)²` backward, slope slider (repo default k=25) |
+| GAE | Paint rewards over a 16-step fragment, γ/λ sliders, and the repo's truncation-vs-termination toggle — watch δ and A recompute via the exact backwards recursion |
+| PPO clip | The clipped surrogate at the repo's ε=0.10, advantage slider, flat-region intuition |
+| coarse→fine | The factorized 49×144 spatial click: place a hotspot, temperature sliders, sample a target through the exact `x = col_c·12 + col_f` composition |
+
+`Esc` closes the lab back to the 3D scene.
+
 ## What the moving parts mean
 
 - **Flow particles** trace tensors along the pipeline spline.

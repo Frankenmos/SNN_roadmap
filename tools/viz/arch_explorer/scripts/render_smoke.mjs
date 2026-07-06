@@ -14,7 +14,7 @@
 // Override the browser: set ARCH_EXPLORER_BROWSER=<path to exe>
 
 import { existsSync } from 'node:fs'
-import { stat, unlink, writeFile } from 'node:fs/promises'
+import { copyFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { preview } from 'vite'
@@ -292,15 +292,45 @@ async function main() {
       throw new Error(`Page errors (live): ${errors.join(' | ')}`)
     }
 
+    // ------------------------------------------------ phase C: math lab
+    await page.evaluate(() => window.__ARCH_EXPLORER_LAB('lif'))
+    await sleep(600)
+    if (!(await bodyIncludes(page, 'math lab'))) {
+      throw new Error('Math lab overlay did not open.')
+    }
+    // learned preset from the live bundle must appear on the LIF page
+    if (!(await bodyIncludes(page, 'slow learned 1.00 / 1.00'))) {
+      throw new Error('LIF page missing the learned-constant preset.')
+    }
+    await page.evaluate(() => window.__ARCH_EXPLORER_LAB('gae'))
+    await sleep(600)
+    if (!(await bodyIncludes(page, 'truncated (time cap)'))) {
+      throw new Error('GAE page missing the truncation toggle.')
+    }
+    const labShotPath = join(root, 'smoke_screenshot_lab.png')
+    await page.screenshot({ path: labShotPath })
+    await page.evaluate(() => window.__ARCH_EXPLORER_LAB(false))
+    await sleep(400)
+    if (!(await bodyIncludes(page, '95-token stream'))) {
+      throw new Error('Scene HUD missing after closing the math lab.')
+    }
+    if (errors.length) {
+      throw new Error(`Page errors (lab): ${errors.join(' | ')}`)
+    }
+
     console.log(
       `[smoke] PASS - canvas ${canvasInfo.width}x${canvasInfo.height}, ` +
-        `resize OK, live mode OK, screenshots ${Math.round(size / 1024)} KiB ` +
-        `-> ${shotPath} + ${liveShotPath}`,
+        `resize OK, live mode OK, math lab OK, screenshots ` +
+        `${Math.round(size / 1024)} KiB -> ${shotPath} + ${liveShotPath} + ${labShotPath}`,
     )
   } finally {
     await browser.close()
     await new Promise((resolve) => server.httpServer.close(resolve))
+    // Drop the synthetic bundle; restore the user's real one (a build
+    // copies public/run_data.json into dist/) if they have exported one.
     if (existsSync(runDataPath)) await unlink(runDataPath)
+    const publicBundle = join(root, 'public', 'run_data.json')
+    if (existsSync(publicBundle)) await copyFile(publicBundle, runDataPath)
   }
 }
 

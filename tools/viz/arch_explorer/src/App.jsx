@@ -11,6 +11,7 @@ import { pipelineStations, trainingStations } from './scene/curves'
 import { Scene } from './scene/Scene.jsx'
 import { InfoPanel } from './ui/InfoPanel.jsx'
 import { HUD } from './ui/HUD.jsx'
+import { MathLab } from './lab/MathLab.jsx'
 
 export default function App() {
   const [selected, setSelected] = useState(null)
@@ -18,6 +19,8 @@ export default function App() {
   const [showTraining, setShowTraining] = useState(false)
   const [runData, setRunData] = useState(null)
   const [entryIndex, setEntryIndex] = useState(0)
+  const [labOpen, setLabOpen] = useState(false)
+  const [labPage, setLabPage] = useState('lif')
 
   // Optional live bundle (public/run_data.json). Absent -> static mode.
   useEffect(() => {
@@ -85,13 +88,20 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (event) => {
-      if (event.key === 'Escape') handleClose()
+      if (event.key !== 'Escape') return
+      // Esc peels UI layers: math lab first, then the info panel.
+      setLabOpen((open) => {
+        if (open) return false
+        handleClose()
+        return open
+      })
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [handleClose])
 
-  // Debug/smoke-test hook: select a zone by id without pointer raycasts.
+  // Debug/smoke-test hooks: select a zone / open a lab page without
+  // pointer raycasts.
   useEffect(() => {
     window.__ARCH_EXPLORER_SELECT = (zoneId) => {
       const zone = [...PIPELINE_ZONES, ...TRAINING_ZONES].find(
@@ -100,8 +110,18 @@ export default function App() {
       if (zone) handleSelect(zone)
       return Boolean(zone)
     }
+    window.__ARCH_EXPLORER_LAB = (pageId) => {
+      if (pageId === false) {
+        setLabOpen(false)
+        return true
+      }
+      if (typeof pageId === 'string') setLabPage(pageId)
+      setLabOpen(true)
+      return true
+    }
     return () => {
       delete window.__ARCH_EXPLORER_SELECT
+      delete window.__ARCH_EXPLORER_LAB
     }
   }, [handleSelect])
 
@@ -133,6 +153,7 @@ export default function App() {
         showTraining={showTraining}
         onToggleTraining={() => setShowTraining((value) => !value)}
         runData={runData}
+        onOpenLab={() => setLabOpen(true)}
       />
       <InfoPanel
         zone={selected}
@@ -143,6 +164,14 @@ export default function App() {
         entryIndex={entryIndex}
         onEntryChange={setEntryIndex}
       />
+      {labOpen && (
+        <MathLab
+          runData={runData}
+          page={labPage}
+          onPageChange={setLabPage}
+          onClose={() => setLabOpen(false)}
+        />
+      )}
     </div>
   )
 }

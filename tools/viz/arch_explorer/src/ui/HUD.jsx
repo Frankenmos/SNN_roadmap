@@ -1,6 +1,6 @@
 import { TOKEN_GROUPS } from '../data/zones'
 
-export function HUD({ showTraining, onToggleTraining, runData }) {
+export function HUD({ showTraining, onToggleTraining, runData, onOpenLab }) {
   return (
     <>
       {/* title */}
@@ -17,16 +17,26 @@ export function HUD({ showTraining, onToggleTraining, runData }) {
         </p>
       </div>
 
-      {/* training loop toggle */}
-      <button
-        onClick={onToggleTraining}
-        className={`glass absolute right-4 top-4 z-20 rounded-2xl px-4 py-3 font-mono text-xs
-                    uppercase tracking-widest transition
-                    ${showTraining ? 'text-amber-300' : 'text-slate-400 hover:text-slate-200'}`}
-        style={showTraining ? { borderColor: 'rgba(251,191,36,0.4)' } : undefined}
-      >
-        {showTraining ? '◉' : '○'} training loop
-      </button>
+      {/* training loop toggle + math lab */}
+      <div className="absolute right-4 top-4 z-20 flex flex-col items-end gap-2">
+        <button
+          onClick={onToggleTraining}
+          className={`glass rounded-2xl px-4 py-3 font-mono text-xs
+                      uppercase tracking-widest transition
+                      ${showTraining ? 'text-amber-300' : 'text-slate-400 hover:text-slate-200'}`}
+          style={showTraining ? { borderColor: 'rgba(251,191,36,0.4)' } : undefined}
+        >
+          {showTraining ? '◉' : '○'} training loop
+        </button>
+        <button
+          onClick={onOpenLab}
+          className="glass rounded-2xl px-4 py-3 font-mono text-xs uppercase
+                     tracking-widest text-slate-400 transition hover:text-cyan-300"
+          title="Interactive playgrounds for the agent's core equations"
+        >
+          ∑ math lab
+        </button>
+      </div>
 
       {/* live run-data badge (written by `python -m tools.registry export`) */}
       {runData && (
