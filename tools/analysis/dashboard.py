@@ -30,6 +30,7 @@ from tools.analysis.results import (
     SIL_FIELDS,
     TrainingAnalyzer,
 )
+from tools.registry.core import diff_entries, list_run_entries
 
 # Anchor run discovery to the repo root so the dashboard works regardless
 # of the CWD it is launched from (tools/analysis/dashboard.py -> repo root).
@@ -804,6 +805,167 @@ def _render_sil_health(ppo_updates_df: pd.DataFrame) -> None:
             st.plotly_chart(fig, width="stretch")
 
 
+def _registry_fingerprint(run_name: str) -> str:
+    """Cache key over the run's .pth artifacts (names + mtime + size)."""
+    run_dir = _MODELS_DIR / run_name
+    paths = [run_dir / "checkpoint.pth", run_dir / "best_checkpoint.pth"]
+    snapshot_dir = run_dir / "snapshots"
+    if snapshot_dir.is_dir():
+        paths.extend(sorted(snapshot_dir.glob("policy_u*.pth")))
+    parts = []
+    for path in paths:
+        try:
+            stat = path.stat()
+            parts.append(f"{path.name}:{stat.st_mtime_ns}:{stat.st_size}")
+        except OSError:
+            continue
+    return "|".join(parts)
+
+
+@st.cache_data
+def _load_registry_rows(run_name: str, fingerprint: str = "") -> list[dict]:
+    # fingerprint only keys the cache (files may be appended by training).
+    entries = list_run_entries(run_name, models_dir=_MODELS_DIR)
+    rows = []
+    for entry in entries:
+        metadata = entry.metadata
+        git_commit = metadata.get("git_commit")
+        rows.append(
+            {
+                "file": entry.name,
+                "kind": entry.kind,
+                "policy_version": entry.policy_version,
+                "episode": metadata.get("episode"),
+                "size_mib": round(entry.size_mib, 2),
+                "eval_mean": entry.eval_mean,
+                "eval_at_version": entry.eval_policy_version,
+                "git_commit": str(git_commit)[:8] if git_commit else None,
+                "config_hash": metadata.get("config_hash"),
+                "saved": metadata.get("wall_time_iso"),
+                "path": str(entry.path),
+            },
+        )
+    return rows
+
+
+@st.cache_data
+def _load_registry_diff(path_a: str, path_b: str, fingerprint: str = "") -> dict:
+    return diff_entries(path_a, path_b)
+
+
+def _render_snapshots_tab(selected_run: str | None) -> None:
+    st.subheader("Snapshot registry")
+    if not selected_run:
+        st.info(
+            "The snapshot registry needs a local run (upload mode has no "
+            "run directory)."
+        )
+        return
+    try:
+        rows = _load_registry_rows(
+            selected_run, _registry_fingerprint(selected_run),
+        )
+    except Exception as exc:
+        st.error(f"Failed to read registry for `{selected_run}`: {exc}")
+        return
+    if not rows:
+        st.info(
+            "No .pth artifacts found for this run. To record snapshot "
+            "lineage, enable the `snapshot_*` keys in config.yaml "
+            "(distributed section). CLI: `python -m tools.registry`."
+        )
+        return
+
+    st.dataframe(
+        pd.DataFrame(rows).drop(columns=["path"]),
+        width="stretch",
+        hide_index=True,
+    )
+    st.caption(
+        "CLI: `python -m tools.registry list <run>` | `show <ref>` | "
+        "`diff <a> <b>` (refs accept `<run>:u<N>`, `:checkpoint`, `:best`)."
+    )
+
+    if len(rows) < 2:
+        st.info("Need at least two artifacts to diff.")
+        return
+    st.markdown("#### Diff two artifacts")
+    labels = [row["file"] for row in rows]
+    path_by_label = {row["file"]: row["path"] for row in rows}
+    col_a, col_b = st.columns(2)
+    with col_a:
+        label_a = st.selectbox("A (baseline)", labels, index=0)
+    with col_b:
+        label_b = st.selectbox("B (comparison)", labels, index=len(labels) - 1)
+    if label_a == label_b:
+        st.info("Pick two different artifacts.")
+        return
+    try:
+        diff = _load_registry_diff(
+            path_by_label[label_a],
+            path_by_label[label_b],
+            _registry_fingerprint(selected_run),
+        )
+    except Exception as exc:
+        st.error(f"Diff failed: {exc}")
+        return
+
+    unchanged = sum(1 for row in diff["layers"] if row["l2"] == 0.0)
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Global L2 delta", _metric_text(diff["total_l2"], ".4f"))
+    metric_cols[1].metric("Layers compared", f"{len(diff['layers'])}")
+    metric_cols[2].metric("Bit-identical layers", f"{unchanged}")
+
+    if diff["metadata_diff"]:
+        st.markdown("**Metadata differences (A -> B)**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"key": key, "A": str(value_a), "B": str(value_b)}
+                    for key, (value_a, value_b) in diff["metadata_diff"].items()
+                ],
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    config_diff = diff.get("config_diff") or {}
+    if config_diff.get("changed"):
+        st.markdown("**Config differences (A -> B)**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"key": key, "A": str(value_a), "B": str(value_b)}
+                    for key, (value_a, value_b) in config_diff["changed"].items()
+                ],
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    if diff["layers"]:
+        st.markdown("**Top layer deltas (by L2)**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "layer": row["name"],
+                        "shape": str(row["shape"]),
+                        "l2": row["l2"],
+                        "rel_l2": row["rel_l2"],
+                        "cosine": row["cosine"],
+                    }
+                    for row in diff["layers"][:40]
+                ],
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    for label, key in (("Only in A", "only_in_a"), ("Only in B", "only_in_b")):
+        names = diff.get(key) or []
+        if names:
+            suffix = " ..." if len(names) > 10 else ""
+            st.caption(f"{label}: {', '.join(names[:10])}{suffix}")
+
+
 def _render_checkpoint_panel(ckpt_path: str | None) -> None:
     st.subheader("Checkpoint Introspection")
     if not ckpt_path:
@@ -1109,8 +1271,22 @@ def render_dashboard() -> None:
         else:
             info_cols[2].metric("PPO updates", f"{len(ppo_updates_df)}")
 
-    tab_overview, tab_policy, tab_ppo, tab_rewards, tab_checkpoint = st.tabs(
-        ["Overview", "Policy", "PPO / Eval", "Reward Shaping", "Checkpoint"]
+    (
+        tab_overview,
+        tab_policy,
+        tab_ppo,
+        tab_rewards,
+        tab_snapshots,
+        tab_checkpoint,
+    ) = st.tabs(
+        [
+            "Overview",
+            "Policy",
+            "PPO / Eval",
+            "Reward Shaping",
+            "Snapshots",
+            "Checkpoint",
+        ]
     )
 
     with tab_overview:
@@ -1480,6 +1656,9 @@ def render_dashboard() -> None:
                 width="stretch",
                 hide_index=True,
             )
+
+    with tab_snapshots:
+        _render_snapshots_tab(selected_run)
 
     with tab_checkpoint:
         _render_checkpoint_panel(ckpt_path)

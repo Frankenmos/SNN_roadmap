@@ -16,6 +16,7 @@ from distributed.learner import LearnerCoordinator
 from distributed.protocol import EpisodeSummary, RolloutFragment
 from distributed.ray_actor import RolloutActor
 from obs_space.obs_space_2 import ObservationExtractor
+from Utility.checkpoint_snapshots import SnapshotSchedule, save_policy_snapshot
 from Utility.config import cfg
 from Utility.logger_utils import LogListener
 
@@ -471,6 +472,14 @@ def main() -> None:
     log_queue = Queue()
     run_dir = _run_dir()
     run_name = cfg.environment.run_name
+    snapshot_schedule = SnapshotSchedule.from_distributed_config(_distributed_value)
+    if snapshot_schedule.enabled:
+        print(
+            "Policy snapshots enabled: "
+            f"dense every {snapshot_schedule.dense_every} updates until "
+            f"update {snapshot_schedule.dense_until}, then every "
+            f"{snapshot_schedule.sparse_every}.",
+        )
     print(f"Ray run directory: {run_dir}")
     print(
         "Starting synchronous Ray PPO: "
@@ -555,21 +564,33 @@ def main() -> None:
             episode_index += episodes_logged
 
             checkpoint_frequency = max(1, int(cfg.environment.log_frequency))
+            checkpoint_due = (update_index + 1) % checkpoint_frequency == 0
+            snapshot_due = snapshot_schedule.is_due(int(learner.policy_version))
             checkpoint_wall_seconds = 0.0
-            if (update_index + 1) % checkpoint_frequency == 0:
-                avg_reward = (
-                    float(np.mean(episode_rewards)) if episode_rewards else None
-                )
+            if checkpoint_due or snapshot_due:
                 checkpoint_started = time.perf_counter()
+                # One sync serves both writes; it must precede them so
+                # neither ships count=0 normalizer stats.
                 _sync_extractor_state_from_actors(ray, actors, learner)
-                save_checkpoint(
-                    learner.agent,
-                    episode_index,
-                    best_eval_reward,
-                    episode_rewards,
-                    avg_reward=avg_reward,
-                    require_rollout_clear=False,
-                )
+                if checkpoint_due:
+                    avg_reward = (
+                        float(np.mean(episode_rewards)) if episode_rewards else None
+                    )
+                    save_checkpoint(
+                        learner.agent,
+                        episode_index,
+                        best_eval_reward,
+                        episode_rewards,
+                        avg_reward=avg_reward,
+                        require_rollout_clear=False,
+                    )
+                if snapshot_due:
+                    save_policy_snapshot(
+                        learner.agent,
+                        run_dir=run_dir,
+                        episode=episode_index,
+                        run_name=run_name,
+                    )
                 checkpoint_wall_seconds = time.perf_counter() - checkpoint_started
             stats["checkpoint_wall_seconds"] = float(checkpoint_wall_seconds)
 
