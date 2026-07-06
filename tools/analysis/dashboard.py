@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -11,14 +12,32 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import torch
-import torchvision
+
+try:
+    import torchvision
+except ImportError:
+    # Kernel-grid views in the checkpoint tab degrade gracefully without it.
+    torchvision = None
 
 from tools.analysis.analyze_pth import (
     collect_checkpoint_metadata,
     collect_extractor_state_rows,
     collect_time_constant_rows,
 )
-from tools.analysis.results import TrainingAnalyzer
+from tools.analysis.results import (
+    GRAD_NORM_DECOMP_FIELDS,
+    POLICY_MIX_FIELDS,
+    SIL_FIELDS,
+    TrainingAnalyzer,
+)
+
+# Anchor run discovery to the repo root so the dashboard works regardless
+# of the CWD it is launched from (tools/analysis/dashboard.py -> repo root).
+# SNN_DASHBOARD_MODELS_DIR overrides it (also used by the smoke test).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_MODELS_DIR = Path(
+    os.environ.get("SNN_DASHBOARD_MODELS_DIR", str(_REPO_ROOT / "models"))
+)
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -26,7 +45,30 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return conn.execute(query, (table_name,)).fetchone() is not None
 
 
-def _list_local_runs(models_dir: str = "models") -> list[str]:
+def _db_fingerprint(db_path: str) -> str:
+    """Staleness key for st.cache_data: mtime/size of the DB and its WAL
+    sidecar, so a training run appending rows busts the cache."""
+    parts = []
+    for suffix in ("", "-wal"):
+        try:
+            stat = Path(str(db_path) + suffix).stat()
+            parts.append(f"{stat.st_mtime_ns}:{stat.st_size}")
+        except OSError:
+            parts.append("absent")
+    return "|".join(parts)
+
+
+def _metric_text(value, fmt: str = ".2f") -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if not np.isfinite(number):
+        return "n/a"
+    return format(number, fmt)
+
+
+def _list_local_runs(models_dir: str | Path = _MODELS_DIR) -> list[str]:
     root = Path(models_dir)
     if not root.exists():
         return []
@@ -39,7 +81,7 @@ def _list_local_runs(models_dir: str = "models") -> list[str]:
 
 
 def _local_checkpoint_candidates(run_name: str) -> list[str]:
-    run_dir = Path("models") / run_name
+    run_dir = _MODELS_DIR / run_name
     preferred = [
         run_dir / "best_checkpoint.pth",
         run_dir / "checkpoint.pth",
@@ -69,7 +111,10 @@ def load_analysis_bundle(
     window: int,
     num_bins: int,
     win_threshold: float,
+    db_fingerprint: str = "",
 ) -> dict:
+    # db_fingerprint is unused in the body: it participates in the
+    # st.cache_data key so the cache invalidates when the DB file changes.
     analyzer = TrainingAnalyzer(db_path)
     try:
         try:
@@ -85,6 +130,7 @@ def load_analysis_bundle(
             "evals": analyzer.get_eval_metrics(),
             "action_labels": analyzer.action_labels.copy(),
             "action_semantics": analyzer.action_semantics,
+            "run_config": analyzer.get_run_config(),
             "diagnosis": analyzer.diagnose(
                 window=window,
                 num_bins=num_bins,
@@ -594,13 +640,181 @@ def _eval_gap_figure(eval_runs_df: pd.DataFrame) -> go.Figure | None:
     return fig
 
 
+_POLICY_COUNT_LABELS = {
+    "rollout_policy_no_op_count": "no_op",
+    "rollout_policy_left_click_count": "left_click",
+    "rollout_policy_right_click_count": "right_click",
+}
+_FEEDBACK_COUNT_LABELS = {
+    "rollout_feedback_near_enemy_smart_count": "near_enemy",
+    "rollout_feedback_moved_toward_target_count": "moved_toward_target",
+    "rollout_feedback_enemy_health_drop_after_smart_count": "enemy_health_drop",
+    "rollout_feedback_null_unclear_smart_count": "null_unclear",
+}
+
+
+def _update_axis(ppo_updates_df: pd.DataFrame) -> pd.Series:
+    if "update_id" in ppo_updates_df.columns:
+        return ppo_updates_df["update_id"]
+    return pd.Series(np.arange(len(ppo_updates_df)), index=ppo_updates_df.index)
+
+
+def _update_action_mix_figure(ppo_updates_df: pd.DataFrame) -> go.Figure | None:
+    """Action mix per PPO update from rollout_policy_*_count aggregates.
+
+    This is the Ray-path replacement for the step-based action-mix panels:
+    the Ray trainer logs per-update action counts instead of STEP rows.
+    """
+    cols = [c for c in _POLICY_COUNT_LABELS if c in ppo_updates_df.columns]
+    if ppo_updates_df.empty or not cols:
+        return None
+    counts = ppo_updates_df[cols].fillna(0.0)
+    totals = counts.sum(axis=1)
+    if float(totals.sum()) <= 0.0:
+        return None
+    shares = counts.div(totals.clip(lower=1.0), axis=0)
+    x = _update_axis(ppo_updates_df)
+    fig = go.Figure()
+    for col in cols:
+        fig.add_trace(
+            go.Scatter(
+                x=x,
+                y=shares[col],
+                mode="lines",
+                stackgroup="one",
+                name=_POLICY_COUNT_LABELS[col],
+            )
+        )
+    fig.update_layout(
+        title="Rollout action mix per PPO update",
+        xaxis_title="PPO update",
+        yaxis_title="Share of rollout steps",
+        yaxis_range=[0, 1],
+    )
+    return fig
+
+
+def _feedback_quality_figure(ppo_updates_df: pd.DataFrame) -> go.Figure | None:
+    """Click-outcome feedback per update, as a share of executed Smart
+    clicks (rollout_feedback_smart_executed_count)."""
+    executed_col = "rollout_feedback_smart_executed_count"
+    cols = [c for c in _FEEDBACK_COUNT_LABELS if c in ppo_updates_df.columns]
+    if ppo_updates_df.empty or executed_col not in ppo_updates_df.columns or not cols:
+        return None
+    executed = ppo_updates_df[executed_col].fillna(0.0)
+    if float(executed.sum()) <= 0.0:
+        return None
+    x = _update_axis(ppo_updates_df)
+    fig = go.Figure()
+    for col in cols:
+        fig.add_trace(
+            go.Scatter(
+                x=x,
+                y=ppo_updates_df[col].fillna(0.0) / executed.clip(lower=1.0),
+                mode="lines",
+                name=_FEEDBACK_COUNT_LABELS[col],
+            )
+        )
+    fig.update_layout(
+        title="Click feedback quality (share of executed Smart clicks)",
+        xaxis_title="PPO update",
+        yaxis_title="Share of executed clicks",
+    )
+    return fig
+
+
+def _grad_norm_decomposition_figure(
+    ppo_updates_df: pd.DataFrame,
+) -> go.Figure | None:
+    """Per-module gradient norms (trunk / actor / critic / target heads)
+    next to the total grad_norm, log scale."""
+    decomp_cols = [
+        c
+        for c in GRAD_NORM_DECOMP_FIELDS
+        if c in ppo_updates_df.columns and ppo_updates_df[c].notna().any()
+    ]
+    if ppo_updates_df.empty or not decomp_cols:
+        return None
+    cols = decomp_cols
+    if "grad_norm" in ppo_updates_df.columns:
+        cols = ["grad_norm", *decomp_cols]
+    x = _update_axis(ppo_updates_df)
+    fig = go.Figure()
+    for col in cols:
+        fig.add_trace(
+            go.Scatter(
+                x=x,
+                y=ppo_updates_df[col],
+                mode="lines",
+                name=col.replace("grad_norm_", "") if col != "grad_norm" else "total",
+            )
+        )
+    fig.update_layout(
+        title="Gradient norm decomposition",
+        xaxis_title="PPO update",
+        yaxis_title="Gradient norm (log)",
+        yaxis_type="log",
+    )
+    return fig
+
+
+def _render_sil_health(ppo_updates_df: pd.DataFrame) -> None:
+    """SIL trophy-buffer health from ppo_updates sil_* columns. Rendered
+    only when the run actually logged SIL passes."""
+    cols = [
+        c
+        for c in SIL_FIELDS
+        if c in ppo_updates_df.columns and ppo_updates_df[c].notna().any()
+    ]
+    if not cols:
+        return
+    sil = ppo_updates_df[ppo_updates_df[cols[0]].notna()]
+    if sil.empty:
+        return
+    st.markdown("#### SIL health")
+    latest = sil.iloc[-1]
+    metric_cols = st.columns(4)
+    for slot, (column, label, fmt) in enumerate(
+        [
+            ("sil_buffer_size", "Trophy buffer size", ".0f"),
+            ("sil_gate_open_fraction", "Gate open fraction", ".3f"),
+            ("sil_steps_replayed", "Steps replayed (last)", ".0f"),
+            ("sil_grad_norm", "SIL grad norm (last)", ".2f"),
+        ]
+    ):
+        if column in sil.columns:
+            metric_cols[slot].metric(label, _metric_text(latest.get(column), fmt))
+    chart_specs = [
+        ("sil_loss", "SIL loss"),
+        ("sil_gate_open_fraction", "SIL gate open fraction"),
+        ("sil_buffer_size", "SIL buffer size"),
+        ("sil_steps_replayed", "SIL steps replayed"),
+    ]
+    chart_specs = [
+        (column, title)
+        for column, title in chart_specs
+        if column in sil.columns and sil[column].notna().any()
+    ]
+    chart_columns = st.columns(2)
+    x = _update_axis(sil)
+    for index, (column, title) in enumerate(chart_specs):
+        fig = px.line(x=x, y=sil[column], title=title)
+        fig.update_layout(xaxis_title="PPO update", yaxis_title=column)
+        with chart_columns[index % 2]:
+            st.plotly_chart(fig, width="stretch")
+
+
 def _render_checkpoint_panel(ckpt_path: str | None) -> None:
     st.subheader("Checkpoint Introspection")
     if not ckpt_path:
         st.info("No checkpoint selected.")
         return
 
-    ckpt = load_model_ckpt(ckpt_path)
+    try:
+        ckpt = load_model_ckpt(ckpt_path)
+    except Exception as exc:
+        st.error(f"Failed to load checkpoint `{ckpt_path}`: {exc}")
+        return
     state_dict = get_state_dict(ckpt)
     st.caption(f"Checkpoint: `{ckpt_path}`")
 
@@ -614,14 +828,14 @@ def _render_checkpoint_panel(ckpt_path: str | None) -> None:
         meta_df = pd.DataFrame(
             [{"key": key, "value": value} for key, value in sorted(metadata.items())],
         )
-        st.dataframe(meta_df, use_container_width=True, hide_index=True)
+        st.dataframe(meta_df, width="stretch", hide_index=True)
 
     time_constant_rows = collect_time_constant_rows(state_dict)
     if time_constant_rows:
         st.markdown("#### Learned alpha / beta")
         st.dataframe(
             pd.DataFrame(time_constant_rows),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -638,7 +852,7 @@ def _render_checkpoint_panel(ckpt_path: str | None) -> None:
                 if summary["rows"]:
                     st.dataframe(
                         pd.DataFrame(summary["rows"]),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                     )
                 else:
@@ -671,17 +885,23 @@ def _render_checkpoint_panel(ckpt_path: str | None) -> None:
             title=f"Weight distribution: {selected_layer}",
             log_y=True,
         )
-        st.plotly_chart(fig_hist, use_container_width=True)
+        st.plotly_chart(fig_hist, width="stretch")
 
     st.markdown("#### Tensor visualization")
     if tensor.ndim == 4:
+        grid_modes = (
+            []
+            if torchvision is None
+            else ["Grid (First Input Channel)", "Grid (First Output Channel)"]
+        )
+        if torchvision is None:
+            st.info(
+                "torchvision is not installed - kernel grid views are "
+                "unavailable. Showing the slice explorer only."
+            )
         view_mode = st.radio(
             "View mode",
-            [
-                "Grid (First Input Channel)",
-                "Grid (First Output Channel)",
-                "Slice Explorer",
-            ],
+            [*grid_modes, "Slice Explorer"],
         )
         if view_mode == "Grid (First Input Channel)":
             kernels = tensor[:, 0:1, :, :].float()
@@ -711,7 +931,7 @@ def _render_checkpoint_panel(ckpt_path: str | None) -> None:
                 color_continuous_scale="RdBu",
                 title=f"Kernel [{sel_out}, {sel_in}]",
             )
-            st.plotly_chart(fig_kernel, use_container_width=False)
+            st.plotly_chart(fig_kernel, width="content")
     elif tensor.ndim == 2:
         matrix_slice = tensor_float.cpu().numpy()
         if tensor.numel() > 10000:
@@ -722,7 +942,7 @@ def _render_checkpoint_panel(ckpt_path: str | None) -> None:
             color_continuous_scale="RdBu",
             title="Weight heatmap",
         )
-        st.plotly_chart(fig_matrix, use_container_width=True)
+        st.plotly_chart(fig_matrix, width="stretch")
     else:
         st.info("No spatial visualization for this tensor rank.")
 
@@ -746,7 +966,7 @@ def render_dashboard() -> None:
             st.info("No local runs with `training_logs.db` found under `models/`.")
             return
         selected_run = st.sidebar.selectbox("Run", runs, index=0)
-        db_path = str(Path("models") / selected_run / "training_logs.db")
+        db_path = str(_MODELS_DIR / selected_run / "training_logs.db")
         st.sidebar.caption(f"DB: `{db_path}`")
     else:
         uploaded_db = st.sidebar.file_uploader(
@@ -785,7 +1005,17 @@ def render_dashboard() -> None:
         return
 
     with st.spinner("Loading analysis..."):
-        bundle = load_analysis_bundle(db_path, window, num_bins, win_threshold)
+        try:
+            bundle = load_analysis_bundle(
+                db_path,
+                window,
+                num_bins,
+                win_threshold,
+                db_fingerprint=_db_fingerprint(db_path),
+            )
+        except Exception as exc:
+            st.error(f"Failed to load `{db_path}`: {exc}")
+            return
 
     episodes_df = bundle["episodes"]
     steps_df = bundle["steps"]
@@ -804,11 +1034,14 @@ def render_dashboard() -> None:
     action_shift = diagnosis["action_shift"]
     plateau_ep = diagnosis["plateau_episode"]
     late_cov = diagnosis["late_cov"]
-    cov_series = (
-        episodes_df["total_reward"].rolling(50, min_periods=1).std().fillna(0)
-        / (episodes_df["total_reward"].rolling(50, min_periods=1).mean().abs() + 1e-6)
-    )
-    cov_series.index = episodes_df["episode_id"]
+    if episodes_df.empty:
+        cov_series = pd.Series(dtype=float)
+    else:
+        cov_series = (
+            episodes_df["total_reward"].rolling(50, min_periods=1).std().fillna(0)
+            / (episodes_df["total_reward"].rolling(50, min_periods=1).mean().abs() + 1e-6)
+        )
+        cov_series.index = episodes_df["episode_id"]
 
     if len(steps_df) > 1_000_000:
         st.warning(
@@ -818,8 +1051,10 @@ def render_dashboard() -> None:
 
     metrics = st.columns(5)
     metrics[0].metric("Episodes", f"{summary['total_episodes']}")
-    metrics[1].metric("Final 100 avg", f"{summary['final_100_avg_reward']:.2f}")
-    metrics[2].metric("Max reward", f"{summary['max_total_reward']:.2f}")
+    metrics[1].metric(
+        "Final 100 avg", _metric_text(summary["final_100_avg_reward"])
+    )
+    metrics[2].metric("Max reward", _metric_text(summary["max_total_reward"]))
     metrics[3].metric(
         "Plateau",
         f"ep {plateau_ep}" if plateau_ep is not None else "none",
@@ -828,15 +1063,17 @@ def render_dashboard() -> None:
         latest_eval = eval_runs_df.iloc[-1]
         metrics[4].metric(
             "Latest eval mean",
-            f"{float(latest_eval['mean_reward']):.2f}",
+            _metric_text(latest_eval["mean_reward"]),
         )
     elif not ppo_updates_df.empty and "clip_fraction" in ppo_updates_df.columns:
         metrics[4].metric(
             "Late clip frac",
-            f"{float(ppo_updates_df['clip_fraction'].tail(20).mean()):.3f}",
+            _metric_text(ppo_updates_df["clip_fraction"].tail(20).mean(), ".3f"),
         )
     else:
-        metrics[4].metric("Avg ep length", f"{summary['avg_episode_length']:.1f}")
+        metrics[4].metric(
+            "Avg ep length", _metric_text(summary["avg_episode_length"], ".1f")
+        )
 
     st.caption(
         f"Source DB: `{db_path}` | action semantics: `{action_semantics}` "
@@ -877,62 +1114,85 @@ def render_dashboard() -> None:
     )
 
     with tab_overview:
-        st.plotly_chart(
-            _reward_figure(episodes_df, rolling_stats),
-            use_container_width=True,
-        )
-        col1, col2 = st.columns(2)
-        with col1:
-            st.plotly_chart(
-                _episode_length_figure(episodes_df, window),
-                use_container_width=True,
+        if episodes_df.empty:
+            st.info(
+                "No completed episodes in this DB yet. Episode-level panels "
+                "will populate once episodes finish; PPO / Eval may already "
+                "have data."
             )
-        with col2:
+        else:
             st.plotly_chart(
-                _oscillation_figure(cov_series),
-                use_container_width=True,
+                _reward_figure(episodes_df, rolling_stats),
+                width="stretch",
             )
+            col1, col2 = st.columns(2)
+            with col1:
+                st.plotly_chart(
+                    _episode_length_figure(episodes_df, window),
+                    width="stretch",
+                )
+            with col2:
+                st.plotly_chart(
+                    _oscillation_figure(cov_series),
+                    width="stretch",
+                )
 
-        scatter = px.scatter(
-            episodes_df,
-            x="steps",
-            y="total_reward",
-            color="episode_id",
-            title="Episode length vs reward",
-            hover_data=["episode_id"],
-        )
-        st.plotly_chart(scatter, use_container_width=True)
-        st.plotly_chart(
-            _reward_efficiency_figure(episodes_df, window),
-            use_container_width=True,
-        )
+            scatter = px.scatter(
+                episodes_df,
+                x="steps",
+                y="total_reward",
+                color="episode_id",
+                title="Episode length vs reward",
+                hover_data=["episode_id"],
+            )
+            st.plotly_chart(scatter, width="stretch")
+            st.plotly_chart(
+                _reward_efficiency_figure(episodes_df, window),
+                width="stretch",
+            )
 
     with tab_policy:
+        update_mix_fig = _update_action_mix_figure(ppo_updates_df)
+        feedback_fig = _feedback_quality_figure(ppo_updates_df)
+        if update_mix_fig is not None or feedback_fig is not None:
+            st.markdown("#### Rollout action mix (from `ppo_updates`)")
+            if update_mix_fig is not None:
+                st.plotly_chart(update_mix_fig, width="stretch")
+            if feedback_fig is not None:
+                st.plotly_chart(feedback_fig, width="stretch")
+
         if mix_df.empty:
-            st.info("No step data available for action-mix analysis.")
+            st.info(
+                "Ray runs don't log per-step data (the Ray training path "
+                "emits no STEP rows), so step-based action-mix, entropy, and "
+                "target-heatmap panels are unavailable for this run. The "
+                "per-update rollout aggregates above are the real signal."
+                if not ppo_updates_df.empty
+                else "No step data available for action-mix analysis."
+            )
         else:
             st.plotly_chart(
                 _action_mix_figure(mix_df, action_labels),
-                use_container_width=True,
+                width="stretch",
             )
             phase_cols = st.columns(3)
             for idx, phase in enumerate(["early", "mid", "late"]):
                 with phase_cols[idx]:
                     st.plotly_chart(
                         _phase_action_mix_figure(phase_mix_df, phase, action_labels),
-                        use_container_width=True,
+                        width="stretch",
                     )
 
             left, right = st.columns(2)
             with left:
                 st.plotly_chart(
                     _action_heatmap_figure(steps_df, num_bins, action_labels),
-                    use_container_width=True,
+                    width="stretch",
                 )
             with right:
                 st.plotly_chart(
                     _entropy_figure(entropy_df),
-                    use_container_width=True,
+                    width="stretch",
                 )
             st.plotly_chart(
                 _move_target_heatmap_figure(
@@ -940,7 +1200,7 @@ def render_dashboard() -> None:
                     action_semantics=action_semantics,
                     noop_action_id=diagnosis["noop_action_id"],
                 ),
-                use_container_width=True,
+                width="stretch",
             )
 
     with tab_ppo:
@@ -996,6 +1256,9 @@ def render_dashboard() -> None:
                 "learner_transitions_per_second",
                 "rollout_steps_per_second",
                 "forward_calls_per_second",
+                *POLICY_MIX_FIELDS,
+                *GRAD_NORM_DECOMP_FIELDS,
+                *SIL_FIELDS,
             ]
             present_metrics = [
                 metric for metric in metrics_to_plot if metric in ppo_updates_df.columns
@@ -1022,8 +1285,15 @@ def render_dashboard() -> None:
                     with cols[index % 2]:
                         st.plotly_chart(
                             _ppo_metric_figure(ppo_updates_df, metric),
-                            use_container_width=True,
+                            width="stretch",
                         )
+
+            grad_decomp_fig = _grad_norm_decomposition_figure(ppo_updates_df)
+            if grad_decomp_fig is not None:
+                st.markdown("#### Gradient norm decomposition")
+                st.plotly_chart(grad_decomp_fig, width="stretch")
+
+            _render_sil_health(ppo_updates_df)
 
             speed_fields = {
                 "update_wall_seconds",
@@ -1103,7 +1373,7 @@ def render_dashboard() -> None:
 
                 timing_fig = _timing_breakdown_figure(ppo_updates_df)
                 if timing_fig.data:
-                    st.plotly_chart(timing_fig, use_container_width=True)
+                    st.plotly_chart(timing_fig, width="stretch")
 
                 speed_left, speed_right = st.columns(2)
                 if {
@@ -1118,7 +1388,7 @@ def render_dashboard() -> None:
                                 "transitions_in_update",
                                 "Transitions per update vs wall time",
                             ),
-                            use_container_width=True,
+                            width="stretch",
                         )
                 if {
                     "update_wall_seconds",
@@ -1132,7 +1402,7 @@ def render_dashboard() -> None:
                                 "tbptt_forward_calls",
                                 "Forward calls vs wall time",
                             ),
-                            use_container_width=True,
+                            width="stretch",
                         )
 
             if "nonfinite_grad_steps" in ppo_updates_df.columns:
@@ -1153,17 +1423,31 @@ def render_dashboard() -> None:
         if eval_runs_df.empty:
             st.info("No `eval_runs` table found in this DB.")
         else:
-            st.plotly_chart(_eval_figure(eval_runs_df), use_container_width=True)
+            st.plotly_chart(_eval_figure(eval_runs_df), width="stretch")
             eval_gap_fig = _eval_gap_figure(eval_runs_df)
             if eval_gap_fig is not None:
-                st.plotly_chart(eval_gap_fig, use_container_width=True)
+                st.plotly_chart(eval_gap_fig, width="stretch")
 
     with tab_rewards:
+        run_config = bundle.get("run_config")
+        reward_config = (run_config or {}).get("reward")
+
         reward_fig = _reward_components_figure(reward_components_df, window)
         if reward_fig is None:
-            st.info("No reward component table available for this run.")
+            st.info(
+                "No per-step reward components in this DB. The Ray training "
+                "path does not emit REWARD_COMP rows, so per-step shaping "
+                "breakdowns are only available for local `train.py` runs."
+            )
         else:
-            st.plotly_chart(reward_fig, use_container_width=True)
+            st.caption(
+                "Schema note: components use the legacy 6-column layout "
+                "(v3 names: health / engagement / positioning / score / "
+                "bonus / end-of-episode). For `defeat_roaches_v4` runs, the "
+                "v4 action-guidance and smart-outcome terms are folded into "
+                "`bonus_reward`."
+            )
+            st.plotly_chart(reward_fig, width="stretch")
 
         if not reward_components_df.empty:
             reward_cols = [
@@ -1177,7 +1461,25 @@ def render_dashboard() -> None:
                     y=reward_cols,
                     title="Reward component distribution",
                 )
-                st.plotly_chart(dist_fig, use_container_width=True)
+                st.plotly_chart(dist_fig, width="stretch")
+
+        if isinstance(reward_config, dict) and reward_config:
+            reward_name = reward_config.get("name", "unknown")
+            st.markdown(
+                f"#### Reward config for this run: `{reward_name}` "
+                "(from `effective_config.json`)"
+            )
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {"parameter": key, "value": value}
+                        for key, value in sorted(reward_config.items())
+                        if key != "name"
+                    ]
+                ),
+                width="stretch",
+                hide_index=True,
+            )
 
     with tab_checkpoint:
         _render_checkpoint_panel(ckpt_path)

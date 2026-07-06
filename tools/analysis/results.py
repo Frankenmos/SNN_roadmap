@@ -88,6 +88,32 @@ PAYLOAD_FIELDS = [
     "rollout_cache_spatial_dtype",
     "episodes_logged_in_update",
 ]
+# Per-update rollout action/feedback counts. The Ray path logs no per-step
+# rows, so these aggregates are the only action-mix signal for Ray runs.
+POLICY_MIX_FIELDS = [
+    "rollout_policy_no_op_count",
+    "rollout_policy_left_click_count",
+    "rollout_policy_right_click_count",
+    "rollout_feedback_smart_executed_count",
+    "rollout_feedback_near_enemy_smart_count",
+    "rollout_feedback_moved_toward_target_count",
+    "rollout_feedback_enemy_health_drop_after_smart_count",
+    "rollout_feedback_null_unclear_smart_count",
+]
+GRAD_NORM_DECOMP_FIELDS = [
+    "grad_norm_trunk",
+    "grad_norm_actor_head",
+    "grad_norm_critic_head",
+    "grad_norm_target_head",
+]
+SIL_FIELDS = [
+    "sil_loss",
+    "sil_gate_open_fraction",
+    "sil_buffer_size",
+    "sil_steps_replayed",
+    "sil_groups",
+    "sil_grad_norm",
+]
 
 
 class TrainingAnalyzer:
@@ -216,13 +242,27 @@ class TrainingAnalyzer:
             return set()
         return {row[1] for row in rows}
 
+    @staticmethod
+    def _typed_empty(columns: list[str]) -> pd.DataFrame:
+        """Empty frame with float columns so rolling/mean math stays valid
+        on DBs that are missing a table or have no rows yet."""
+        return pd.DataFrame({name: pd.Series(dtype=float) for name in columns})
+
     def get_episode_metrics(self) -> pd.DataFrame:
         if self._episodes is None:
-            self._episodes = pd.read_sql_query(
-                "SELECT episode_id, total_reward, average_reward, steps, timestamp "
-                "FROM episodes ORDER BY episode_id",
-                self.conn,
-            )
+            wanted = ["episode_id", "total_reward", "average_reward", "steps", "timestamp"]
+            try:
+                frame = pd.read_sql_query(
+                    f"SELECT {', '.join(wanted)} "
+                    "FROM episodes ORDER BY episode_id",
+                    self.conn,
+                )
+            except Exception:
+                frame = self._typed_empty(wanted)
+            if frame.empty:
+                # Zero-row reads come back object-dtyped; keep math valid.
+                frame = self._typed_empty(wanted)
+            self._episodes = frame
         return self._episodes
 
     def get_step_metrics(self) -> pd.DataFrame:
@@ -238,24 +278,49 @@ class TrainingAnalyzer:
                 "cumulative_reward",
             ]
             present = [name for name in wanted if name in cols]
-            self._steps = pd.read_sql_query(
-                f"SELECT {', '.join(present)} FROM steps "
-                "ORDER BY episode_id, step_number",
-                self.conn,
-            )
+            if not present:
+                self._steps = self._typed_empty(wanted)
+                return self._steps
+            try:
+                frame = pd.read_sql_query(
+                    f"SELECT {', '.join(present)} FROM steps "
+                    "ORDER BY episode_id, step_number",
+                    self.conn,
+                )
+            except Exception:
+                frame = self._typed_empty(wanted)
+            if frame.empty:
+                frame = self._typed_empty(wanted)
+            self._steps = frame
         return self._steps
 
     def get_reward_components(self) -> pd.DataFrame:
         # Fix from prior version: the column is episode_id, not episode.
+        # NOTE: this table uses the legacy v3 6-component layout. The v4
+        # reward folds its action-guidance / smart-outcome terms into
+        # bonus_reward, and the Ray path never writes REWARD_COMP rows.
         if self._reward_components is None:
-            self._reward_components = pd.read_sql_query(
-                "SELECT episode_id, step, health_reward, engagement_reward, "
-                "positioning_reward, score_reward, bonus_reward, "
-                "end_of_episode_reward, total_reward "
-                "FROM reward_components ORDER BY episode_id, step",
-                self.conn,
-            )
+            wanted = [
+                "episode_id", "step", "health_reward", "engagement_reward",
+                "positioning_reward", "score_reward", "bonus_reward",
+                "end_of_episode_reward", "total_reward",
+            ]
+            try:
+                frame = pd.read_sql_query(
+                    f"SELECT {', '.join(wanted)} "
+                    "FROM reward_components ORDER BY episode_id, step",
+                    self.conn,
+                )
+            except Exception:
+                frame = self._typed_empty(wanted)
+            if frame.empty:
+                frame = self._typed_empty(wanted)
+            self._reward_components = frame
         return self._reward_components
+
+    def get_run_config(self) -> Optional[dict]:
+        """The run's effective_config.json (next to the DB), or None."""
+        return self._load_effective_config()
 
     def get_update_metrics(self) -> pd.DataFrame:
         """Per-PPO-update metrics. Returns an empty DataFrame when the
@@ -304,7 +369,12 @@ class TrainingAnalyzer:
         wanted.extend(RAY_THROUGHPUT_FIELDS)
         wanted.extend(LEARNER_TIMING_FIELDS)
         wanted.extend(PAYLOAD_FIELDS)
-        present = [name for name in wanted if name in cols]
+        wanted.extend(POLICY_MIX_FIELDS)
+        wanted.extend(GRAD_NORM_DECOMP_FIELDS)
+        wanted.extend(SIL_FIELDS)
+        # Order-preserving dedupe: overlapping field lists would otherwise
+        # SELECT a column twice, and duplicate-columned frames crash plotly.
+        present = list(dict.fromkeys(name for name in wanted if name in cols))
         if not present:
             return pd.DataFrame()
         try:
