@@ -12,6 +12,8 @@ import { Scene } from './scene/Scene.jsx'
 import { InfoPanel } from './ui/InfoPanel.jsx'
 import { HUD } from './ui/HUD.jsx'
 import { MathLab } from './lab/MathLab.jsx'
+import { loadTraceData } from './data/traceData'
+import { TraceReplay } from './trace/TraceReplay.jsx'
 
 export default function App() {
   const [selected, setSelected] = useState(null)
@@ -21,14 +23,20 @@ export default function App() {
   const [entryIndex, setEntryIndex] = useState(0)
   const [labOpen, setLabOpen] = useState(false)
   const [labPage, setLabPage] = useState('lif')
+  const [traceData, setTraceData] = useState(null)
+  const [traceOpen, setTraceOpen] = useState(false)
 
-  // Optional live bundle (public/run_data.json). Absent -> static mode.
+  // Optional bundles (public/run_data.json, public/trace_data.json).
+  // Absent -> static mode.
   useEffect(() => {
     let cancelled = false
     loadRunData().then((data) => {
       if (cancelled || !data) return
       setRunData(data)
       setEntryIndex(defaultEntryIndex(data))
+    })
+    loadTraceData().then((data) => {
+      if (!cancelled && data) setTraceData(data)
     })
     return () => {
       cancelled = true
@@ -89,11 +97,15 @@ export default function App() {
   useEffect(() => {
     const onKey = (event) => {
       if (event.key !== 'Escape') return
-      // Esc peels UI layers: math lab first, then the info panel.
-      setLabOpen((open) => {
-        if (open) return false
-        handleClose()
-        return open
+      // Esc peels UI layers: trace replay / math lab first, then the panel.
+      setTraceOpen((traceWasOpen) => {
+        if (traceWasOpen) return false
+        setLabOpen((labWasOpen) => {
+          if (labWasOpen) return false
+          handleClose()
+          return labWasOpen
+        })
+        return traceWasOpen
       })
     }
     window.addEventListener('keydown', onKey)
@@ -116,12 +128,19 @@ export default function App() {
         return true
       }
       if (typeof pageId === 'string') setLabPage(pageId)
+      setTraceOpen(false)
       setLabOpen(true)
+      return true
+    }
+    window.__ARCH_EXPLORER_TRACE = (open = true) => {
+      setLabOpen(false)
+      setTraceOpen(Boolean(open))
       return true
     }
     return () => {
       delete window.__ARCH_EXPLORER_SELECT
       delete window.__ARCH_EXPLORER_LAB
+      delete window.__ARCH_EXPLORER_TRACE
     }
   }, [handleSelect])
 
@@ -153,7 +172,15 @@ export default function App() {
         showTraining={showTraining}
         onToggleTraining={() => setShowTraining((value) => !value)}
         runData={runData}
-        onOpenLab={() => setLabOpen(true)}
+        onOpenLab={() => {
+          setTraceOpen(false)
+          setLabOpen(true)
+        }}
+        traceData={traceData}
+        onOpenTrace={() => {
+          setLabOpen(false)
+          setTraceOpen(true)
+        }}
       />
       <InfoPanel
         zone={selected}
@@ -171,6 +198,9 @@ export default function App() {
           onPageChange={setLabPage}
           onClose={() => setLabOpen(false)}
         />
+      )}
+      {traceOpen && traceData && (
+        <TraceReplay trace={traceData} onClose={() => setTraceOpen(false)} />
       )}
     </div>
   )

@@ -165,12 +165,69 @@ async function bodyIncludes(page, needle) {
   )
 }
 
+// numpy-packbits-compatible mask encoding (big-endian bits, row-major).
+function packMask(setPixels) {
+  const bytes = new Uint8Array((84 * 84) / 8)
+  for (const [x, y] of setPixels) {
+    const index = y * 84 + x
+    bytes[index >> 3] |= 1 << (7 - (index & 7))
+  }
+  return Buffer.from(bytes).toString('base64')
+}
+
+const SMOKE_TRACE_DATA = {
+  schema_version: 1,
+  kind: 'arch-explorer-trace',
+  run: 'smoke_run',
+  episode_index: 2,
+  mode: 'det',
+  total_reward: 1.0,
+  steps_total: 3,
+  checkpoint_episode: 1730,
+  checkpoint_path: 'models/smoke_run/best_checkpoint.pth',
+  source_file: 'episode_0002_det.pt',
+  screen: {
+    size: 84,
+    masks: ['friendly', 'enemy', 'selected'],
+    encoding: 'base64-packbits-rowmajor',
+  },
+  steps: [
+    {
+      t: 0, policy: false, learnable: false, action: null, x: 0, y: 0,
+      log_prob: 0, value: 0, reward: 0, cum_reward: 0, done: false,
+      func: 'select_army',
+    },
+    {
+      t: 1, policy: true, learnable: true, action: 2, x: 40, y: 30,
+      log_prob: -0.31, value: 2.5, reward: 0.5, cum_reward: 0.5,
+      done: false, func: 'Smart_screen',
+      friendly: packMask([[10, 20], [11, 20], [12, 21]]),
+      enemy: packMask([[40, 30], [41, 30]]),
+      selected: packMask([[10, 20]]),
+      entities: 9, selection: 8,
+      feedback: [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    },
+    {
+      t: 2, policy: true, learnable: true, action: 0, x: 0, y: 0,
+      log_prob: -0.1, value: 2.4, reward: 0.5, cum_reward: 1.0,
+      done: true, func: 'no_op',
+      friendly: packMask([[10, 21]]),
+      enemy: packMask([[40, 30]]),
+      selected: packMask([[10, 21]]),
+      entities: 9, selection: 8,
+      feedback: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    },
+  ],
+}
+
 async function main() {
   if (!existsSync(join(root, 'dist', 'index.html'))) {
     throw new Error('dist/index.html missing - run `npm run build` first.')
   }
   const runDataPath = join(root, 'dist', 'run_data.json')
+  const traceDataPath = join(root, 'dist', 'trace_data.json')
   if (existsSync(runDataPath)) await unlink(runDataPath) // stale bundle
+  if (existsSync(traceDataPath)) await unlink(traceDataPath)
 
   const previewOptions = {
     root,
@@ -257,6 +314,7 @@ async function main() {
     // Restart the server so sirv indexes the new file, then reload.
     await new Promise((resolve) => server.httpServer.close(resolve))
     await writeFile(runDataPath, JSON.stringify(SMOKE_RUN_DATA))
+    await writeFile(traceDataPath, JSON.stringify(SMOKE_TRACE_DATA))
     server = await preview(previewOptions)
     await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle0' })
     await page.waitForFunction('window.__ARCH_EXPLORER_READY === true', {
@@ -318,19 +376,61 @@ async function main() {
       throw new Error(`Page errors (lab): ${errors.join(' | ')}`)
     }
 
+    // ------------------------------------------------ phase D: trace
+    await page.evaluate(() => window.__ARCH_EXPLORER_TRACE(true))
+    await sleep(600)
+    if (!(await bodyIncludes(page, 'trace replay'))) {
+      throw new Error('Trace replay overlay did not open.')
+    }
+    if (!(await bodyIncludes(page, 'episode 2 (det)'))) {
+      throw new Error('Trace header missing episode metadata.')
+    }
+    // seek to the click step and check the readout
+    await page.evaluate(() => {
+      const slider = document.querySelector('input[type="range"]')
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      ).set
+      setter.call(slider, '1')
+      slider.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await sleep(300)
+    if (!(await bodyIncludes(page, 'Smart_screen'))) {
+      throw new Error('Trace readout missing the dispatched function.')
+    }
+    if (!(await bodyIncludes(page, '(40, 30)'))) {
+      throw new Error('Trace readout missing the click coordinates.')
+    }
+    const traceShotPath = join(root, 'smoke_screenshot_trace.png')
+    await page.screenshot({ path: traceShotPath })
+    await page.evaluate(() => window.__ARCH_EXPLORER_TRACE(false))
+    await sleep(300)
+    if (!(await bodyIncludes(page, '95-token stream'))) {
+      throw new Error('Scene HUD missing after closing the trace replay.')
+    }
+    if (errors.length) {
+      throw new Error(`Page errors (trace): ${errors.join(' | ')}`)
+    }
+
     console.log(
       `[smoke] PASS - canvas ${canvasInfo.width}x${canvasInfo.height}, ` +
-        `resize OK, live mode OK, math lab OK, screenshots ` +
-        `${Math.round(size / 1024)} KiB -> ${shotPath} + ${liveShotPath} + ${labShotPath}`,
+        `resize OK, live mode OK, math lab OK, trace replay OK; screenshots ` +
+        `-> ${shotPath}, ${liveShotPath}, ${labShotPath}, ${traceShotPath}`,
     )
   } finally {
     await browser.close()
     await new Promise((resolve) => server.httpServer.close(resolve))
-    // Drop the synthetic bundle; restore the user's real one (a build
-    // copies public/run_data.json into dist/) if they have exported one.
-    if (existsSync(runDataPath)) await unlink(runDataPath)
-    const publicBundle = join(root, 'public', 'run_data.json')
-    if (existsSync(publicBundle)) await copyFile(publicBundle, runDataPath)
+    // Drop the synthetic bundles; restore the user's real ones (a build
+    // copies public/ into dist/) if they have exported any.
+    for (const [distPath, name] of [
+      [runDataPath, 'run_data.json'],
+      [traceDataPath, 'trace_data.json'],
+    ]) {
+      if (existsSync(distPath)) await unlink(distPath)
+      const publicBundle = join(root, 'public', name)
+      if (existsSync(publicBundle)) await copyFile(publicBundle, distPath)
+    }
   }
 }
 

@@ -91,6 +91,32 @@ and labels anything synthetic:
 
 `Esc` closes the lab back to the 3D scene.
 
+## Trace Replay
+
+If a run has eval trace sidecars (`eval.py --trace-episodes` writes
+`analysis_results/<run>/episode_traces/episode_NNNN_{det,stoch}.pt`),
+export one for the explorer:
+
+```bash
+python -m tools.analysis.trace_export <run_name> --episode 2 --mode det
+python -m tools.analysis.trace_export <run_name> --list   # see what exists
+```
+
+This writes `public/trace_data.json` (gitignored) and a **⏵ trace
+replay** button appears. The replay shows, per step, exactly what the
+agent saw and did — nothing synthetic:
+
+- the decoded `player_relative` screen (friendly / enemy / selected
+  masks at full 84×84), with click crosshairs and a fading trail;
+- play / pause / speed, a scrubber, and a per-step action strip
+  (click to seek);
+- the real `log π(a|s)`, `V(s)`, reward, feedback-token activity and
+  learnable flag, plus V(s) and cumulative-reward charts with a
+  playhead.
+
+Recording new traces requires running `eval.py` (a GPU/SC2 job — the
+kind of thing you run, not this tooling).
+
 ## What the moving parts mean
 
 - **Flow particles** trace tensors along the pipeline spline.

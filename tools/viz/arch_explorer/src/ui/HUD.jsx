@@ -1,6 +1,13 @@
 import { TOKEN_GROUPS } from '../data/zones'
 
-export function HUD({ showTraining, onToggleTraining, runData, onOpenLab }) {
+export function HUD({
+  showTraining,
+  onToggleTraining,
+  runData,
+  onOpenLab,
+  traceData,
+  onOpenTrace,
+}) {
   return (
     <>
       {/* title */}
@@ -36,6 +43,16 @@ export function HUD({ showTraining, onToggleTraining, runData, onOpenLab }) {
         >
           ∑ math lab
         </button>
+        {traceData && (
+          <button
+            onClick={onOpenTrace}
+            className="glass rounded-2xl px-4 py-3 font-mono text-xs uppercase
+                       tracking-widest text-slate-400 transition hover:text-emerald-300"
+            title={`Replay ${traceData.run} episode ${traceData.episode_index} (${traceData.mode})`}
+          >
+            ⏵ trace replay
+          </button>
+        )}
       </div>
 
       {/* live run-data badge (written by `python -m tools.registry export`) */}
