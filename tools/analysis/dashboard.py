@@ -24,6 +24,7 @@ from tools.analysis.analyze_pth import (
     collect_extractor_state_rows,
     collect_time_constant_rows,
 )
+from tools.analysis import mission_control
 from tools.analysis.results import (
     GRAD_NORM_DECOMP_FIELDS,
     POLICY_MIX_FIELDS,
@@ -1109,6 +1110,137 @@ def _render_checkpoint_panel(ckpt_path: str | None) -> None:
         st.info("No spatial visualization for this tensor rank.")
 
 
+def _models_dir_fingerprint() -> str:
+    """Cache key over every run DB's mtime/size, so the overview table
+    refreshes when any run advances."""
+    parts = []
+    try:
+        for run_dir in sorted(_MODELS_DIR.iterdir()):
+            db_path = run_dir / "training_logs.db"
+            if db_path.exists():
+                stat = db_path.stat()
+                parts.append(f"{run_dir.name}:{stat.st_mtime_ns}:{stat.st_size}")
+    except OSError:
+        pass
+    return "|".join(parts)
+
+
+@st.cache_data(show_spinner=False)
+def _load_runs_overview(fingerprint: str) -> pd.DataFrame:
+    del fingerprint  # cache key only
+    rows = []
+    for overview in mission_control.list_runs_overview(_MODELS_DIR):
+        share = overview.right_click_share_last
+        rows.append(
+            {
+                "run": overview.name,
+                "updates": overview.updates_total,
+                "last update": overview.last_update_index,
+                "right-click share (last)": (
+                    None if share is None else round(share, 3)
+                ),
+                "last eval": overview.last_eval_mean,
+                "eval @ version": overview.last_eval_policy_version,
+                "snapshots": overview.snapshot_count,
+                "checkpoint": overview.has_checkpoint,
+                "best": overview.has_best,
+                "DB modified": overview.db_modified_iso,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _render_mission_control_tab() -> None:
+    st.caption(
+        "Read-only mission control: this dashboard never launches or stops "
+        "processes. Generated commands are for your own terminal."
+    )
+
+    st.subheader("All runs")
+    overview_df = _load_runs_overview(_models_dir_fingerprint())
+    if overview_df.empty:
+        st.info(f"No runs found under {_MODELS_DIR}.")
+    else:
+        st.dataframe(overview_df, width="stretch", hide_index=True)
+
+    st.subheader("Config diff")
+    config_runs = mission_control.runs_with_config(_MODELS_DIR)
+    if len(config_runs) < 2:
+        st.caption(
+            "Need at least two runs with effective_config.json to diff."
+        )
+    else:
+        col_a, col_b = st.columns(2)
+        run_a = col_a.selectbox("Run A", config_runs, index=0, key="mc_diff_a")
+        run_b = col_b.selectbox(
+            "Run B", config_runs, index=len(config_runs) - 1, key="mc_diff_b",
+        )
+        diff = mission_control.diff_run_configs(run_a, run_b, _MODELS_DIR)
+        if diff.get("error"):
+            st.warning(diff["error"])
+        else:
+            if diff["changed"]:
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {"key": key, "A": repr(a), "B": repr(b)}
+                            for key, (a, b) in diff["changed"].items()
+                        ]
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.caption("No changed keys between these runs.")
+            for label, keys in (
+                ("Only in A", diff["only_a"]),
+                ("Only in B", diff["only_b"]),
+            ):
+                if keys:
+                    st.caption(f"{label}: {', '.join(keys)}")
+
+    st.subheader("Launch command generator")
+    st.caption(
+        "Flags mirror distributed/ray_train.py; anything left at its "
+        "default falls back to config.yaml exactly as the trainer would. "
+        "Snapshot recording is enabled by uncommenting the snapshot_* keys "
+        "under distributed: in config.yaml."
+    )
+    col1, col2, col3 = st.columns(3)
+    run_name = col1.text_input(
+        "--run-name",
+        value="",
+        placeholder="e.g. banana_glasses_v8_...",
+        key="mc_run_name",
+    )
+    num_actors = col2.number_input(
+        "--num-actors", min_value=1, max_value=64, value=10, key="mc_actors",
+    )
+    max_updates = col3.number_input(
+        "--max-updates (0 = config default)",
+        min_value=0,
+        value=0,
+        key="mc_max_updates",
+    )
+    config_path = st.text_input(
+        "--config (blank = repo config.yaml / SNN_CONFIG_PATH)",
+        value="",
+        key="mc_config",
+    )
+    command = mission_control.build_launch_command(
+        run_name=run_name.strip(),
+        num_actors=int(num_actors),
+        max_updates=int(max_updates) or None,
+        config_path=config_path.strip() or None,
+    )
+    st.code(command, language="powershell")
+    if not run_name.strip():
+        st.caption(
+            "Without --run-name the trainer uses environment.run_name or a "
+            "timestamp."
+        )
+
+
 def render_dashboard() -> None:
     st.set_page_config(layout="wide", page_title="SNN-PPO Analysis Dashboard")
     st.title("SNN-PPO Analysis Dashboard")
@@ -1278,6 +1410,7 @@ def render_dashboard() -> None:
         tab_rewards,
         tab_snapshots,
         tab_checkpoint,
+        tab_mission,
     ) = st.tabs(
         [
             "Overview",
@@ -1286,6 +1419,7 @@ def render_dashboard() -> None:
             "Reward Shaping",
             "Snapshots",
             "Checkpoint",
+            "Mission Control",
         ]
     )
 
@@ -1662,6 +1796,9 @@ def render_dashboard() -> None:
 
     with tab_checkpoint:
         _render_checkpoint_panel(ckpt_path)
+
+    with tab_mission:
+        _render_mission_control_tab()
 
 
 if __name__ == "__main__":

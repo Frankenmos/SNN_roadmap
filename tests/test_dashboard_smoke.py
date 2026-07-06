@@ -78,3 +78,9 @@ def test_dashboard_handles_empty_db(monkeypatch, tmp_path):
     at.run()
     _assert_clean(at, "empty DB render")
     assert at.info, "expected notice elements on an all-empty DB"
+
+    # Mission Control must always offer the exact trainer invocation.
+    code_blocks = [element.value for element in at.code]
+    assert any(
+        "python -m distributed.ray_train" in value for value in code_blocks
+    ), "mission-control launch command missing"
