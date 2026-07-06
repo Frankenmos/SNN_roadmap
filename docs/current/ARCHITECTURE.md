@@ -8,7 +8,9 @@ long-form architecture notes.
 Interactive companion: `tools/viz/arch_explorer/` renders this pipeline as
 an explorable 3D scene with per-zone shapes, math, and source excerpts
 (verified against the code on 2026-07-06; no code-vs-doc discrepancies
-found during that pass).
+found during that pass). `python -m tools.registry export <run>` feeds it
+a live bundle so zones show a real run's learned time constants, action
+mix, and snapshot lineage.
 
 ## Runtime Flow
 

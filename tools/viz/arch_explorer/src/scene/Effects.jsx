@@ -143,30 +143,37 @@ export function TokenRing({ position }) {
 // Fast vs slow SNN pathways: two counter-rotating orbit rings whose
 // pulse rates and decay envelopes act out the alpha/beta story - the
 // fast ring flashes at env-step tempo and forgets quickly, the slow
-// ring pulses rarely and holds its charge.
-export function PathwayPulses({ position }) {
+// ring pulses rarely and holds its charge. With a live run bundle the
+// LEARNED effective beta of the selected artifact replaces the config
+// init, so e.g. slow beta clamped at 1.0 makes the ring stop decaying.
+export function PathwayPulses({ position, fastBeta = null, slowBeta = null }) {
   const fastMaterialRef = useRef()
   const slowMaterialRef = useRef()
   const fastOrbitRef = useRef()
   const slowOrbitRef = useRef()
 
+  // Membrane decay -> envelope exponent: k = 0.15 + 20·(1-beta).
+  // Config inits land near the hand-tuned look (fast beta 0.65 -> k≈7.2,
+  // slow beta 0.97 -> k≈0.75); beta -> 1 means the glow barely decays.
+  const fastK = 0.15 + 20 * (1 - (fastBeta ?? SNN_TIME_CONSTANTS.fast.beta))
+  const slowK = 0.15 + 20 * (1 - (slowBeta ?? SNN_TIME_CONSTANTS.slow.beta))
+
   useFrame((state) => {
     const time = state.clock.elapsedTime
-    // Pulse envelope ~ exp(-phase / tau): tau derived from beta (mem
-    // decay): fast beta 0.65 -> rapid falloff; slow beta 0.97 -> long hold.
     const fastPhase = (time * 2.2) % 1
     const slowPhase = (time * 0.4) % 1
     if (fastMaterialRef.current) {
-      fastMaterialRef.current.emissiveIntensity = 0.4 + 2.6 * Math.exp(-fastPhase * 6)
+      fastMaterialRef.current.emissiveIntensity =
+        0.4 + 2.6 * Math.exp(-fastPhase * fastK)
     }
     if (slowMaterialRef.current) {
-      slowMaterialRef.current.emissiveIntensity = 0.5 + 2.0 * Math.exp(-slowPhase * 1.4)
+      slowMaterialRef.current.emissiveIntensity =
+        0.5 + 2.0 * Math.exp(-slowPhase * slowK)
     }
     if (fastOrbitRef.current) fastOrbitRef.current.rotation.y = time * 1.6
     if (slowOrbitRef.current) slowOrbitRef.current.rotation.y = -time * 0.35
   })
 
-  const { fast, slow } = SNN_TIME_CONSTANTS
   return (
     <group position={position}>
       <group ref={fastOrbitRef}>
@@ -202,8 +209,6 @@ export function PathwayPulses({ position }) {
         </mesh>
       </group>
       {/* alpha/beta captions ride in the info panel; rings just encode rate */}
-      {void fast}
-      {void slow}
     </group>
   )
 }

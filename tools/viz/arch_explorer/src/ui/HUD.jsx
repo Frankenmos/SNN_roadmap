@@ -1,6 +1,6 @@
 import { TOKEN_GROUPS } from '../data/zones'
 
-export function HUD({ showTraining, onToggleTraining }) {
+export function HUD({ showTraining, onToggleTraining, runData }) {
   return (
     <>
       {/* title */}
@@ -27,6 +27,24 @@ export function HUD({ showTraining, onToggleTraining }) {
       >
         {showTraining ? '◉' : '○'} training loop
       </button>
+
+      {/* live run-data badge (written by `python -m tools.registry export`) */}
+      {runData && (
+        <div className="glass absolute bottom-4 right-4 z-20 rounded-2xl px-4 py-3">
+          <div className="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.2em] text-emerald-400/80">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+            live run data
+          </div>
+          <div className="max-w-[240px] truncate font-mono text-[11px] text-slate-200">
+            {runData.run}
+          </div>
+          <div className="mt-0.5 font-mono text-[10px] text-slate-500">
+            {runData.entries.length} artifact
+            {runData.entries.length === 1 ? '' : 's'} · exported{' '}
+            {(runData.generated_iso ?? '').slice(0, 10) || 'n/a'}
+          </div>
+        </div>
+      )}
 
       {/* token legend */}
       <div className="glass absolute bottom-4 left-4 z-20 rounded-2xl px-4 py-3">

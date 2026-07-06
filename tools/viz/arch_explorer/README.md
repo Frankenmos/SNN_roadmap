@@ -40,6 +40,41 @@ npm run preview    # serves dist/ on http://localhost:4173
 The info panel's ←/→ buttons walk the pipeline (or the training loop)
 zone by zone.
 
+## Live run data (optional)
+
+The explorer can display the *learned* values of a real run next to the
+static architecture story:
+
+```bash
+# from the repo root
+python -m tools.registry export <run_name>
+```
+
+This writes `public/run_data.json` (gitignored): the run's snapshot /
+checkpoint lineage with learned α/β time constants per artifact, the
+rollout action mix, grad norms, SIL health, and eval scores joined from
+`models/<run>/training_logs.db` (opened read-only).
+
+With a bundle present:
+
+- a **live run data** badge appears bottom-right;
+- zones with a live slice (SNN pathways, Action Dispatch, Readout
+  Heads, PPO, SIL) gain a **live** section in their info panel, with a
+  dropdown to scrub across snapshots/checkpoints;
+- the SNN station's pulse rings use the selected artifact's *learned*
+  effective β for their decay envelopes — a slow pathway that learned
+  β→1 (as v6 did) visibly stops decaying.
+
+`npm run dev` picks the file up immediately; for `npm run preview`,
+re-run `npm run build` (which copies `public/` into `dist/`). Snapshots
+appear in the dropdown once snapshot recording is enabled in
+`config.yaml` (`snapshot_*` keys under `distributed:`); without them
+you scrub between `checkpoint` and `best`.
+
+Raw α/β can drift outside [0, 1] during training; snnTorch clamps them
+in the forward pass, so the panel shows the clamped *effective* value
+(with the raw value alongside when they differ).
+
 ## What the moving parts mean
 
 - **Flow particles** trace tensors along the pipeline spline.
@@ -64,6 +99,9 @@ npm run smoke
 Serves `dist/`, opens it in a headless system Edge/Chrome via
 `puppeteer-core` (no browser download), waits for real rendered frames,
 checks window-resize handling, and writes `smoke_screenshot.png`.
+A second phase injects a synthetic `run_data.json` and asserts the live
+sections render its learned constants and action mix
+(`smoke_screenshot_live.png`).
 Set `ARCH_EXPLORER_BROWSER=<path>` to point at a specific browser.
 
 ## Implementation notes

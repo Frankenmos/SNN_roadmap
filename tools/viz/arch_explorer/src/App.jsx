@@ -2,6 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Canvas } from '@react-three/fiber'
 import * as THREE from 'three'
 import { PIPELINE_ZONES, TRAINING_ZONES } from './data/zones'
+import {
+  defaultEntryIndex,
+  loadRunData,
+  pathwayTimeConstants,
+} from './data/runData'
 import { pipelineStations, trainingStations } from './scene/curves'
 import { Scene } from './scene/Scene.jsx'
 import { InfoPanel } from './ui/InfoPanel.jsx'
@@ -11,6 +16,33 @@ export default function App() {
   const [selected, setSelected] = useState(null)
   const [focus, setFocus] = useState(null)
   const [showTraining, setShowTraining] = useState(false)
+  const [runData, setRunData] = useState(null)
+  const [entryIndex, setEntryIndex] = useState(0)
+
+  // Optional live bundle (public/run_data.json). Absent -> static mode.
+  useEffect(() => {
+    let cancelled = false
+    loadRunData().then((data) => {
+      if (cancelled || !data) return
+      setRunData(data)
+      setEntryIndex(defaultEntryIndex(data))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Learned membrane-decay constants of the selected artifact drive the
+  // SNN station's pulse envelopes (null -> config-init defaults).
+  const liveBetas = useMemo(() => {
+    const entry = runData?.entries[entryIndex]
+    if (!entry) return null
+    const constants = pathwayTimeConstants(entry)
+    return {
+      fast: constants.fast.beta?.effective_mean ?? null,
+      slow: constants.slow.beta?.effective_mean ?? null,
+    }
+  }, [runData, entryIndex])
 
   // Per-zone camera poses: hover point above/front of each station.
   const poses = useMemo(() => {
@@ -93,18 +125,23 @@ export default function App() {
           showTraining={showTraining}
           focus={focus}
           onScrollTakeover={handleScrollTakeover}
+          liveBetas={liveBetas}
         />
       </Canvas>
 
       <HUD
         showTraining={showTraining}
         onToggleTraining={() => setShowTraining((value) => !value)}
+        runData={runData}
       />
       <InfoPanel
         zone={selected}
         zones={panelZones}
         onSelect={handleSelect}
         onClose={handleClose}
+        runData={runData}
+        entryIndex={entryIndex}
+        onEntryChange={setEntryIndex}
       />
     </div>
   )

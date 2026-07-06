@@ -1,7 +1,17 @@
 // Slide-out glassmorphic info panel: real shapes, real math, real code
 // with file:line references. Content comes from src/data/zones.js and is
 // authored from this repository only.
-export function InfoPanel({ zone, zones, onSelect, onClose }) {
+import { LiveSection } from './LiveSection.jsx'
+
+export function InfoPanel({
+  zone,
+  zones,
+  onSelect,
+  onClose,
+  runData,
+  entryIndex,
+  onEntryChange,
+}) {
   if (!zone) return null
   const index = zones.findIndex((z) => z.id === zone.id)
   const prev = zones[(index - 1 + zones.length) % zones.length]
@@ -63,6 +73,13 @@ export function InfoPanel({ zone, zones, onSelect, onClose }) {
             </tbody>
           </table>
         </section>
+
+        <LiveSection
+          zone={zone}
+          runData={runData}
+          entryIndex={entryIndex}
+          onEntryChange={onEntryChange}
+        />
 
         <section>
           <h3 className="mb-2 font-mono text-[10px] uppercase tracking-[0.2em] text-slate-500">

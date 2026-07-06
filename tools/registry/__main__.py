@@ -4,9 +4,13 @@ Usage:
   python -m tools.registry list <run> [--models-dir DIR]
   python -m tools.registry show <ref> [--models-dir DIR]
   python -m tools.registry diff <ref-a> <ref-b> [--top N] [--models-dir DIR]
+  python -m tools.registry export <run> [--out PATH] [--max-points N]
 
 A <ref> is a .pth path or "<run>[:selector]" with selector one of
 u<N> / checkpoint / best / latest (default latest).
+
+`export` writes run_data.json for the 3D architecture explorer's live
+mode (default target: tools/viz/arch_explorer/public/run_data.json).
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from tools.registry.core import (
     list_run_entries,
     resolve_ref,
     show_entry,
+    write_run_data_json,
 )
 
 
@@ -146,6 +151,21 @@ def _cmd_diff(args: argparse.Namespace) -> None:
     )
 
 
+def _cmd_export(args: argparse.Namespace) -> None:
+    out = write_run_data_json(
+        args.run,
+        out_path=args.out,
+        models_dir=args.models_dir,
+        max_points=args.max_points,
+    )
+    print(f"Wrote {out}")
+    print(
+        "Explorer live mode: `npm run dev` picks it up immediately; "
+        "for `npm run preview` re-run `npm run build` (or export with "
+        "--out <explorer>/dist/run_data.json).",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="python -m tools.registry",
@@ -181,6 +201,24 @@ def main() -> None:
         "--top", type=int, default=25, help="Layers to print (default 25).",
     )
     diff_parser.set_defaults(func=_cmd_diff)
+
+    export_parser = subparsers.add_parser(
+        "export",
+        help="Write run_data.json for the 3D explorer's live mode.",
+    )
+    export_parser.add_argument("run", help="Run name under the models dir.")
+    export_parser.add_argument(
+        "--out",
+        default=None,
+        help="Output path (default: tools/viz/arch_explorer/public/run_data.json).",
+    )
+    export_parser.add_argument(
+        "--max-points",
+        type=int,
+        default=400,
+        help="Max points per history series after downsampling (default 400).",
+    )
+    export_parser.set_defaults(func=_cmd_export)
 
     args = parser.parse_args()
     args.func(args)

@@ -20,10 +20,13 @@ from Utility.checkpoint_snapshots import (
 )
 from Utility.logger_utils import initialize_db
 from tools.registry.core import (
+    _json_sanitize,
     diff_entries,
+    export_run_data,
     list_run_entries,
     resolve_ref,
     show_entry,
+    write_run_data_json,
 )
 
 
@@ -96,6 +99,11 @@ def _make_policy(seed: int = 0) -> torch.nn.Module:
     )
     policy.register_parameter(
         "fast_alpha", torch.nn.Parameter(torch.rand(8)),
+    )
+    # Raw value outside [0, 1]: the exporter must report the clamped
+    # effective value alongside it (snnTorch clamps in the forward).
+    policy.register_parameter(
+        "slow_beta", torch.nn.Parameter(torch.full((4,), 1.2)),
     )
     return policy
 
@@ -296,3 +304,134 @@ def test_diff_known_delta_and_config_diff(tmp_path):
     assert diff["metadata_diff"]["policy_version"] == (5, 6)
     assert diff["config_diff"]["changed"] == {"ppo.lr": (5e-5, 1e-4)}
     assert diff["total_l2"] == pytest.approx(trunk["l2"], rel=1e-6)
+
+
+# ----------------------------------------------------------------------
+# Registry: export (arch-explorer live bundle)
+# ----------------------------------------------------------------------
+def _insert_ppo_updates(run_dir, count: int) -> None:
+    conn = initialize_db(str(run_dir / "training_logs.db"))
+    with conn:
+        conn.executemany(
+            "INSERT INTO ppo_updates (episode_index, global_update_index, "
+            "mean_entropy, grad_norm, rollout_policy_no_op_count, "
+            "rollout_policy_left_click_count, "
+            "rollout_policy_right_click_count) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (i * 10, i, 1.0 - i * 0.01, 2.0 - i * 0.05, 3000 - i * 100,
+                 0, 100 + i * 50)
+                for i in range(1, count + 1)
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO eval_runs (episode_index, num_episodes, mean_reward, "
+            "std_reward, min_reward, max_reward, deterministic, "
+            "policy_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (50, 4, 12.0, 1.0, 10.0, 14.0, 1, 5),
+                (90, 4, 20.0, 1.0, 18.0, 22.0, 1, 9),
+            ],
+        )
+    conn.close()
+
+
+def test_export_run_data_bundle(tmp_path):
+    run_dir = _write_run(tmp_path, "run_a", versions=[5, 10])
+    torch.save(
+        {"agent_state": _make_policy().state_dict(), "policy_version": 12},
+        run_dir / "checkpoint.pth",
+    )
+    (run_dir / "effective_config.json").write_text(
+        json.dumps(
+            {
+                "reward": {"name": "defeat_roaches_v4"},
+                "ppo": {"lr": 5e-5, "sil_enabled": True},
+                "model": {
+                    "spatial_head_type": "coarse_to_fine",
+                    "fast_token_snn_alpha": 0.55,
+                    "fast_token_snn_beta": 0.65,
+                    "slow_token_snn_alpha": 0.92,
+                    "slow_token_snn_beta": 0.97,
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+    _insert_ppo_updates(run_dir, count=12)
+
+    data = export_run_data("run_a", models_dir=tmp_path, max_points=5)
+
+    assert data["schema_version"] == 1
+    assert data["kind"] == "arch-explorer-run-data"
+    assert data["run"] == "run_a"
+    assert data["config"]["reward_name"] == "defeat_roaches_v4"
+    assert data["config"]["sil_enabled"] is True
+    assert data["config"]["snn_init"]["slow_beta"] == 0.97
+    assert data["module_param_counts"]["trunk"] == 4 * 8 + 8
+
+    refs = [entry["ref"] for entry in data["entries"]]
+    assert refs == ["run_a:u5", "run_a:u10", "run_a:checkpoint"]
+
+    by_ref = {entry["ref"]: entry for entry in data["entries"]}
+    # exact update-row join at each artifact's policy version
+    assert by_ref["run_a:u5"]["update_row"]["global_update_index"] == 5
+    assert by_ref["run_a:u5"]["update_row"][
+        "rollout_policy_right_click_count"
+    ] == 100 + 5 * 50
+    assert by_ref["run_a:checkpoint"]["update_row"][
+        "global_update_index"
+    ] == 12
+    # eval join: nearest at-or-before version
+    assert by_ref["run_a:u10"]["eval_mean"] == 20.0
+    assert by_ref["run_a:u10"]["eval_policy_version"] == 9
+
+    # clamped effective value next to the raw one
+    constants = {
+        row["name"]: row for row in by_ref["run_a:u5"]["time_constants"]
+    }
+    assert constants["slow_beta"]["mean"] == pytest.approx(1.2)
+    assert constants["slow_beta"]["effective_mean"] == pytest.approx(1.0)
+    assert constants["fast_alpha"]["effective_mean"] <= 1.0
+
+    history = data["history"]
+    assert history["total_updates"] == 12
+    assert history["stride"] == 3  # ceil(12 / 5)
+    # strided rows plus the guaranteed final row
+    assert history["series"]["global_update_index"] == [1, 4, 7, 10, 12]
+
+    assert len(data["evals"]) == 2
+    assert data["evals"][-1]["mean_reward"] == 20.0
+
+    out_path = tmp_path / "out" / "run_data.json"
+    written = write_run_data_json(
+        "run_a", out_path=out_path, models_dir=tmp_path,
+    )
+    assert written == out_path
+    parsed = json.loads(out_path.read_text(encoding="utf-8"))
+    assert parsed["entries"][0]["ref"] == "run_a:u5"
+
+
+def test_export_without_db_or_config(tmp_path):
+    _write_run(tmp_path, "run_a", versions=[5])
+    data = export_run_data("run_a", models_dir=tmp_path)
+    assert data["history"] is None
+    assert data["evals"] == []
+    assert data["config"] == {}
+    assert data["entries"][0]["update_row"] is None
+    assert data["entries"][0]["eval_mean"] is None
+    # must serialize to strict JSON even with everything missing
+    json.dumps(data, allow_nan=False)
+
+
+def test_json_sanitize_strips_nonfinite():
+    dirty = {
+        "a": float("nan"),
+        "b": [1.0, float("inf"), float("-inf")],
+        "c": {"d": 2.5},
+    }
+    assert _json_sanitize(dirty) == {
+        "a": None,
+        "b": [1.0, None, None],
+        "c": {"d": 2.5},
+    }

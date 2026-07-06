@@ -34,7 +34,14 @@ const attentionStation =
   pipelineStations[PIPELINE_ZONES.findIndex((z) => z.id === 'attention')]
 const snnStation = pipelineStations[PIPELINE_ZONES.findIndex((z) => z.id === 'snn')]
 
-export function Scene({ selectedId, onSelect, showTraining, focus, onScrollTakeover }) {
+export function Scene({
+  selectedId,
+  onSelect,
+  showTraining,
+  focus,
+  onScrollTakeover,
+  liveBetas = null,
+}) {
   return (
     <>
       <color attach="background" args={['#050510']} />
@@ -70,7 +77,11 @@ export function Scene({ selectedId, onSelect, showTraining, focus, onScrollTakeo
       ))}
       <TokenRing position={streamStation} />
       <SpikeFlashes position={attentionStation} />
-      <PathwayPulses position={snnStation} />
+      <PathwayPulses
+        position={snnStation}
+        fastBeta={liveBetas?.fast ?? null}
+        slowBeta={liveBetas?.slow ?? null}
+      />
 
       {/* training loop overlay */}
       {showTraining && (

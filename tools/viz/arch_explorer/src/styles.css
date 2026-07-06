@@ -9,6 +9,7 @@ body,
   margin: 0;
   overflow: hidden;
   background: #050510;
+  color-scheme: dark; /* native controls (live-entry <select>) match the theme */
 }
 
 /* Glassmorphic panel base */

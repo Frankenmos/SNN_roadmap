@@ -1,3 +1,6 @@
 node_modules/
 dist/
 smoke_screenshot.png
+smoke_screenshot_live.png
+# local run bundle written by `python -m tools.registry export <run>`
+public/run_data.json
