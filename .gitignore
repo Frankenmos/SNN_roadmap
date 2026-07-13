@@ -21,6 +21,7 @@ htmlcov/git
 .vscode/
 .claude/settings.local.json
 .claude/
+tools/viz/
 
 # The Heavy Brains (Don't let him read these!)
 *.pth
@@ -49,10 +50,12 @@ venv/
 # Personal/local launchers
 claude-glm.ps1
 tools/claude-glm.ps1
+tools/claude-glm.sh
 
 # Local documentation clutter
 docs/.archive/
 docs/ideas/
 docs/notes/
+docs/learning/
 
 
