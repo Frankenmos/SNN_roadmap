@@ -21,13 +21,14 @@ import logging
 import math
 import sqlite3
 from pathlib import Path
-from typing import Optional
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
 try:
     import seaborn as sns
 except ImportError:
@@ -88,12 +89,67 @@ PAYLOAD_FIELDS = [
     "rollout_cache_spatial_dtype",
     "episodes_logged_in_update",
 ]
+# Per-update rollout action/feedback counts. The Ray path logs no per-step
+# rows, so these aggregates are the only action-mix signal for Ray runs.
+POLICY_MIX_FIELDS = [
+    "rollout_policy_no_op_count",
+    "rollout_policy_left_click_count",
+    "rollout_policy_right_click_count",
+    "rollout_feedback_smart_executed_count",
+    "rollout_feedback_near_enemy_smart_count",
+    "rollout_feedback_moved_toward_target_count",
+    "rollout_feedback_enemy_health_drop_after_smart_count",
+    "rollout_feedback_null_unclear_smart_count",
+]
+GRAD_NORM_DECOMP_FIELDS = [
+    "grad_norm_trunk",
+    "grad_norm_actor_head",
+    "grad_norm_critic_head",
+    "grad_norm_target_head",
+]
+SIL_FIELDS = [
+    "sil_loss",
+    "sil_gate_open_fraction",
+    "sil_buffer_size",
+    "sil_steps_replayed",
+    "sil_groups",
+    "sil_grad_norm",
+    "sil_grad_norm_trunk",
+    "sil_grad_norm_actor_head",
+    "sil_grad_norm_target_head",
+    "sil_admitted",
+    "sil_admitted_near_enemy",
+    "sil_admitted_health_drop",
+    "sil_admitted_both",
+    "sil_age_mean",
+    "sil_age_p50",
+    "sil_age_p90",
+    "sil_age_max",
+    "sil_gate_weight_mean",
+    "sil_gate_weight_p50",
+    "sil_gate_weight_p90",
+    "sil_gate_weight_max",
+]
+TRUTH_DIAGNOSTIC_FIELDS = [
+    "phase_id",
+    "epochs_ran",
+    "update_start_scope",
+    "update_start_sample_count",
+    "kl_update_start",
+    "clip_frac_update_start",
+    "log_ratio_update_start_mean",
+    "log_ratio_update_start_std",
+    "log_ratio_update_start_p50",
+    "log_ratio_update_start_p90",
+    "log_ratio_update_start_p99",
+    "log_ratio_update_start_max_abs",
+]
 
 
 class TrainingAnalyzer:
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self.conn: Optional[sqlite3.Connection] = None
+        self.conn: sqlite3.Connection | None = None
         self._connect()
         self.action_semantics = self._infer_action_semantics()
         if self.action_semantics == "smart_screen_v2":
@@ -110,9 +166,9 @@ class TrainingAnalyzer:
             self.noop_action_id = 2
         self.action_ids = sorted(self.action_labels)
         # Cached DataFrames — loaded lazily.
-        self._episodes: Optional[pd.DataFrame] = None
-        self._steps: Optional[pd.DataFrame] = None
-        self._reward_components: Optional[pd.DataFrame] = None
+        self._episodes: pd.DataFrame | None = None
+        self._steps: pd.DataFrame | None = None
+        self._reward_components: pd.DataFrame | None = None
 
     # ------------------------------------------------------------------
     # Connection + raw loaders
@@ -135,16 +191,16 @@ class TrainingAnalyzer:
                     "SELECT name FROM sqlite_master WHERE type='table' LIMIT 1",
                 ).fetchall()
                 logger.info(f"Connected to immutable database snapshot: {self.db_path}")
-            except sqlite3.Error:
+            except sqlite3.Error as fallback_exc:
                 logger.error(f"Database connection failed: {e}")
-                raise e
+                raise fallback_exc from e
 
     def close(self):
         if self.conn:
             self.conn.close()
             logger.info("Database connection closed")
 
-    def _load_effective_config(self) -> Optional[dict]:
+    def _load_effective_config(self) -> dict | None:
         config_path = Path(self.db_path).with_name("effective_config.json")
         if not config_path.exists():
             return None
@@ -216,13 +272,44 @@ class TrainingAnalyzer:
             return set()
         return {row[1] for row in rows}
 
+    @staticmethod
+    def _typed_empty(columns: list[str]) -> pd.DataFrame:
+        """Empty frame with float columns so rolling/mean math stays valid
+        on DBs that are missing a table or have no rows yet."""
+        return pd.DataFrame({name: pd.Series(dtype=float) for name in columns})
+
     def get_episode_metrics(self) -> pd.DataFrame:
         if self._episodes is None:
-            self._episodes = pd.read_sql_query(
-                "SELECT episode_id, total_reward, average_reward, steps, timestamp "
-                "FROM episodes ORDER BY episode_id",
-                self.conn,
-            )
+            wanted = [
+                "episode_id",
+                "phase_id",
+                "actor_id",
+                "policy_version",
+                "total_reward",
+                "shaped_reward",
+                "native_reward",
+                "average_reward",
+                "steps",
+                "terminated",
+                "truncated",
+                "policy_no_op_count",
+                "policy_left_click_count",
+                "policy_right_click_count",
+                "timestamp",
+            ]
+            cols = self._table_columns("episodes")
+            present = [name for name in wanted if name in cols]
+            try:
+                frame = pd.read_sql_query(
+                    f"SELECT {', '.join(present)} FROM episodes ORDER BY episode_id",
+                    self.conn,
+                )
+            except Exception:
+                frame = self._typed_empty(wanted)
+            if frame.empty:
+                # Zero-row reads come back object-dtyped; keep math valid.
+                frame = self._typed_empty(wanted)
+            self._episodes = frame
         return self._episodes
 
     def get_step_metrics(self) -> pd.DataFrame:
@@ -238,24 +325,53 @@ class TrainingAnalyzer:
                 "cumulative_reward",
             ]
             present = [name for name in wanted if name in cols]
-            self._steps = pd.read_sql_query(
-                f"SELECT {', '.join(present)} FROM steps "
-                "ORDER BY episode_id, step_number",
-                self.conn,
-            )
+            if not present:
+                self._steps = self._typed_empty(wanted)
+                return self._steps
+            try:
+                frame = pd.read_sql_query(
+                    f"SELECT {', '.join(present)} FROM steps ORDER BY episode_id, step_number",
+                    self.conn,
+                )
+            except Exception:
+                frame = self._typed_empty(wanted)
+            if frame.empty:
+                frame = self._typed_empty(wanted)
+            self._steps = frame
         return self._steps
 
     def get_reward_components(self) -> pd.DataFrame:
         # Fix from prior version: the column is episode_id, not episode.
+        # NOTE: this table uses the legacy v3 6-component layout. The v4
+        # reward folds its action-guidance / smart-outcome terms into
+        # bonus_reward, and the Ray path never writes REWARD_COMP rows.
         if self._reward_components is None:
-            self._reward_components = pd.read_sql_query(
-                "SELECT episode_id, step, health_reward, engagement_reward, "
-                "positioning_reward, score_reward, bonus_reward, "
-                "end_of_episode_reward, total_reward "
-                "FROM reward_components ORDER BY episode_id, step",
-                self.conn,
-            )
+            wanted = [
+                "episode_id",
+                "step",
+                "health_reward",
+                "engagement_reward",
+                "positioning_reward",
+                "score_reward",
+                "bonus_reward",
+                "end_of_episode_reward",
+                "total_reward",
+            ]
+            try:
+                frame = pd.read_sql_query(
+                    f"SELECT {', '.join(wanted)} FROM reward_components ORDER BY episode_id, step",
+                    self.conn,
+                )
+            except Exception:
+                frame = self._typed_empty(wanted)
+            if frame.empty:
+                frame = self._typed_empty(wanted)
+            self._reward_components = frame
         return self._reward_components
+
+    def get_run_config(self) -> dict | None:
+        """The run's effective_config.json (next to the DB), or None."""
+        return self._load_effective_config()
 
     def get_update_metrics(self) -> pd.DataFrame:
         """Per-PPO-update metrics. Returns an empty DataFrame when the
@@ -304,7 +420,13 @@ class TrainingAnalyzer:
         wanted.extend(RAY_THROUGHPUT_FIELDS)
         wanted.extend(LEARNER_TIMING_FIELDS)
         wanted.extend(PAYLOAD_FIELDS)
-        present = [name for name in wanted if name in cols]
+        wanted.extend(POLICY_MIX_FIELDS)
+        wanted.extend(GRAD_NORM_DECOMP_FIELDS)
+        wanted.extend(SIL_FIELDS)
+        wanted.extend(TRUTH_DIAGNOSTIC_FIELDS)
+        # Order-preserving dedupe: overlapping field lists would otherwise
+        # SELECT a column twice, and duplicate-columned frames crash plotly.
+        present = list(dict.fromkeys(name for name in wanted if name in cols))
         if not present:
             return pd.DataFrame()
         try:
@@ -325,34 +447,30 @@ class TrainingAnalyzer:
             "transitions_in_update",
             "update_wall_seconds",
         }.issubset(set(updates.columns)):
-            updates["learner_transitions_per_second"] = (
-                updates["transitions_in_update"]
-                / updates["update_wall_seconds"].clip(lower=1.0e-6)
-            )
+            updates["learner_transitions_per_second"] = updates["transitions_in_update"] / updates[
+                "update_wall_seconds"
+            ].clip(lower=1.0e-6)
         if {
             "rollout_steps_collected",
             "rollout_wall_seconds",
         }.issubset(set(updates.columns)):
-            updates["rollout_steps_per_second"] = (
-                updates["rollout_steps_collected"]
-                / updates["rollout_wall_seconds"].clip(lower=1.0e-6)
-            )
+            updates["rollout_steps_per_second"] = updates["rollout_steps_collected"] / updates[
+                "rollout_wall_seconds"
+            ].clip(lower=1.0e-6)
         elif {
             "transitions_in_update",
             "rollout_wall_seconds",
         }.issubset(set(updates.columns)):
-            updates["rollout_steps_per_second"] = (
-                updates["transitions_in_update"]
-                / updates["rollout_wall_seconds"].clip(lower=1.0e-6)
-            )
+            updates["rollout_steps_per_second"] = updates["transitions_in_update"] / updates[
+                "rollout_wall_seconds"
+            ].clip(lower=1.0e-6)
         if {
             "tbptt_forward_calls",
             "update_wall_seconds",
         }.issubset(set(updates.columns)):
-            updates["forward_calls_per_second"] = (
-                updates["tbptt_forward_calls"]
-                / updates["update_wall_seconds"].clip(lower=1.0e-6)
-            )
+            updates["forward_calls_per_second"] = updates["tbptt_forward_calls"] / updates[
+                "update_wall_seconds"
+            ].clip(lower=1.0e-6)
         for source, dest in [
             ("cuda_peak_allocated_bytes", "cuda_peak_allocated_gib"),
             ("cuda_peak_reserved_bytes", "cuda_peak_reserved_gib"),
@@ -368,6 +486,8 @@ class TrainingAnalyzer:
             return pd.DataFrame()
         wanted = [
             "eval_id",
+            "eval_group_id",
+            "phase_id",
             "episode_index",
             "num_episodes",
             "mean_reward",
@@ -375,6 +495,9 @@ class TrainingAnalyzer:
             "min_reward",
             "max_reward",
             "deterministic",
+            "policy_version",
+            "policy_protocol_version",
+            "policy_input_schema",
             "timestamp",
         ]
         present = [name for name in wanted if name in cols]
@@ -383,6 +506,39 @@ class TrainingAnalyzer:
         try:
             return pd.read_sql_query(
                 f"SELECT {', '.join(present)} FROM eval_runs ORDER BY eval_id",
+                self.conn,
+            )
+        except Exception:
+            return pd.DataFrame()
+
+    def get_eval_episode_metrics(self) -> pd.DataFrame:
+        cols = self._table_columns("eval_episodes")
+        if not cols:
+            return pd.DataFrame()
+        wanted = [
+            "eval_episode_id",
+            "eval_group_id",
+            "phase_id",
+            "episode_index",
+            "episode_number",
+            "actor_id",
+            "seed",
+            "native_reward",
+            "steps",
+            "terminated",
+            "truncated",
+            "deterministic",
+            "policy_version",
+            "policy_no_op_count",
+            "policy_left_click_count",
+            "policy_right_click_count",
+            "snapshot_sha256",
+            "timestamp",
+        ]
+        present = [name for name in wanted if name in cols]
+        try:
+            return pd.read_sql_query(
+                f"SELECT {', '.join(present)} FROM eval_episodes ORDER BY eval_episode_id",
                 self.conn,
             )
         except Exception:
@@ -405,7 +561,7 @@ class TrainingAnalyzer:
         window: int = 100,
         slope_threshold: float = 0.01,
         peak_frac: float = 0.75,
-    ) -> Optional[int]:
+    ) -> int | None:
         """Return episode_id where reward curve flattens, or None.
 
         Method: rolling-mean reward, then a sliding linear-regression slope
@@ -422,7 +578,7 @@ class TrainingAnalyzer:
         # Slope via normal equations on a simple linear fit.
         x = np.arange(window, dtype=np.float64)
         x_centered = x - x.mean()
-        denom = (x_centered ** 2).sum()
+        denom = (x_centered**2).sum()
 
         for start in range(0, len(mean) - window):
             seg = mean[start : start + window]
@@ -499,9 +655,9 @@ class TrainingAnalyzer:
 
         merged = steps.merge(episodes, on="episode_id", how="left")
         merged["episode_steps"] = merged["episode_steps"].fillna(1).clip(lower=1)
-        rel_pos = (merged["step_number"].astype(float) + 1.0) / merged[
-            "episode_steps"
-        ].astype(float)
+        rel_pos = (merged["step_number"].astype(float) + 1.0) / merged["episode_steps"].astype(
+            float
+        )
         merged["phase"] = np.select(
             [
                 rel_pos <= (1.0 / 3.0),
@@ -518,16 +674,8 @@ class TrainingAnalyzer:
         bin_size = max(1, max_ep // max(1, num_bins))
         merged["bin"] = (merged["episode_id"] // bin_size) * bin_size
 
-        counts = (
-            merged.groupby(["phase", "bin", "action"])
-            .size()
-            .reset_index(name="count")
-        )
-        totals = (
-            merged.groupby(["phase", "bin"])
-            .size()
-            .reset_index(name="total")
-        )
+        counts = merged.groupby(["phase", "bin", "action"]).size().reset_index(name="count")
+        totals = merged.groupby(["phase", "bin"]).size().reset_index(name="total")
         mix = counts.merge(totals, on=["phase", "bin"])
         mix["prob"] = mix["count"] / mix["total"]
         mix["phase"] = pd.Categorical(
@@ -569,9 +717,7 @@ class TrainingAnalyzer:
             "avg_total_reward": float(ep["total_reward"].mean()),
             "reward_std": float(ep["total_reward"].std()),
             "final_100_avg_reward": float(
-                ep["total_reward"].tail(100).mean()
-                if len(ep) >= 100
-                else ep["total_reward"].mean()
+                ep["total_reward"].tail(100).mean() if len(ep) >= 100 else ep["total_reward"].mean()
             ),
         }
         try:
@@ -599,11 +745,7 @@ class TrainingAnalyzer:
             action_mask = steps["action"] != self.noop_action_id
         else:
             action_mask = steps["action"] == 1
-        return steps[
-            action_mask
-            & steps["move_x"].notna()
-            & steps["move_y"].notna()
-        ]
+        return steps[action_mask & steps["move_x"].notna() & steps["move_y"].notna()]
 
     # ------------------------------------------------------------------
     # Rule-based diagnosis
@@ -634,18 +776,14 @@ class TrainingAnalyzer:
             tail = updates.tail(max(1, len(updates) // 4))
             mean_clip = tail["clip_fraction"].mean() if "clip_fraction" in tail else None
             mean_kl = tail["mean_kl"].mean() if "mean_kl" in tail else None
-            mean_ev = (
-                tail["explained_variance"].mean()
-                if "explained_variance" in tail
-                else None
-            )
+            mean_ev = tail["explained_variance"].mean() if "explained_variance" in tail else None
             inf_grad_updates = 0
             if "grad_norm" in tail.columns:
-                inf_grad_updates = int(sum(
-                    1
-                    for value in tail["grad_norm"].dropna()
-                    if not math.isfinite(float(value))
-                ))
+                inf_grad_updates = int(
+                    sum(
+                        1 for value in tail["grad_norm"].dropna() if not math.isfinite(float(value))
+                    )
+                )
             nonfinite_grad_steps = 0
             skipped_optimizer_steps = 0
             if "nonfinite_grad_steps" in tail.columns:
@@ -654,41 +792,51 @@ class TrainingAnalyzer:
                 skipped_optimizer_steps = int(tail["skipped_optimizer_steps"].fillna(0).sum())
 
             if mean_clip is not None and mean_clip > 0.3 and len(tail) >= 10:
-                flags.append((
-                    "HIGH",
-                    f"PPO clip fraction sustained high: {mean_clip:.2%} of "
-                    f"samples clipped in last {len(tail)} updates.",
-                    "clip_eps: 0.18 -> 0.10; lr: 1e-4 -> 5e-5",
-                ))
+                flags.append(
+                    (
+                        "HIGH",
+                        f"PPO clip fraction sustained high: {mean_clip:.2%} of "
+                        f"samples clipped in last {len(tail)} updates.",
+                        "clip_eps: 0.18 -> 0.10; lr: 1e-4 -> 5e-5",
+                    )
+                )
             if mean_kl is not None and mean_kl > 0.05:
-                flags.append((
-                    "HIGH",
-                    f"Approx KL(old||new) sustained high: {mean_kl:.3f} over "
-                    f"last {len(tail)} updates. Policy moving too fast.",
-                    "epochs: 20 -> 8; lower lr",
-                ))
+                flags.append(
+                    (
+                        "HIGH",
+                        f"Approx KL(old||new) sustained high: {mean_kl:.3f} over "
+                        f"last {len(tail)} updates. Policy moving too fast.",
+                        "epochs: 20 -> 8; lower lr",
+                    )
+                )
             if mean_ev is not None and mean_ev < 0.0:
-                flags.append((
-                    "HIGH",
-                    f"Critic worse than mean: explained_variance = "
-                    f"{mean_ev:.2f} (< 0) in last {len(tail)} updates.",
-                    "critic_loss_coef up; investigate reward scale",
-                ))
+                flags.append(
+                    (
+                        "HIGH",
+                        f"Critic worse than mean: explained_variance = "
+                        f"{mean_ev:.2f} (< 0) in last {len(tail)} updates.",
+                        "critic_loss_coef up; investigate reward scale",
+                    )
+                )
             if inf_grad_updates > 0 or nonfinite_grad_steps > 0:
-                flags.append((
-                    "HIGH",
-                    f"Non-finite gradients detected late: {inf_grad_updates} update(s) "
-                    f"with non-finite grad_norm, {nonfinite_grad_steps} skipped "
-                    f"optimizer step(s) in the late-update tail.",
-                    "inspect surrogate gradient stability and reward/value scale",
-                ))
+                flags.append(
+                    (
+                        "HIGH",
+                        f"Non-finite gradients detected late: {inf_grad_updates} update(s) "
+                        f"with non-finite grad_norm, {nonfinite_grad_steps} skipped "
+                        f"optimizer step(s) in the late-update tail.",
+                        "inspect surrogate gradient stability and reward/value scale",
+                    )
+                )
             if skipped_optimizer_steps > 0:
-                flags.append((
-                    "MED",
-                    f"Optimizer steps were skipped {skipped_optimizer_steps} time(s) "
-                    f"in the late-update tail due to invalid gradients.",
-                    "check long-rollout batches and log per-batch failure context",
-                ))
+                flags.append(
+                    (
+                        "MED",
+                        f"Optimizer steps were skipped {skipped_optimizer_steps} time(s) "
+                        f"in the late-update tail due to invalid gradients.",
+                        "check long-rollout batches and log per-batch failure context",
+                    )
+                )
             if {
                 "tbptt_group_mean_active_chunks",
                 "tbptt_forward_calls",
@@ -702,13 +850,15 @@ class TrainingAnalyzer:
                     and mean_forward_calls >= 1000
                     and mean_update_seconds >= 60.0
                 ):
-                    flags.append((
-                        "MED",
-                        "Learner is replaying mostly one TBPTT chunk at a time "
-                        f"(active_chunks={mean_active_chunks:.2f}, "
-                        f"forward_calls/update={mean_forward_calls:.0f}).",
-                        "increase hyperparameters.batch_size above tbptt_window",
-                    ))
+                    flags.append(
+                        (
+                            "MED",
+                            "Learner is replaying mostly one TBPTT chunk at a time "
+                            f"(active_chunks={mean_active_chunks:.2f}, "
+                            f"forward_calls/update={mean_forward_calls:.0f}).",
+                            "increase hyperparameters.batch_size above tbptt_window",
+                        )
+                    )
             if {
                 "replay_forward_wall_seconds",
                 "update_wall_seconds",
@@ -718,23 +868,27 @@ class TrainingAnalyzer:
                     / tail["update_wall_seconds"].clip(lower=1.0e-6)
                 ).mean()
                 if replay_share > 0.65:
-                    flags.append((
-                        "MED",
-                        f"Learner update is replay-forward dominated "
-                        f"({replay_share:.0%} of update wall time).",
-                        "pack more TBPTT chunks together; then consider model/kernel optimization",
-                    ))
+                    flags.append(
+                        (
+                            "MED",
+                            f"Learner update is replay-forward dominated "
+                            f"({replay_share:.0%} of update wall time).",
+                            "pack more TBPTT chunks together; then consider model/kernel optimization",
+                        )
+                    )
 
         # Late-stage instability
         if plateau_ep is not None and len(cov) > 200:
             late_cov = cov.tail(200).mean()
             if late_cov > 0.5:
-                flags.append((
-                    "HIGH",
-                    f"Late-stage instability: mean CoV over last 200 eps = "
-                    f"{late_cov:.2f} (> 0.5) after plateau at ep {plateau_ep}.",
-                    "lr: 1e-4 -> 5e-5; epochs: 20 -> 10",
-                ))
+                flags.append(
+                    (
+                        "HIGH",
+                        f"Late-stage instability: mean CoV over last 200 eps = "
+                        f"{late_cov:.2f} (> 0.5) after plateau at ep {plateau_ep}.",
+                        "lr: 1e-4 -> 5e-5; epochs: 20 -> 10",
+                    )
+                )
 
         # Policy collapse (entropy drop)
         if not entropy.empty and len(entropy) > 5:
@@ -743,37 +897,43 @@ class TrainingAnalyzer:
             post_peak = entropy.iloc[peak_idx:]
             collapse = post_peak[post_peak["entropy"] < 0.1]
             if peak_ent > 0.3 and not collapse.empty:
-                flags.append((
-                    "HIGH",
-                    f"Policy collapse: empirical action entropy dropped from "
-                    f"{peak_ent:.2f} (peak) to {collapse.iloc[0]['entropy']:.2f} "
-                    f"at bin ep~{int(collapse.iloc[0]['bin'])}.",
-                    "entropy_coef: 0.01 -> 0.03; add entropy annealing",
-                ))
+                flags.append(
+                    (
+                        "HIGH",
+                        f"Policy collapse: empirical action entropy dropped from "
+                        f"{peak_ent:.2f} (peak) to {collapse.iloc[0]['entropy']:.2f} "
+                        f"at bin ep~{int(collapse.iloc[0]['bin'])}.",
+                        "entropy_coef: 0.01 -> 0.03; add entropy annealing",
+                    )
+                )
 
         # Exploration never commits
         if not entropy.empty:
             tail = entropy.tail(max(1, len(entropy) // 4))
             if (tail["entropy"] > 1.0).all() and len(ep) > 500:
-                flags.append((
-                    "MED",
-                    f"Exploration never commits: entropy stays > 1.0 through "
-                    f"end of run (tail mean {tail['entropy'].mean():.2f}).",
-                    "entropy_coef: 0.01 -> 0.003; or inspect reward shaping",
-                ))
+                flags.append(
+                    (
+                        "MED",
+                        f"Exploration never commits: entropy stays > 1.0 through "
+                        f"end of run (tail mean {tail['entropy'].mean():.2f}).",
+                        "entropy_coef: 0.01 -> 0.003; or inspect reward shaping",
+                    )
+                )
 
         # No-op spam
         if not mix.empty:
             noop = mix[mix["action"] == self.noop_action_id].groupby("bin")["prob"].mean()
             late_noop = noop.tail(max(1, len(noop) // 4)).mean() if not noop.empty else None
             if late_noop is not None and late_noop > 0.5:
-                flags.append((
-                    "MED",
-                    f"{self.action_labels[self.noop_action_id].title()} dominates: "
-                    f"{late_noop:.1%} of late-training steps "
-                    f"are {self.action_labels[self.noop_action_id]}.",
-                    "add step-level penalty; verify reward function",
-                ))
+                flags.append(
+                    (
+                        "MED",
+                        f"{self.action_labels[self.noop_action_id].title()} dominates: "
+                        f"{late_noop:.1%} of late-training steps "
+                        f"are {self.action_labels[self.noop_action_id]}.",
+                        "add step-level penalty; verify reward function",
+                    )
+                )
 
         # Plateau with variance blow-up
         if plateau_ep is not None:
@@ -783,32 +943,31 @@ class TrainingAnalyzer:
                 early_std = post.head(100).mean()
                 late_std = post.tail(100).mean()
                 if late_std > 2.0 * max(early_std, 1.0):
-                    flags.append((
-                        "HIGH",
-                        f"Plateau-with-variance: reward std grew from "
-                        f"{early_std:.1f} to {late_std:.1f} after plateau "
-                        f"(ep {plateau_ep}).",
-                        "epochs: 20 -> 8; update_frequency: 10 -> 20",
-                    ))
+                    flags.append(
+                        (
+                            "HIGH",
+                            f"Plateau-with-variance: reward std grew from "
+                            f"{early_std:.1f} to {late_std:.1f} after plateau "
+                            f"(ep {plateau_ep}).",
+                            "epochs: 20 -> 8; update_frequency: 10 -> 20",
+                        )
+                    )
 
         # Catastrophic-forgetting-like action shifts. Suppressed when bins
         # collapse to single episodes (max_ep < 2*num_bins) — L1 between
         # per-episode action histograms is noise, not drift.
         ep_count = len(ep)
         bins_are_meaningful = ep_count >= 2 * num_bins
-        if (
-            not shift.empty
-            and shift.max() > 0.3
-            and bins_are_meaningful
-            and ep_count >= 500
-        ):
+        if not shift.empty and shift.max() > 0.3 and bins_are_meaningful and ep_count >= 500:
             big = shift[shift > 0.3]
-            flags.append((
-                "MED",
-                f"Sharp action-mix shift (L1 > 0.3) at bin(s) "
-                f"{list(big.index[:3])} — possible catastrophic forgetting.",
-                "clip_eps: 0.18 -> 0.10; lower lr",
-            ))
+            flags.append(
+                (
+                    "MED",
+                    f"Sharp action-mix shift (L1 > 0.3) at bin(s) "
+                    f"{list(big.index[:3])} — possible catastrophic forgetting.",
+                    "clip_eps: 0.18 -> 0.10; lower lr",
+                )
+            )
 
         return {
             "plateau_episode": plateau_ep,
@@ -824,7 +983,11 @@ class TrainingAnalyzer:
             "action_semantics": self.action_semantics,
             "action_labels": self.action_labels.copy(),
             "noop_action_id": self.noop_action_id,
-            "config": {"window": window, "num_bins": num_bins, "win_threshold": win_threshold},
+            "config": {
+                "window": window,
+                "num_bins": num_bins,
+                "win_threshold": win_threshold,
+            },
         }
 
     def write_report(self, diagnosis: dict, path: str):
@@ -843,7 +1006,9 @@ class TrainingAnalyzer:
         lines.append(f"  max total reward:      {s['max_total_reward']:.2f}")
         lines.append(f"  reward std (full run): {s['reward_std']:.2f}")
         lines.append(f"  final 100-ep avg:      {s['final_100_avg_reward']:.2f}")
-        lines.append(f"  action semantics:      {diagnosis.get('action_semantics', self.action_semantics)}")
+        lines.append(
+            f"  action semantics:      {diagnosis.get('action_semantics', self.action_semantics)}"
+        )
         action_labels = diagnosis.get("action_labels", self.action_labels)
         lines.append(
             "  action labels:         "
@@ -854,9 +1019,7 @@ class TrainingAnalyzer:
         lines.append("")
 
         plateau = diagnosis["plateau_episode"]
-        lines.append(
-            f"Plateau detection: {'ep ' + str(plateau) if plateau else 'none detected'}"
-        )
+        lines.append(f"Plateau detection: {'ep ' + str(plateau) if plateau else 'none detected'}")
         if diagnosis["late_cov"] is not None:
             lines.append(f"Late-stage CoV (last 200 eps): {diagnosis['late_cov']:.3f}")
         lines.append("")
@@ -875,24 +1038,12 @@ class TrainingAnalyzer:
         lines.append("-" * 70)
         lines.append("Interpretation Notes:")
         lines.append("-" * 70)
-        lines.append(
-            "  1. Current code has already fixed two older structural suspects:"
-        )
-        lines.append(
-            "     - state-replay PPO training now uses stored SNN state"
-        )
-        lines.append(
-            "     - entropy bonus is normalized per head instead of favoring move samples"
-        )
-        lines.append(
-            "  2. If you are analyzing a run produced before those fixes landed,"
-        )
-        lines.append(
-            "     older collapse patterns may reflect historical bugs rather than the"
-        )
-        lines.append(
-            "     current trainer."
-        )
+        lines.append("  1. Current code has already fixed two older structural suspects:")
+        lines.append("     - state-replay PPO training now uses stored SNN state")
+        lines.append("     - entropy bonus is normalized per head instead of favoring move samples")
+        lines.append("  2. If you are analyzing a run produced before those fixes landed,")
+        lines.append("     older collapse patterns may reflect historical bugs rather than the")
+        lines.append("     current trainer.")
         lines.append("")
 
         updates = diagnosis.get("updates", pd.DataFrame())
@@ -902,10 +1053,10 @@ class TrainingAnalyzer:
         lines.append("-" * 70)
         if updates is None or updates.empty:
             lines.append("  ppo_updates table empty - using empirical proxies.")
-            lines.append("  - True policy entropy / KL / clip-fraction / value-loss"
-                         " not logged in this run.")
-            lines.append("  - Action entropy below is an EMPIRICAL proxy from"
-                         " the 3-way action id.")
+            lines.append(
+                "  - True policy entropy / KL / clip-fraction / value-loss not logged in this run."
+            )
+            lines.append("  - Action entropy below is an EMPIRICAL proxy from the 3-way action id.")
         else:
             tail = updates.tail(max(1, len(updates) // 4))
             lines.append(f"  ppo_updates: {len(updates)} rows logged.")
@@ -929,21 +1080,21 @@ class TrainingAnalyzer:
                 ("cuda_peak_allocated_gib", "cuda peak GiB", ".2f"),
             ]:
                 if column in tail.columns and tail[column].notna().any():
-                    lines.append(
-                        f"    {label:20s}= {tail[column].mean():{fmt}}"
-                    )
-            finite_grad_norms = [
-                float(value)
-                for value in tail["grad_norm"].dropna()
-                if math.isfinite(float(value))
-            ] if "grad_norm" in tail.columns else []
+                    lines.append(f"    {label:20s}= {tail[column].mean():{fmt}}")
+            finite_grad_norms = (
+                [
+                    float(value)
+                    for value in tail["grad_norm"].dropna()
+                    if math.isfinite(float(value))
+                ]
+                if "grad_norm" in tail.columns
+                else []
+            )
             if finite_grad_norms:
                 lines.append(f"    {'grad_norm (finite)':20s}= {np.mean(finite_grad_norms):.3f}")
             if "grad_norm" in tail.columns:
                 inf_grad_updates = sum(
-                    1
-                    for value in tail["grad_norm"].dropna()
-                    if not math.isfinite(float(value))
+                    1 for value in tail["grad_norm"].dropna() if not math.isfinite(float(value))
                 )
                 lines.append(f"    {'grad_norm inf cnt':20s}= {inf_grad_updates}")
             if "lr" in tail.columns and tail["lr"].notna().any():
@@ -965,13 +1116,9 @@ class TrainingAnalyzer:
                     f"    {'entity_mask_util':20s}= {tail['entity_mask_utilization'].mean():.3f}"
                 )
             if "entity_count_p50" in tail.columns:
-                lines.append(
-                    f"    {'entity_count_p50':20s}= {tail['entity_count_p50'].mean():.2f}"
-                )
+                lines.append(f"    {'entity_count_p50':20s}= {tail['entity_count_p50'].mean():.2f}")
             if "entity_count_p99" in tail.columns:
-                lines.append(
-                    f"    {'entity_count_p99':20s}= {tail['entity_count_p99'].mean():.2f}"
-                )
+                lines.append(f"    {'entity_count_p99':20s}= {tail['entity_count_p99'].mean():.2f}")
             if "selection_mask_utilization" in tail.columns:
                 lines.append(
                     f"    {'selection_mask_util':20s}= {tail['selection_mask_utilization'].mean():.3f}"
@@ -1004,8 +1151,8 @@ class TrainingAnalyzer:
         self,
         window: int = 100,
         num_bins: int = 50,
-        plateau_ep: Optional[int] = None,
-        save_path: Optional[str] = None,
+        plateau_ep: int | None = None,
+        save_path: str | None = None,
     ):
         ep = self.get_episode_metrics()
         stats = self.rolling_reward_stats(window=window)
@@ -1017,33 +1164,56 @@ class TrainingAnalyzer:
 
         # 1. Reward + rolling mean + std band
         ax = axes[0]
-        ax.plot(ep["episode_id"], ep["total_reward"], color="tab:blue",
-                alpha=0.25, label="raw reward")
-        ax.plot(stats["episode_id"], stats["mean"], color="tab:red",
-                label=f"rolling mean (w={window})")
+        ax.plot(
+            ep["episode_id"],
+            ep["total_reward"],
+            color="tab:blue",
+            alpha=0.25,
+            label="raw reward",
+        )
+        ax.plot(
+            stats["episode_id"],
+            stats["mean"],
+            color="tab:red",
+            label=f"rolling mean (w={window})",
+        )
         ax.fill_between(
             stats["episode_id"],
             stats["mean"] - stats["std"],
             stats["mean"] + stats["std"],
-            color="tab:red", alpha=0.15, label="+/- 1 std",
+            color="tab:red",
+            alpha=0.15,
+            label="+/- 1 std",
         )
         if plateau_ep is not None:
-            ax.axvline(plateau_ep, ls="--", color="k", alpha=0.5,
-                       label=f"plateau (ep {plateau_ep})")
+            ax.axvline(
+                plateau_ep,
+                ls="--",
+                color="k",
+                alpha=0.5,
+                label=f"plateau (ep {plateau_ep})",
+            )
         ax.set_title("Total reward per episode")
-        ax.set_xlabel("episode"); ax.set_ylabel("reward")
-        ax.legend(); ax.grid(True)
+        ax.set_xlabel("episode")
+        ax.set_ylabel("reward")
+        ax.legend()
+        ax.grid(True)
 
         # 2. Episode length
         ax = axes[1]
         ep_rolling = ep["steps"].rolling(window, min_periods=1).mean()
-        ax.plot(ep["episode_id"], ep["steps"], color="tab:green", alpha=0.25,
-                label="raw")
-        ax.plot(ep["episode_id"], ep_rolling, color="tab:red",
-                label=f"rolling mean (w={window})")
+        ax.plot(ep["episode_id"], ep["steps"], color="tab:green", alpha=0.25, label="raw")
+        ax.plot(
+            ep["episode_id"],
+            ep_rolling,
+            color="tab:red",
+            label=f"rolling mean (w={window})",
+        )
         ax.set_title("Episode length over time")
-        ax.set_xlabel("episode"); ax.set_ylabel("steps")
-        ax.legend(); ax.grid(True)
+        ax.set_xlabel("episode")
+        ax.set_ylabel("steps")
+        ax.legend()
+        ax.grid(True)
 
         # 3. Oscillation score
         ax = axes[2]
@@ -1052,14 +1222,21 @@ class TrainingAnalyzer:
         if plateau_ep is not None:
             ax.axvline(plateau_ep, ls="--", color="k", alpha=0.5)
         ax.set_title("Rolling oscillation score (coefficient of variation, w=50)")
-        ax.set_xlabel("episode"); ax.set_ylabel("CoV")
-        ax.legend(); ax.grid(True)
+        ax.set_xlabel("episode")
+        ax.set_ylabel("CoV")
+        ax.legend()
+        ax.grid(True)
 
         # 4. Empirical action entropy
         ax = axes[3]
         if not entropy.empty:
-            ax.plot(entropy["bin"], entropy["entropy"], color="tab:orange",
-                    marker="o", markersize=3)
+            ax.plot(
+                entropy["bin"],
+                entropy["entropy"],
+                color="tab:orange",
+                marker="o",
+                markersize=3,
+            )
         ax.axhline(
             np.log(len(self.action_ids)),
             ls=":",
@@ -1071,8 +1248,10 @@ class TrainingAnalyzer:
         if plateau_ep is not None:
             ax.axvline(plateau_ep, ls="--", color="k", alpha=0.5)
         ax.set_title("Empirical action entropy over time (proxy for policy entropy)")
-        ax.set_xlabel("episode (binned)"); ax.set_ylabel("H(action)")
-        ax.legend(); ax.grid(True)
+        ax.set_xlabel("episode (binned)")
+        ax.set_ylabel("H(action)")
+        ax.legend()
+        ax.grid(True)
 
         # 5. Action mix stacked area
         ax = axes[4]
@@ -1086,7 +1265,8 @@ class TrainingAnalyzer:
                 alpha=0.7,
             )
         ax.set_title("Action mix over time")
-        ax.set_xlabel("episode (binned)"); ax.set_ylabel("share")
+        ax.set_xlabel("episode (binned)")
+        ax.set_ylabel("share")
         ax.set_ylim(0, 1)
         if not mix.empty:
             ax.legend(loc="upper right")
@@ -1100,12 +1280,16 @@ class TrainingAnalyzer:
             plt.show()
         plt.close(fig)
 
-    def plot_reward_components(self, save_path: Optional[str] = None):
+    def plot_reward_components(self, save_path: str | None = None):
         try:
             rc = self.get_reward_components()
             component_cols = [
-                "health_reward", "engagement_reward", "positioning_reward",
-                "score_reward", "bonus_reward", "end_of_episode_reward",
+                "health_reward",
+                "engagement_reward",
+                "positioning_reward",
+                "score_reward",
+                "bonus_reward",
+                "end_of_episode_reward",
             ]
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 12))
 
@@ -1117,7 +1301,8 @@ class TrainingAnalyzer:
                     tick_labels=component_cols,
                 )
             ax1.set_title("Distribution of reward components")
-            ax1.set_xlabel("component"); ax1.set_ylabel("value")
+            ax1.set_xlabel("component")
+            ax1.set_ylabel("value")
             for label in ax1.get_xticklabels():
                 label.set_rotation(30)
 
@@ -1126,7 +1311,8 @@ class TrainingAnalyzer:
                 rolling = per_ep.rolling(window=50, min_periods=1).mean()
                 ax2.plot(rolling.index, rolling.values, label=col)
             ax2.set_title("Reward components evolution (rolling mean, w=50)")
-            ax2.set_xlabel("episode"); ax2.set_ylabel("avg value")
+            ax2.set_xlabel("episode")
+            ax2.set_ylabel("avg value")
             ax2.legend(bbox_to_anchor=(1.02, 1), loc="upper left")
             ax2.grid(True)
 
@@ -1144,15 +1330,17 @@ class TrainingAnalyzer:
         self,
         threshold: float,
         window: int = 100,
-        save_path: Optional[str] = None,
+        save_path: str | None = None,
     ):
         wr = self.win_rate(threshold, window=window)
         ep = self.get_episode_metrics()
         fig, ax = plt.subplots(figsize=(12, 5))
         ax.plot(ep["episode_id"], wr.values, color="tab:cyan")
         ax.set_title(f"Win rate (reward >= {threshold}, rolling w={window})")
-        ax.set_xlabel("episode"); ax.set_ylabel("fraction above threshold")
-        ax.set_ylim(0, 1); ax.grid(True)
+        ax.set_xlabel("episode")
+        ax.set_ylabel("fraction above threshold")
+        ax.set_ylim(0, 1)
+        ax.grid(True)
         plt.tight_layout()
         if save_path:
             plt.savefig(save_path, dpi=110)
@@ -1166,7 +1354,7 @@ class TrainingAnalyzer:
         out_dir: str,
         window: int = 100,
         num_bins: int = 50,
-        plateau_ep: Optional[int] = None,
+        plateau_ep: int | None = None,
     ) -> list[str]:
         """Export a small bundle of high-signal static panels intended to
         be easy to share back into text-only workflows.
@@ -1201,18 +1389,25 @@ class TrainingAnalyzer:
         # 1. Reward trajectory
         fig, ax = plt.subplots(figsize=(11, 4.5))
         ax.plot(
-            ep["episode_id"], ep["total_reward"],
-            color="tab:blue", alpha=0.25, label="raw reward",
+            ep["episode_id"],
+            ep["total_reward"],
+            color="tab:blue",
+            alpha=0.25,
+            label="raw reward",
         )
         ax.plot(
-            stats["episode_id"], stats["mean"],
-            color="tab:red", label=f"rolling mean (w={window})",
+            stats["episode_id"],
+            stats["mean"],
+            color="tab:red",
+            label=f"rolling mean (w={window})",
         )
         ax.fill_between(
             stats["episode_id"],
             stats["mean"] - stats["std"],
             stats["mean"] + stats["std"],
-            color="tab:red", alpha=0.15, label="+/- 1 std",
+            color="tab:red",
+            alpha=0.15,
+            label="+/- 1 std",
         )
         if plateau_ep is not None:
             ax.axvline(
@@ -1234,8 +1429,10 @@ class TrainingAnalyzer:
         ep_rolling = ep["steps"].rolling(window, min_periods=1).mean()
         ax.plot(ep["episode_id"], ep["steps"], color="tab:green", alpha=0.25, label="raw")
         ax.plot(
-            ep["episode_id"], ep_rolling,
-            color="tab:red", label=f"rolling mean (w={window})",
+            ep["episode_id"],
+            ep_rolling,
+            color="tab:red",
+            label=f"rolling mean (w={window})",
         )
         ax.set_title("Episode length")
         ax.set_xlabel("episode")
@@ -1246,12 +1443,15 @@ class TrainingAnalyzer:
 
         # 3. Reward efficiency
         fig, ax = plt.subplots(figsize=(11, 4.5))
-        efficiency = (
-            ep["total_reward"] / ep["steps"].clip(lower=1)
-        ).replace([np.inf, -np.inf], np.nan)
+        efficiency = (ep["total_reward"] / ep["steps"].clip(lower=1)).replace(
+            [np.inf, -np.inf], np.nan
+        )
         ax.plot(
-            ep["episode_id"], efficiency,
-            color="tab:purple", alpha=0.25, label="reward / step",
+            ep["episode_id"],
+            efficiency,
+            color="tab:purple",
+            alpha=0.25,
+            label="reward / step",
         )
         ax.plot(
             ep["episode_id"],
@@ -1283,8 +1483,11 @@ class TrainingAnalyzer:
         if not entropy.empty:
             fig, ax = plt.subplots(figsize=(11, 4.5))
             ax.plot(
-                entropy["bin"], entropy["entropy"],
-                color="tab:orange", marker="o", markersize=3,
+                entropy["bin"],
+                entropy["entropy"],
+                color="tab:orange",
+                marker="o",
+                markersize=3,
             )
             ax.axhline(
                 np.log(len(self.action_ids)),
@@ -1325,7 +1528,7 @@ class TrainingAnalyzer:
         # 7. Early / mid / late action mix
         if not phase_mix.empty:
             fig, axes = plt.subplots(3, 1, figsize=(11, 11), sharex=True)
-            for ax, phase in zip(axes, PHASE_LABELS):
+            for ax, phase in zip(axes, PHASE_LABELS, strict=False):
                 phase_df = phase_mix[phase_mix["phase"] == phase]
                 if phase_df.empty:
                     continue
@@ -1348,23 +1551,23 @@ class TrainingAnalyzer:
         # 8. Spatial target heatmap
         spatial_steps = self._spatial_target_steps(steps)
         if not spatial_steps.empty:
-                fig, ax = plt.subplots(figsize=(7, 6))
-                heatmap, xedges, yedges = np.histogram2d(
-                    spatial_steps["move_x"],
-                    spatial_steps["move_y"],
-                    bins=32,
-                )
-                image = ax.imshow(
-                    heatmap.T,
-                    origin="lower",
-                    aspect="auto",
-                    cmap="viridis",
-                )
-                ax.set_title("Spatial target heatmap")
-                ax.set_xlabel("move_x bin")
-                ax.set_ylabel("move_y bin")
-                fig.colorbar(image, ax=ax, label="count")
-                _save(fig, "08_move_target_heatmap.png")
+            fig, ax = plt.subplots(figsize=(7, 6))
+            heatmap, xedges, yedges = np.histogram2d(
+                spatial_steps["move_x"],
+                spatial_steps["move_y"],
+                bins=32,
+            )
+            image = ax.imshow(
+                heatmap.T,
+                origin="lower",
+                aspect="auto",
+                cmap="viridis",
+            )
+            ax.set_title("Spatial target heatmap")
+            ax.set_xlabel("move_x bin")
+            ax.set_ylabel("move_y bin")
+            fig.colorbar(image, ax=ax, label="count")
+            _save(fig, "08_move_target_heatmap.png")
 
         # 9. TBPTT / speed
         speed_fields = {
@@ -1399,9 +1602,8 @@ class TrainingAnalyzer:
                 "transitions_in_update",
                 "update_wall_seconds",
             }.issubset(set(updates.columns)):
-                throughput = (
-                    updates["transitions_in_update"] /
-                    updates["update_wall_seconds"].clip(lower=1.0e-6)
+                throughput = updates["transitions_in_update"] / updates["update_wall_seconds"].clip(
+                    lower=1.0e-6
                 )
                 axes[1, 1].plot(x, throughput, color="tab:red")
                 axes[1, 1].set_title("Transitions per second")
@@ -1510,10 +1712,11 @@ class TrainingAnalyzer:
             _save(fig, "10_eval_split.png")
 
         # 13. Eval gap
-        if (
-            not evals.empty
-            and {"episode_index", "mean_reward", "deterministic"}.issubset(set(evals.columns))
-        ):
+        if not evals.empty and {
+            "episode_index",
+            "mean_reward",
+            "deterministic",
+        }.issubset(set(evals.columns)):
             pivot = evals.copy()
             pivot["mode"] = np.where(
                 pivot["deterministic"].fillna(0).astype(int) == 1,
@@ -1564,8 +1767,7 @@ class TrainingAnalyzer:
             f"action_semantics={self.action_semantics}",
             "action_labels="
             + ",".join(
-                f"{action_id}:{self.action_labels[action_id]}"
-                for action_id in self.action_ids
+                f"{action_id}:{self.action_labels[action_id]}" for action_id in self.action_ids
             ),
             "",
             "files:",
@@ -1580,8 +1782,7 @@ class TrainingAnalyzer:
 
     def export_metrics(self, path: str):
         summary = self.calculate_summary_statistics()
-        pd.DataFrame(list(summary.items()),
-                     columns=["metric", "value"]).to_csv(path, index=False)
+        pd.DataFrame(list(summary.items()), columns=["metric", "value"]).to_csv(path, index=False)
         logger.info(f"Summary metrics exported to {path}")
 
 
@@ -1593,13 +1794,12 @@ def _cfg_defaults():
     from a pure-analysis context where the training deps aren't installed."""
     try:
         from Utility.config import cfg
+
         return {
             "run_name": getattr(cfg.environment, "run_name", "") or "",
             "models_dir": getattr(cfg.environment, "models_dir", "models"),
-            "analysis_dir": getattr(cfg.environment, "analysis_dir",
-                                    "analysis_results"),
-            "db_filename": getattr(cfg.environment, "db_path",
-                                   "training_logs.db"),
+            "analysis_dir": getattr(cfg.environment, "analysis_dir", "analysis_results"),
+            "db_filename": getattr(cfg.environment, "db_path", "training_logs.db"),
         }
     except Exception:
         return {
@@ -1610,14 +1810,12 @@ def _cfg_defaults():
         }
 
 
-def _latest_run_name(models_dir: str, db_filename: str) -> Optional[str]:
+def _latest_run_name(models_dir: str, db_filename: str) -> str | None:
     root = Path(models_dir)
     if not root.exists():
         return None
     candidates = [
-        child
-        for child in root.iterdir()
-        if child.is_dir() and (child / db_filename).exists()
+        child for child in root.iterdir() if child.is_dir() and (child / db_filename).exists()
     ]
     if not candidates:
         return None
@@ -1629,13 +1827,10 @@ def _infer_run_name_from_db_path(
     db_path: str,
     models_dir: str,
     db_filename: str,
-) -> Optional[str]:
+) -> str | None:
     path = Path(db_path)
     try:
-        if (
-            path.name == db_filename
-            and path.parent.parent.name == Path(models_dir).name
-        ):
+        if path.name == db_filename and path.parent.parent.name == Path(models_dir).name:
             return path.parent.name
     except IndexError:
         return None
@@ -1645,30 +1840,45 @@ def _infer_run_name_from_db_path(
 def main():
     defaults = _cfg_defaults()
     parser = argparse.ArgumentParser(description="SNN-PPO training analyzer.")
-    parser.add_argument("--run-name", default=defaults["run_name"] or None,
-                        help="Per-run subfolder name under "
-                             "{models_dir}/ and {analysis_dir}/. If omitted "
-                             "and config has no run_name, resolves to the "
-                             "latest local run when possible.")
-    parser.add_argument("--db", default=None,
-                        help="Explicit path to training_logs.db. "
-                             "Overrides the per-run join.")
-    parser.add_argument("--out", default=None,
-                        help="Explicit output directory. "
-                             "Overrides the per-run join.")
-    parser.add_argument("--window", type=int, default=100,
-                        help="Rolling window in episodes")
-    parser.add_argument("--num-bins", type=int, default=50,
-                        help="Number of episode bins for action/entropy plots")
-    parser.add_argument("--win-threshold", type=float, default=25.0,
-                        help="Reward threshold for win-rate proxy")
-    parser.add_argument("--report", action="store_true",
-                        help="Write instability_report.txt in --out")
+    parser.add_argument(
+        "--run-name",
+        default=defaults["run_name"] or None,
+        help="Per-run subfolder name under "
+        "{models_dir}/ and {analysis_dir}/. If omitted "
+        "and config has no run_name, resolves to the "
+        "latest local run when possible.",
+    )
+    parser.add_argument(
+        "--db",
+        default=None,
+        help="Explicit path to training_logs.db. Overrides the per-run join.",
+    )
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Explicit output directory. Overrides the per-run join.",
+    )
+    parser.add_argument("--window", type=int, default=100, help="Rolling window in episodes")
+    parser.add_argument(
+        "--num-bins",
+        type=int,
+        default=50,
+        help="Number of episode bins for action/entropy plots",
+    )
+    parser.add_argument(
+        "--win-threshold",
+        type=float,
+        default=25.0,
+        help="Reward threshold for win-rate proxy",
+    )
+    parser.add_argument(
+        "--report", action="store_true", help="Write instability_report.txt in --out"
+    )
     parser.add_argument(
         "--aismart",
         action="store_true",
         help="Export focused dashboard-style PNG panels into "
-             "<out>/ai_friendly_results/ for easy sharing back into text workflows.",
+        "<out>/ai_friendly_results/ for easy sharing back into text workflows.",
     )
     args = parser.parse_args()
 
@@ -1688,16 +1898,14 @@ def main():
                 defaults["db_filename"],
             )
     elif run_name:
-        db_path = str(Path(defaults["models_dir"]) / run_name
-                      / defaults["db_filename"])
+        db_path = str(Path(defaults["models_dir"]) / run_name / defaults["db_filename"])
     else:
         run_name = _latest_run_name(
             defaults["models_dir"],
             defaults["db_filename"],
         )
         if run_name:
-            db_path = str(Path(defaults["models_dir"]) / run_name
-                          / defaults["db_filename"])
+            db_path = str(Path(defaults["models_dir"]) / run_name / defaults["db_filename"])
         else:
             db_path = defaults["db_filename"]  # flat-layout fallback
 

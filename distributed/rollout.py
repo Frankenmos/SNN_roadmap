@@ -5,6 +5,11 @@ from typing import Any
 
 import torch
 
+from agent_core.policy_protocol import (
+    POLICY_ACTION_LEFT_CLICK,
+    POLICY_ACTION_NO_OP,
+    POLICY_ACTION_RIGHT_CLICK,
+)
 from distributed.protocol import EpisodeSummary, RolloutFragment
 from distributed.sc2_runtime import sc2_create_game_lock
 
@@ -44,6 +49,13 @@ class LocalRolloutWorker:
         self.episode_index = -1
         self.current_obs = None
         self.episode_reward = 0.0
+        self.episode_native_reward = 0.0
+        self.episode_reward_components: dict[str, float] = {}
+        self.episode_action_counts = {
+            "policy_no_op_count": 0,
+            "policy_left_click_count": 0,
+            "policy_right_click_count": 0,
+        }
         self.cumulative_reward = 0.0
         self.step_count = 0
         self.counters = RolloutCounters()
@@ -85,6 +97,7 @@ class LocalRolloutWorker:
             ) = self.agent.step(self.current_obs)
 
             next_obs = self.env.step([action_func])[0]
+            self.episode_native_reward += float(getattr(next_obs, "reward", 0.0))
             env_steps_in_call += 1
             self.counters.env_steps += 1
             self.step_count += 1
@@ -98,24 +111,21 @@ class LocalRolloutWorker:
 
             raw_reward = self.agent.reward_function.calculate_reward(next_obs, None)
             raw_reward = float(
-                raw_reward.item() if isinstance(raw_reward, torch.Tensor) else raw_reward,
+                raw_reward.item()
+                if isinstance(raw_reward, torch.Tensor)
+                else raw_reward,
             )
             scaled_reward = raw_reward * self.reward_scale
+            self.episode_reward += raw_reward
+            self.cumulative_reward += raw_reward
+            self._record_reward_components()
 
             # Bootstrap steps (select_army) return policy_input=None - skip these
             if policy_input is None:
                 self.counters.helper_steps += 1
                 if episode_reset:
                     episode_summaries.append(
-                        EpisodeSummary(
-                            actor_id=self.actor_id,
-                            episode_index=self.episode_index,
-                            total_reward=float(self.episode_reward),
-                            steps=int(self.step_count),
-                            terminated=bool(terminal),
-                            truncated=bool(truncated),
-                            policy_version=policy_version,
-                        ),
+                        self._episode_summary(policy_version, terminal, truncated),
                     )
                     self.counters.episodes_completed += 1
                     self.current_obs = None
@@ -174,20 +184,11 @@ class LocalRolloutWorker:
             else:
                 self.counters.helper_steps += 1
 
-            self.episode_reward += raw_reward
-            self.cumulative_reward += raw_reward
+            self._record_action(action_id)
 
             if episode_reset:
                 episode_summaries.append(
-                    EpisodeSummary(
-                        actor_id=self.actor_id,
-                        episode_index=self.episode_index,
-                        total_reward=float(self.episode_reward),
-                        steps=int(self.step_count),
-                        terminated=bool(terminal),
-                        truncated=bool(truncated),
-                        policy_version=policy_version,
-                    ),
+                    self._episode_summary(policy_version, terminal, truncated),
                 )
                 self.counters.episodes_completed += 1
                 self.current_obs = None
@@ -235,5 +236,56 @@ class LocalRolloutWorker:
         self.agent.reward_function.calculate_reward(self.current_obs, None)
         self.episode_index += 1
         self.episode_reward = 0.0
+        self.episode_native_reward = 0.0
+        self.episode_reward_components = {}
+        self.episode_action_counts = {
+            "policy_no_op_count": 0,
+            "policy_left_click_count": 0,
+            "policy_right_click_count": 0,
+        }
         self.cumulative_reward = 0.0
         self.step_count = 0
+
+    def _record_action(self, action_id: int) -> None:
+        key = {
+            POLICY_ACTION_NO_OP: "policy_no_op_count",
+            POLICY_ACTION_LEFT_CLICK: "policy_left_click_count",
+            POLICY_ACTION_RIGHT_CLICK: "policy_right_click_count",
+        }.get(int(action_id))
+        if key is not None:
+            self.episode_action_counts[key] += 1
+
+    def _record_reward_components(self) -> None:
+        getter = getattr(self.agent.reward_function, "get_last_reward_components", None)
+        components = getter() if callable(getter) else None
+        if not components:
+            return
+        for name, value in components.items():
+            if isinstance(value, torch.Tensor):
+                value = value.item()
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            self.episode_reward_components[name] = (
+                self.episode_reward_components.get(name, 0.0) + numeric
+            )
+
+    def _episode_summary(
+        self,
+        policy_version: int,
+        terminal: bool,
+        truncated: bool,
+    ) -> EpisodeSummary:
+        return EpisodeSummary(
+            actor_id=self.actor_id,
+            episode_index=self.episode_index,
+            total_reward=float(self.episode_reward),
+            native_reward=float(self.episode_native_reward),
+            steps=int(self.step_count),
+            terminated=bool(terminal),
+            truncated=bool(truncated),
+            policy_version=policy_version,
+            reward_components=dict(self.episode_reward_components),
+            action_counts=dict(self.episode_action_counts),
+        )

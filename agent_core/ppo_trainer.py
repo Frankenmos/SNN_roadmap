@@ -1,5 +1,5 @@
-import math
 import inspect
+import math
 import time
 from collections import deque
 from types import SimpleNamespace
@@ -15,7 +15,6 @@ from agent_core.policy_protocol import (
     ACTION_FEEDBACK_MOVED_TOWARD_TARGET_OFFSET,
     ACTION_FEEDBACK_TARGET_NEAR_ENEMY_OFFSET,
     ACTION_REQUIRES_TARGET,
-    ActionSample,
     BRIDGE_ACTION_RIGHT_CLICK,
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
@@ -24,9 +23,10 @@ from agent_core.policy_protocol import (
     POLICY_ACTION_LEFT_CLICK,
     POLICY_ACTION_NO_OP,
     POLICY_ACTION_RIGHT_CLICK,
-    PolicyInputBatch,
     SEMANTIC_AVAILABLE_NO_OP_INDEX,
     SEMANTIC_AVAILABLE_RIGHT_CLICK_INDEX,
+    ActionSample,
+    PolicyInputBatch,
 )
 from distributed.protocol import RolloutFragment
 
@@ -62,9 +62,7 @@ class PPO:
         self.target_kl = target_kl
         self.initial_lr = lr
         self.lr_min = lr_min
-        self.tbptt_window = (
-            None if tbptt_window is None else max(1, int(tbptt_window))
-        )
+        self.tbptt_window = None if tbptt_window is None else max(1, int(tbptt_window))
         self.right_click_curriculum_updates = max(
             0,
             int(right_click_curriculum_updates or 0),
@@ -84,7 +82,9 @@ class PPO:
 
         if total_updates > 0:
             self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=total_updates, eta_min=lr_min,
+                self.optimizer,
+                T_max=total_updates,
+                eta_min=lr_min,
             )
         else:
             self.scheduler = None
@@ -110,16 +110,16 @@ class PPO:
             "clip_epsilon": float(self.clip_epsilon),
             "critic_loss_coef": float(self.critic_loss_coef),
             "entropy_coef": float(self.entropy_coef),
-            "target_kl": (
-                None if self.target_kl is None else float(self.target_kl)
-            ),
+            "target_kl": (None if self.target_kl is None else float(self.target_kl)),
             "lr": float(self.initial_lr),
             "lr_min": float(self.lr_min),
             "scheduler_enabled": bool(self.scheduler is not None),
             "tbptt_window": (
                 None if self.tbptt_window is None else int(self.tbptt_window)
             ),
-            "rollout_cache_spatial_dtype": str(self.rollout_cache_spatial_dtype).replace(
+            "rollout_cache_spatial_dtype": str(
+                self.rollout_cache_spatial_dtype
+            ).replace(
                 "torch.",
                 "",
             ),
@@ -141,8 +141,7 @@ class PPO:
             if value in (torch.float16, torch.float32):
                 return value
             raise ValueError(
-                "rollout_cache_spatial_dtype must be float32 or float16, "
-                f"got {value}",
+                f"rollout_cache_spatial_dtype must be float32 or float16, got {value}",
             )
         normalized = str(value).strip().lower().replace("torch.", "")
         aliases = {
@@ -156,8 +155,7 @@ class PPO:
         }
         if normalized not in aliases:
             raise ValueError(
-                "rollout_cache_spatial_dtype must be float32 or float16, "
-                f"got {value!r}",
+                f"rollout_cache_spatial_dtype must be float32 or float16, got {value!r}",
             )
         return aliases[normalized]
 
@@ -229,8 +227,7 @@ class PPO:
                 "sample_mask",
             )
             total_bytes += sum(
-                cls._tensor_nbytes(getattr(fragment, name))
-                for name in tensor_fields
+                cls._tensor_nbytes(getattr(fragment, name)) for name in tensor_fields
             )
             total_bytes += cls._state_nbytes(fragment.pre_step_snn_state)
             total_bytes += cls._policy_input_nbytes(fragment.tail_next_policy_input)
@@ -445,8 +442,7 @@ class PPO:
             max(1, self.right_click_curriculum_updates),
         )
         return float(
-            self.right_click_curriculum_noop_logit_penalty
-            * max(0.0, 1.0 - progress)
+            self.right_click_curriculum_noop_logit_penalty * max(0.0, 1.0 - progress)
         )
 
     def _apply_right_click_curriculum(
@@ -482,7 +478,9 @@ class PPO:
         action_ids: torch.Tensor,
     ):
         if hasattr(self.policy_net, "build_target_head"):
-            return self.policy_net.build_target_head(latent, spatial_context, action_ids)
+            return self.policy_net.build_target_head(
+                latent, spatial_context, action_ids
+            )
         move_x_logits, move_y_logits = self.policy_net.conditioned_spatial_head(
             latent,
             spatial_context,
@@ -547,9 +545,10 @@ class PPO:
         else:
             x = move_x_dist.sample()
             y = move_y_dist.sample()
-        entropy = (
-            move_x_dist.entropy() / math.log(float(target_head_state["move_x_logits"].size(-1)))
-            + move_y_dist.entropy() / math.log(float(target_head_state["move_y_logits"].size(-1)))
+        entropy = move_x_dist.entropy() / math.log(
+            float(target_head_state["move_x_logits"].size(-1))
+        ) + move_y_dist.entropy() / math.log(
+            float(target_head_state["move_y_logits"].size(-1))
         )
         return SimpleNamespace(
             x=x,
@@ -582,9 +581,10 @@ class PPO:
         move_y_dist = torch.distributions.Categorical(
             logits=target_head_state["move_y_logits"].float(),
         )
-        entropy = (
-            move_x_dist.entropy() / math.log(float(target_head_state["move_x_logits"].size(-1)))
-            + move_y_dist.entropy() / math.log(float(target_head_state["move_y_logits"].size(-1)))
+        entropy = move_x_dist.entropy() / math.log(
+            float(target_head_state["move_x_logits"].size(-1))
+        ) + move_y_dist.entropy() / math.log(
+            float(target_head_state["move_y_logits"].size(-1))
         )
         return SimpleNamespace(
             log_prob=move_x_dist.log_prob(recorded_target["x"].long())
@@ -601,10 +601,13 @@ class PPO:
             observations = observations.with_state(state)
         batch = observations.to(device=self.device, dtype=torch.float32)
 
-        with torch.no_grad(), torch.amp.autocast(
-            "cuda",
-            dtype=self.policy_net.amp_dtype,
-            enabled=self.policy_net.use_amp,
+        with (
+            torch.no_grad(),
+            torch.amp.autocast(
+                "cuda",
+                dtype=self.policy_net.amp_dtype,
+                enabled=self.policy_net.use_amp,
+            ),
         ):
             latent, state_value, next_state, spatial_context = (
                 self._encode_step_tensors(
@@ -654,8 +657,7 @@ class PPO:
                 torch.zeros_like(target_sample.y),
             )
             log_prob = (
-                action_dist.log_prob(action)
-                + is_spatial * target_sample.log_prob
+                action_dist.log_prob(action) + is_spatial * target_sample.log_prob
             )
 
         target_index = (
@@ -707,9 +709,7 @@ class PPO:
         return int(steps)
 
     def pending_learnable_steps(self, *, include_current: bool = True) -> int:
-        steps = sum(
-            fragment.num_learnable_steps for fragment in self.pending_fragments
-        )
+        steps = sum(fragment.num_learnable_steps for fragment in self.pending_fragments)
         if include_current:
             steps += sum(
                 int(float(transition["sample_mask"].item()) > 0.0)
@@ -724,7 +724,9 @@ class PPO:
 
     @staticmethod
     def _stack_states_from_transitions(transitions):
-        states = [transition["observation_batch"].state_in for transition in transitions]
+        states = [
+            transition["observation_batch"].state_in for transition in transitions
+        ]
         if all(state is None for state in states):
             return None
         if any(state is None for state in states):
@@ -985,9 +987,7 @@ class PPO:
         values = fragment.values.to(self.device).float().view(-1)
         dones = fragment.dones.to(self.device).float().view(-1)
         truncateds = fragment.truncateds.to(self.device).float().view(-1)
-        episode_reset_mask = (
-            fragment.episode_reset_mask.to(self.device).bool().view(-1)
-        )
+        episode_reset_mask = fragment.episode_reset_mask.to(self.device).bool().view(-1)
         sample_masks = fragment.sample_mask.to(self.device).float().view(-1)
         self._record_elapsed(
             timings,
@@ -1064,9 +1064,8 @@ class PPO:
         gae_started = time.perf_counter()
         for item in fragment_tensors:
             if int(item["dones"].numel()) > 1:
-                unsupported_resets = (
-                    item["episode_reset_mask"][:-1]
-                    & (item["dones"][:-1] <= 0.5)
+                unsupported_resets = item["episode_reset_mask"][:-1] & (
+                    item["dones"][:-1] <= 0.5
                 )
                 if bool(unsupported_resets.any().item()):
                     raise ValueError(
@@ -1087,8 +1086,12 @@ class PPO:
             raw_advantages_by_fragment.append(raw_advantages)
             returns_by_fragment.append((raw_advantages + item["values"]).detach())
 
+        sil_admission_stats = {}
         if self.sil_enabled:
-            self._admit_to_sil_buffer(fragments, returns_by_fragment)
+            sil_admission_stats = self._admit_to_sil_buffer(
+                fragments,
+                returns_by_fragment,
+            )
 
         all_raw_advantages = torch.cat(raw_advantages_by_fragment, dim=0)
         all_sample_masks = torch.cat(
@@ -1097,9 +1100,9 @@ class PPO:
         )
         if bool((all_sample_masks > 0.0).any().item()):
             valid_advantages = all_raw_advantages[all_sample_masks > 0.0]
-            normalized_advantages = (
-                all_raw_advantages - valid_advantages.mean()
-            ) / (valid_advantages.std(unbiased=False) + 1e-8)
+            normalized_advantages = (all_raw_advantages - valid_advantages.mean()) / (
+                valid_advantages.std(unbiased=False) + 1e-8
+            )
         else:
             normalized_advantages = torch.zeros_like(
                 all_raw_advantages,
@@ -1115,7 +1118,7 @@ class PPO:
         chunks = []
         cursor = 0
         chunk_build_started = time.perf_counter()
-        for item, returns in zip(fragment_tensors, returns_by_fragment):
+        for item, returns in zip(fragment_tensors, returns_by_fragment, strict=False):
             length = int(item["actions"].size(0))
             advantages = normalized_advantages[cursor : cursor + length]
             cursor += length
@@ -1147,11 +1150,27 @@ class PPO:
 
         rollout_size = int(sum(fragment.num_steps for fragment in fragments))
         losses = []
-        acc_policy = []
-        acc_value = []
-        acc_entropy = []
-        acc_kl = []
-        acc_clip_frac = []
+        weighted_metric_sums = {
+            "policy": 0.0,
+            "value": 0.0,
+            "entropy": 0.0,
+            "kl": 0.0,
+            "clip_frac": 0.0,
+        }
+        weighted_metric_count = 0.0
+        update_start_stats = {
+            "update_start_scope": "first_tbptt_group_pre_optimizer",
+            "update_start_sample_count": 0,
+            "kl_update_start": 0.0,
+            "clip_frac_update_start": 0.0,
+            "log_ratio_update_start_mean": 0.0,
+            "log_ratio_update_start_std": 0.0,
+            "log_ratio_update_start_p50": 0.0,
+            "log_ratio_update_start_p90": 0.0,
+            "log_ratio_update_start_p99": 0.0,
+            "log_ratio_update_start_max_abs": 0.0,
+        }
+        update_start_recorded = False
         acc_grad_norm = []
         acc_grad_component_norms: dict[str, list[float]] = {
             "trunk": [],
@@ -1174,7 +1193,8 @@ class PPO:
 
         epoch_loop_started = time.perf_counter()
         for _ in range(epochs):
-            epoch_kls = []
+            epoch_kl_num = 0.0
+            epoch_kl_count = 0.0
             for chunk_group in self._iter_chunk_groups(chunks, batch_size):
                 policy_num = torch.zeros((), device=self.device)
                 policy_den = torch.zeros((), device=self.device)
@@ -1270,9 +1290,7 @@ class PPO:
                     )
 
                 approx_kl = (
-                    0.0
-                    if diag_policy_count <= 0.0
-                    else diag_kl_num / diag_policy_count
+                    0.0 if diag_policy_count <= 0.0 else diag_kl_num / diag_policy_count
                 )
                 clip_frac = (
                     0.0
@@ -1285,13 +1303,46 @@ class PPO:
                     else diag_entropy_num / diag_policy_count
                 )
 
+                if not update_start_recorded:
+                    update_start_stats = {
+                        "update_start_scope": "first_tbptt_group_pre_optimizer",
+                        "update_start_sample_count": int(diag_policy_count),
+                        "kl_update_start": float(approx_kl),
+                        "clip_frac_update_start": float(clip_frac),
+                        "log_ratio_update_start_mean": float(
+                            diag["log_ratio_mean"].item()
+                        ),
+                        "log_ratio_update_start_std": float(
+                            diag["log_ratio_std"].item()
+                        ),
+                        "log_ratio_update_start_p50": float(
+                            diag["log_ratio_p50"].item()
+                        ),
+                        "log_ratio_update_start_p90": float(
+                            diag["log_ratio_p90"].item()
+                        ),
+                        "log_ratio_update_start_p99": float(
+                            diag["log_ratio_p99"].item()
+                        ),
+                        "log_ratio_update_start_max_abs": float(
+                            diag["log_ratio_max_abs"].item()
+                        ),
+                    }
+                    update_start_recorded = True
+
                 losses.append(float(loss.item()))
-                acc_policy.append(float(policy_loss.item()))
-                acc_value.append(float(value_loss.item()))
-                acc_entropy.append(float(entropy_mean))
-                acc_kl.append(float(approx_kl))
-                acc_clip_frac.append(float(clip_frac))
-                epoch_kls.append(float(approx_kl))
+                weighted_metric_count = self._accumulate_sample_weighted_metrics(
+                    weighted_metric_sums,
+                    weighted_metric_count,
+                    sample_count=diag_policy_count,
+                    policy=float(policy_loss.item()),
+                    value=float(value_loss.item()),
+                    entropy=float(entropy_mean),
+                    kl=float(approx_kl),
+                    clip_frac=float(clip_frac),
+                )
+                epoch_kl_num += float(approx_kl) * diag_policy_count
+                epoch_kl_count += diag_policy_count
 
                 backward_started = time.perf_counter()
                 self.optimizer.zero_grad(set_to_none=True)
@@ -1328,8 +1379,8 @@ class PPO:
                 )
 
             epochs_ran += 1
-            if self.target_kl is not None and epoch_kls:
-                if float(np.mean(epoch_kls)) > float(self.target_kl):
+            if self.target_kl is not None and epoch_kl_count > 0.0:
+                if (epoch_kl_num / epoch_kl_count) > float(self.target_kl):
                     break
         self._record_elapsed(
             timings,
@@ -1338,11 +1389,9 @@ class PPO:
             sync_cuda=True,
         )
 
-        sil_stats = (
-            self._run_sil_pass(rollout_size, params, timings)
-            if self.sil_enabled
-            else {}
-        )
+        sil_stats = dict(sil_admission_stats)
+        if self.sil_enabled:
+            sil_stats.update(self._run_sil_pass(rollout_size, params, timings))
 
         with torch.no_grad():
             returns = torch.cat(returns_by_fragment, dim=0)
@@ -1370,23 +1419,28 @@ class PPO:
         )
         if use_cuda_memory_stats:
             self._sync_cuda_if_needed(self.device)
-            cuda_peak_allocated_bytes = int(torch.cuda.max_memory_allocated(self.device))
+            cuda_peak_allocated_bytes = int(
+                torch.cuda.max_memory_allocated(self.device)
+            )
             cuda_peak_reserved_bytes = int(torch.cuda.max_memory_reserved(self.device))
         else:
             cuda_peak_allocated_bytes = 0
             cuda_peak_reserved_bytes = 0
         stats = {
-            "mean_policy_loss": float(np.mean(acc_policy)),
-            "mean_value_loss": float(np.mean(acc_value)),
-            "mean_entropy": float(np.mean(acc_entropy)),
-            "mean_kl": float(np.mean(acc_kl)),
-            "clip_fraction": float(np.mean(acc_clip_frac)),
+            "mean_policy_loss": weighted_metric_sums["policy"]
+            / max(1.0, weighted_metric_count),
+            "mean_value_loss": weighted_metric_sums["value"]
+            / max(1.0, weighted_metric_count),
+            "mean_entropy": weighted_metric_sums["entropy"]
+            / max(1.0, weighted_metric_count),
+            "mean_kl": weighted_metric_sums["kl"] / max(1.0, weighted_metric_count),
+            "clip_fraction": weighted_metric_sums["clip_frac"]
+            / max(1.0, weighted_metric_count),
+            **update_start_stats,
             "explained_variance": float(explained_var.item()),
             "grad_norm": float(np.mean(acc_grad_norm)),
             **{
-                f"grad_norm_{key}": (
-                    float(np.mean(values)) if values else 0.0
-                )
+                f"grad_norm_{key}": (float(np.mean(values)) if values else 0.0)
                 for key, values in acc_grad_component_norms.items()
             },
             "lr": float(self.optimizer.param_groups[0]["lr"]),
@@ -1441,6 +1495,22 @@ class PPO:
                     "sil_buffer_size": len(self.sil_buffer),
                     "sil_steps_replayed": 0,
                     "sil_groups": 0,
+                    "sil_grad_norm": 0.0,
+                    "sil_grad_norm_trunk": 0.0,
+                    "sil_grad_norm_actor_head": 0.0,
+                    "sil_grad_norm_target_head": 0.0,
+                    "sil_admitted": 0,
+                    "sil_admitted_near_enemy": 0,
+                    "sil_admitted_health_drop": 0,
+                    "sil_admitted_both": 0,
+                    "sil_age_mean": 0.0,
+                    "sil_age_p50": 0.0,
+                    "sil_age_p90": 0.0,
+                    "sil_age_max": 0.0,
+                    "sil_gate_weight_mean": 0.0,
+                    "sil_gate_weight_p50": 0.0,
+                    "sil_gate_weight_p90": 0.0,
+                    "sil_gate_weight_max": 0.0,
                 },
             )
             stats.update(sil_stats)
@@ -1582,17 +1652,15 @@ class PPO:
         fine_index: torch.Tensor,
         state_in: tuple[torch.Tensor, torch.Tensor] | None,
     ):
-        latent, state_value, next_state, spatial_context = (
-            self._encode_step_tensors(
-                spatial_obs=spatial_obs,
-                entity_features=entity_features,
-                entity_mask=entity_mask,
-                selection_features=selection_features,
-                selection_mask=selection_mask,
-                action_feedback_tokens=action_feedback_tokens,
-                meta_vec=meta_vec,
-                state_in=state_in,
-            )
+        latent, state_value, next_state, spatial_context = self._encode_step_tensors(
+            spatial_obs=spatial_obs,
+            entity_features=entity_features,
+            entity_mask=entity_mask,
+            selection_features=selection_features,
+            selection_mask=selection_mask,
+            action_feedback_tokens=action_feedback_tokens,
+            meta_vec=meta_vec,
+            state_in=state_in,
         )
         action_logits = self._mask_action_logits(
             self.policy_net.action_head(latent),
@@ -1633,10 +1701,14 @@ class PPO:
             return self.policy_net.reset_state_rows(state, reset_mask)
         if not bool(reset_mask.any().item()):
             return state
-        keep_mask = (~reset_mask).to(
-            device=state[0].device,
-            dtype=state[0].dtype,
-        ).view(-1, 1, 1)
+        keep_mask = (
+            (~reset_mask)
+            .to(
+                device=state[0].device,
+                dtype=state[0].dtype,
+            )
+            .view(-1, 1, 1)
+        )
         return state[0] * keep_mask, state[1] * keep_mask
 
     def _pack_chunk_group(self, chunk_group):
@@ -1764,14 +1836,18 @@ class PPO:
             )
         else:
             initial_state = (
-                torch.cat([state[0] for state in states], dim=0).to(
+                torch.cat([state[0] for state in states], dim=0)
+                .to(
                     device=self.device,
                     dtype=torch.float32,
-                ).detach(),
-                torch.cat([state[1] for state in states], dim=0).to(
+                )
+                .detach(),
+                torch.cat([state[1] for state in states], dim=0)
+                .to(
                     device=self.device,
                     dtype=torch.float32,
-                ).detach(),
+                )
+                .detach(),
             )
 
         for column, chunk in enumerate(chunk_group):
@@ -1857,7 +1933,9 @@ class PPO:
             if int(active_indices.numel()) == 0:
                 continue
 
-            if state is not None and int(state[0].size(0)) != int(active_indices.numel()):
+            if state is not None and int(state[0].size(0)) != int(
+                active_indices.numel()
+            ):
                 raise ValueError(
                     "Packed replay state rows must match the active chunk count",
                 )
@@ -2057,9 +2135,7 @@ class PPO:
         max_len = max(chunk["length"] for chunk in prepared_chunks)
         for t in range(max_len):
             active_indices = [
-                idx
-                for idx, chunk in enumerate(prepared_chunks)
-                if t < chunk["length"]
+                idx for idx, chunk in enumerate(prepared_chunks) if t < chunk["length"]
             ]
             if not active_indices:
                 continue
@@ -2130,10 +2206,7 @@ class PPO:
                         next_state[1][offset : offset + 1],
                     )
 
-                if (
-                    bool(chunk["dones"][t].item() > 0.5)
-                    and t + 1 < chunk["length"]
-                ):
+                if bool(chunk["dones"][t].item() > 0.5) and t + 1 < chunk["length"]:
                     chunk["state"] = self.policy_net.init_concrete_state(
                         batch_size=1,
                         device=self.device,
@@ -2169,10 +2242,7 @@ class PPO:
 
         return PolicyInputBatch(
             spatial_obs=torch.cat(
-                [
-                    obs.spatial_obs[step_index : step_index + 1]
-                    for obs in observations
-                ],
+                [obs.spatial_obs[step_index : step_index + 1] for obs in observations],
                 dim=0,
             ),
             entity_features=torch.cat(
@@ -2183,10 +2253,7 @@ class PPO:
                 dim=0,
             ),
             entity_mask=torch.cat(
-                [
-                    obs.entity_mask[step_index : step_index + 1]
-                    for obs in observations
-                ],
+                [obs.entity_mask[step_index : step_index + 1] for obs in observations],
                 dim=0,
             ),
             selection_features=torch.cat(
@@ -2211,10 +2278,7 @@ class PPO:
                 dim=0,
             ),
             meta_vec=torch.cat(
-                [
-                    obs.meta_vec[step_index : step_index + 1]
-                    for obs in observations
-                ],
+                [obs.meta_vec[step_index : step_index + 1] for obs in observations],
                 dim=0,
             ),
             state_in=state_in,
@@ -2264,10 +2328,7 @@ class PPO:
         )
 
         is_spatial = self._spatial_action_mask(actions)
-        new_log_probs = (
-            action_dist.log_prob(actions)
-            + is_spatial * target_log_probs
-        )
+        new_log_probs = action_dist.log_prob(actions) + is_spatial * target_log_probs
 
         if sample_mask is None:
             if policy_mask is None:
@@ -2282,9 +2343,14 @@ class PPO:
 
         ratio = torch.exp(new_log_probs - old_log_probs)
         surr1 = ratio * advantages
-        surr2 = torch.clamp(
-            ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon,
-        ) * advantages
+        surr2 = (
+            torch.clamp(
+                ratio,
+                1.0 - self.clip_epsilon,
+                1.0 + self.clip_epsilon,
+            )
+            * advantages
+        )
         policy_loss = -self._masked_mean(torch.min(surr1, surr2), sample_mask)
 
         value_loss = self.critic_loss_coef * self._masked_mean(
@@ -2294,15 +2360,13 @@ class PPO:
 
         action_dim = action_logits.size(-1)
         inv_log_action = 1.0 / math.log(action_dim)
-        entropy = (
-            action_dist.entropy() * inv_log_action
-            + is_spatial * target_entropy
-        )
+        entropy = action_dist.entropy() * inv_log_action + is_spatial * target_entropy
         entropy_loss = self.entropy_coef * self._masked_mean(entropy, sample_mask)
 
         with torch.no_grad():
+            log_ratio = new_log_probs - old_log_probs
             approx_kl = self._masked_mean(
-                (ratio - 1.0) - (new_log_probs - old_log_probs),
+                (ratio - 1.0) - log_ratio,
                 sample_mask,
             )
             clip_frac = self._masked_mean(
@@ -2310,14 +2374,41 @@ class PPO:
                 sample_mask,
             )
             entropy_mean = self._masked_mean(entropy, sample_mask)
+            valid_log_ratio = log_ratio[sample_mask > 0.0].float()
+            if valid_log_ratio.numel() > 0:
+                log_ratio_mean = valid_log_ratio.mean()
+                log_ratio_std = valid_log_ratio.std(unbiased=False)
+                log_ratio_p50 = torch.quantile(valid_log_ratio, 0.50)
+                log_ratio_p90 = torch.quantile(valid_log_ratio, 0.90)
+                log_ratio_p99 = torch.quantile(valid_log_ratio, 0.99)
+                log_ratio_max_abs = valid_log_ratio.abs().max()
+            else:
+                zero = torch.zeros((), device=log_ratio.device)
+                log_ratio_mean = zero
+                log_ratio_std = zero
+                log_ratio_p50 = zero
+                log_ratio_p90 = zero
+                log_ratio_p99 = zero
+                log_ratio_max_abs = zero
 
-        return policy_loss, value_loss, entropy_loss, {
-            "approx_kl": approx_kl,
-            "clip_frac": clip_frac,
-            "entropy_mean": entropy_mean,
-            "sample_count": sample_count.detach(),
-            "value_count": sample_count.detach(),
-        }
+        return (
+            policy_loss,
+            value_loss,
+            entropy_loss,
+            {
+                "approx_kl": approx_kl,
+                "clip_frac": clip_frac,
+                "entropy_mean": entropy_mean,
+                "sample_count": sample_count.detach(),
+                "value_count": sample_count.detach(),
+                "log_ratio_mean": log_ratio_mean,
+                "log_ratio_std": log_ratio_std,
+                "log_ratio_p50": log_ratio_p50,
+                "log_ratio_p90": log_ratio_p90,
+                "log_ratio_p99": log_ratio_p99,
+                "log_ratio_max_abs": log_ratio_max_abs,
+            },
+        )
 
     @staticmethod
     def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -2325,11 +2416,35 @@ class PPO:
         denom = mask.sum().clamp_min(1.0)
         return (values * mask).sum() / denom
 
+    @staticmethod
+    def _accumulate_sample_weighted_metrics(
+        sums: dict[str, float],
+        total_count: float,
+        *,
+        sample_count: float,
+        policy: float,
+        value: float,
+        entropy: float,
+        kl: float,
+        clip_frac: float,
+    ) -> float:
+        """Accumulate group means by the learnable samples they represent."""
+        count = max(0.0, float(sample_count))
+        for name, metric in (
+            ("policy", policy),
+            ("value", value),
+            ("entropy", entropy),
+            ("kl", kl),
+            ("clip_frac", clip_frac),
+        ):
+            sums[name] += float(metric) * count
+        return float(total_count) + count
+
     def _admit_to_sil_buffer(
         self,
         fragments: list[RolloutFragment],
         returns_by_fragment: list[torch.Tensor],
-    ) -> None:
+    ) -> dict[str, int]:
         """Admit committed-attack transitions to the SIL trophy buffer.
 
         The action_feedback_tokens at step i describe the action taken at step
@@ -2342,7 +2457,13 @@ class PPO:
         never admitted, so the buffer cannot fill with the auto-attack-confounded
         idle behavior that dominates winning episodes.
         """
-        for fragment, returns in zip(fragments, returns_by_fragment):
+        stats = {
+            "sil_admitted": 0,
+            "sil_admitted_near_enemy": 0,
+            "sil_admitted_health_drop": 0,
+            "sil_admitted_both": 0,
+        }
+        for fragment, returns in zip(fragments, returns_by_fragment, strict=False):
             actions = fragment.actions.detach().cpu().long().reshape(-1)
             num_steps = int(actions.shape[0])
             if num_steps < 2:
@@ -2352,9 +2473,7 @@ class PPO:
             if int(feedback.shape[0]) != num_steps:
                 continue
             returns_cpu = returns.detach().cpu().float().reshape(-1)
-            sample_mask = (
-                fragment.sample_mask.detach().cpu().float().reshape(-1) > 0.0
-            )
+            sample_mask = fragment.sample_mask.detach().cpu().float().reshape(-1) > 0.0
             if int(sample_mask.shape[0]) != num_steps:
                 continue
             obs_batch = fragment.as_policy_input_batch(state_in=None)
@@ -2375,9 +2494,20 @@ class PPO:
                     continue
                 self.sil_buffer.append(
                     self._build_sil_entry(
-                        obs_batch, pre_state, fragment, returns_cpu, j,
+                        obs_batch,
+                        pre_state,
+                        fragment,
+                        returns_cpu,
+                        j,
+                        near_enemy=near_enemy,
+                        health_drop=health_drop,
                     ),
                 )
+                stats["sil_admitted"] += 1
+                stats["sil_admitted_near_enemy"] += int(near_enemy)
+                stats["sil_admitted_health_drop"] += int(health_drop)
+                stats["sil_admitted_both"] += int(near_enemy and health_drop)
+        return stats
 
     def _build_sil_entry(
         self,
@@ -2386,6 +2516,9 @@ class PPO:
         fragment: RolloutFragment,
         returns_cpu: torch.Tensor,
         i: int,
+        *,
+        near_enemy: bool,
+        health_drop: bool,
     ) -> dict:
         index = torch.tensor([int(i)], dtype=torch.long)
         obs_step = obs_batch.index_select(index).with_state(None)
@@ -2415,6 +2548,9 @@ class PPO:
             "sample_mask": torch.ones(1, dtype=torch.float32),
             "policy_mask": torch.ones(1, dtype=torch.float32),
             "length": 1,
+            "admitted_update": int(self.update_count),
+            "admission_near_enemy": bool(near_enemy),
+            "admission_health_drop": bool(health_drop),
         }
 
     def _run_sil_pass(
@@ -2451,6 +2587,19 @@ class PPO:
         gate_count = 0.0
         sil_groups = 0
         sil_grad_norms: list[float] = []
+        sil_grad_component_norms: dict[str, list[float]] = {
+            "trunk": [],
+            "actor_head": [],
+            "target_head": [],
+        }
+        sampled_ages = torch.tensor(
+            [
+                max(0, int(self.update_count) - int(row.get("admitted_update", 0)))
+                for row in sampled
+            ],
+            dtype=torch.float32,
+        )
+        gate_weights: list[torch.Tensor] = []
 
         for chunk_group in self._iter_chunk_groups(sampled, sil_batch):
             with torch.amp.autocast(
@@ -2483,24 +2632,17 @@ class PPO:
                 target_log_prob = replayed_group["target_log_prob"].reshape(-1)[
                     active_mask
                 ]
-                state_values = replayed_group["state_values"].reshape(-1)[
-                    active_mask
-                ]
+                state_values = replayed_group["state_values"].reshape(-1)[active_mask]
                 actions = replayed_group["actions"].reshape(-1)[active_mask]
-                returns_r = (
-                    replayed_group["returns"].reshape(-1)[active_mask].float()
-                )
-                sample_mask = replayed_group["sample_mask"].reshape(-1)[
-                    active_mask
-                ]
+                returns_r = replayed_group["returns"].reshape(-1)[active_mask].float()
+                sample_mask = replayed_group["sample_mask"].reshape(-1)[active_mask]
 
                 action_dist = torch.distributions.Categorical(
                     logits=action_logits.float(),
                 )
                 is_spatial = self._spatial_action_mask(actions)
                 new_log_prob = (
-                    action_dist.log_prob(actions)
-                    + is_spatial * target_log_prob
+                    action_dist.log_prob(actions) + is_spatial * target_log_prob
                 )
                 # Gate = (R - V_current)+, detached: a fixed per-sample weight,
                 # not something we backprop through the critic.
@@ -2522,6 +2664,11 @@ class PPO:
                     grads_finite = False
                     break
             if grads_finite:
+                component_norms = self._grad_component_norms()
+                for key in sil_grad_component_norms:
+                    sil_grad_component_norms[key].append(
+                        float(component_norms.get(key, 0.0)),
+                    )
                 sil_grad_norm = torch.nn.utils.clip_grad_norm_(params, 0.5)
                 sil_grad_norms.append(float(sil_grad_norm.item()))
                 self.policy_net.scaler.step(self.optimizer)
@@ -2538,10 +2685,21 @@ class PPO:
                 ((weight > 0.0).float() * sample_mask).sum().item(),
             )
             gate_count += float(sample_mask.sum().item())
+            valid_weights = weight[sample_mask > 0.0].detach().to("cpu").float()
+            if valid_weights.numel() > 0:
+                gate_weights.append(valid_weights)
             sil_groups += 1
 
         self._record_elapsed(
-            timings, "sil_wall_seconds", sil_started, sync_cuda=True,
+            timings,
+            "sil_wall_seconds",
+            sil_started,
+            sync_cuda=True,
+        )
+        gate_weights_cpu = (
+            torch.cat(gate_weights)
+            if gate_weights
+            else torch.zeros(1, dtype=torch.float32)
         )
         return {
             "sil_loss": total_sil_loss / max(1, sil_groups),
@@ -2552,4 +2710,16 @@ class PPO:
             "sil_grad_norm": (
                 float(np.mean(sil_grad_norms)) if sil_grad_norms else 0.0
             ),
+            **{
+                f"sil_grad_norm_{key}": (float(np.mean(values)) if values else 0.0)
+                for key, values in sil_grad_component_norms.items()
+            },
+            "sil_age_mean": float(sampled_ages.mean().item()),
+            "sil_age_p50": float(torch.quantile(sampled_ages, 0.50).item()),
+            "sil_age_p90": float(torch.quantile(sampled_ages, 0.90).item()),
+            "sil_age_max": float(sampled_ages.max().item()),
+            "sil_gate_weight_mean": float(gate_weights_cpu.mean().item()),
+            "sil_gate_weight_p50": float(torch.quantile(gate_weights_cpu, 0.50).item()),
+            "sil_gate_weight_p90": float(torch.quantile(gate_weights_cpu, 0.90).item()),
+            "sil_gate_weight_max": float(gate_weights_cpu.max().item()),
         }

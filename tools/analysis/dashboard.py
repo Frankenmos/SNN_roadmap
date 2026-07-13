@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -11,14 +12,34 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import torch
-import torchvision
 
+try:
+    import torchvision
+except ImportError:
+    # Kernel-grid views in the checkpoint tab degrade gracefully without it.
+    torchvision = None
+
+from tools.analysis import mission_control
 from tools.analysis.analyze_pth import (
     collect_checkpoint_metadata,
     collect_extractor_state_rows,
     collect_time_constant_rows,
 )
-from tools.analysis.results import TrainingAnalyzer
+from tools.analysis.results import (
+    GRAD_NORM_DECOMP_FIELDS,
+    POLICY_MIX_FIELDS,
+    SIL_FIELDS,
+    TrainingAnalyzer,
+)
+from tools.registry.core import diff_entries, list_run_entries
+
+# Anchor run discovery to the repo root so the dashboard works regardless
+# of the CWD it is launched from (tools/analysis/dashboard.py -> repo root).
+# SNN_DASHBOARD_MODELS_DIR overrides it (also used by the smoke test).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_MODELS_DIR = Path(
+    os.environ.get("SNN_DASHBOARD_MODELS_DIR", str(_REPO_ROOT / "models"))
+)
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -26,7 +47,30 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return conn.execute(query, (table_name,)).fetchone() is not None
 
 
-def _list_local_runs(models_dir: str = "models") -> list[str]:
+def _db_fingerprint(db_path: str) -> str:
+    """Staleness key for st.cache_data: mtime/size of the DB and its WAL
+    sidecar, so a training run appending rows busts the cache."""
+    parts = []
+    for suffix in ("", "-wal"):
+        try:
+            stat = Path(str(db_path) + suffix).stat()
+            parts.append(f"{stat.st_mtime_ns}:{stat.st_size}")
+        except OSError:
+            parts.append("absent")
+    return "|".join(parts)
+
+
+def _metric_text(value, fmt: str = ".2f") -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if not np.isfinite(number):
+        return "n/a"
+    return format(number, fmt)
+
+
+def _list_local_runs(models_dir: str | Path = _MODELS_DIR) -> list[str]:
     root = Path(models_dir)
     if not root.exists():
         return []
@@ -39,14 +83,12 @@ def _list_local_runs(models_dir: str = "models") -> list[str]:
 
 
 def _local_checkpoint_candidates(run_name: str) -> list[str]:
-    run_dir = Path("models") / run_name
+    run_dir = _MODELS_DIR / run_name
     preferred = [
         run_dir / "best_checkpoint.pth",
         run_dir / "checkpoint.pth",
     ]
-    extras = sorted(
-        path for path in run_dir.glob("*.pth") if path not in preferred
-    )
+    extras = sorted(path for path in run_dir.glob("*.pth") if path not in preferred)
     all_paths = [path for path in preferred if path.exists()] + extras
     return [str(path) for path in all_paths]
 
@@ -69,7 +111,10 @@ def load_analysis_bundle(
     window: int,
     num_bins: int,
     win_threshold: float,
+    db_fingerprint: str = "",
 ) -> dict:
+    # db_fingerprint is unused in the body: it participates in the
+    # st.cache_data key so the cache invalidates when the DB file changes.
     analyzer = TrainingAnalyzer(db_path)
     try:
         try:
@@ -83,8 +128,10 @@ def load_analysis_bundle(
             "reward_components": reward_components,
             "updates": analyzer.get_update_metrics(),
             "evals": analyzer.get_eval_metrics(),
+            "eval_episodes": analyzer.get_eval_episode_metrics(),
             "action_labels": analyzer.action_labels.copy(),
             "action_semantics": analyzer.action_semantics,
+            "run_config": analyzer.get_run_config(),
             "diagnosis": analyzer.diagnose(
                 window=window,
                 num_bins=num_bins,
@@ -255,7 +302,9 @@ def _oscillation_figure(cov: pd.Series) -> go.Figure:
     return fig
 
 
-def _action_mix_figure(mix_df: pd.DataFrame, action_labels: dict[int, str]) -> go.Figure:
+def _action_mix_figure(
+    mix_df: pd.DataFrame, action_labels: dict[int, str]
+) -> go.Figure:
     action_ids = sorted(action_labels)
     pivot = mix_df.pivot(index="bin", columns="action", values="prob").fillna(0.0)
     pivot = pivot.reindex(columns=action_ids, fill_value=0.0)
@@ -325,16 +374,8 @@ def _action_heatmap_figure(
     bin_size = max(1, max_ep // max(1, num_bins))
     steps = steps_df.copy()
     steps["episode_bin"] = (steps["episode_id"] // bin_size) * bin_size
-    counts = (
-        steps.groupby(["episode_bin", "action"])
-        .size()
-        .reset_index(name="count")
-    )
-    totals = (
-        steps.groupby("episode_bin")
-        .size()
-        .reset_index(name="total")
-    )
+    counts = steps.groupby(["episode_bin", "action"]).size().reset_index(name="count")
+    totals = steps.groupby("episode_bin").size().reset_index(name="total")
     counts = counts.merge(totals, on="episode_bin")
     counts["probability"] = counts["count"] / counts["total"]
     counts["action_label"] = counts["action"].map(
@@ -413,7 +454,9 @@ def _entropy_figure(entropy_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def _reward_components_figure(reward_components_df: pd.DataFrame, window: int) -> go.Figure | None:
+def _reward_components_figure(
+    reward_components_df: pd.DataFrame, window: int
+) -> go.Figure | None:
     if reward_components_df.empty:
         return None
     reward_cols = [
@@ -423,7 +466,9 @@ def _reward_components_figure(reward_components_df: pd.DataFrame, window: int) -
     ]
     if not reward_cols:
         return None
-    per_ep = reward_components_df.groupby("episode_id")[reward_cols].mean().reset_index()
+    per_ep = (
+        reward_components_df.groupby("episode_id")[reward_cols].mean().reset_index()
+    )
     for column in reward_cols:
         per_ep[column] = per_ep[column].rolling(window, min_periods=1).mean()
     melted = per_ep.melt(id_vars="episode_id", value_vars=reward_cols)
@@ -439,7 +484,9 @@ def _reward_components_figure(reward_components_df: pd.DataFrame, window: int) -
 
 
 def _ppo_metric_figure(ppo_updates_df: pd.DataFrame, metric: str) -> go.Figure:
-    x_axis = "update_id" if "update_id" in ppo_updates_df.columns else ppo_updates_df.index
+    x_axis = (
+        "update_id" if "update_id" in ppo_updates_df.columns else ppo_updates_df.index
+    )
     fig = px.line(
         ppo_updates_df,
         x=x_axis,
@@ -467,7 +514,9 @@ def _speed_scatter_figure(
 
 
 def _timing_breakdown_figure(ppo_updates_df: pd.DataFrame) -> go.Figure:
-    x_axis = "update_id" if "update_id" in ppo_updates_df.columns else ppo_updates_df.index
+    x_axis = (
+        "update_id" if "update_id" in ppo_updates_df.columns else ppo_updates_df.index
+    )
     timing_cols = [
         column
         for column in [
@@ -484,7 +533,9 @@ def _timing_breakdown_figure(ppo_updates_df: pd.DataFrame) -> go.Figure:
     ]
     if not timing_cols:
         return go.Figure()
-    plot_df = ppo_updates_df[[*([x_axis] if isinstance(x_axis, str) else []), *timing_cols]].copy()
+    plot_df = ppo_updates_df[
+        [*([x_axis] if isinstance(x_axis, str) else []), *timing_cols]
+    ].copy()
     if not isinstance(x_axis, str):
         plot_df = plot_df.assign(update_index=np.asarray(x_axis))
         x_axis = "update_index"
@@ -506,10 +557,20 @@ def _eval_figure(eval_runs_df: pd.DataFrame) -> go.Figure:
 
     fig = go.Figure()
     has_det = "deterministic" in eval_runs_df.columns
-    groups = [("all", eval_runs_df)] if not has_det else [
-        ("stochastic", eval_runs_df[eval_runs_df["deterministic"].fillna(0).astype(int) == 0]),
-        ("deterministic", eval_runs_df[eval_runs_df["deterministic"].fillna(0).astype(int) == 1]),
-    ]
+    groups = (
+        [("all", eval_runs_df)]
+        if not has_det
+        else [
+            (
+                "stochastic",
+                eval_runs_df[eval_runs_df["deterministic"].fillna(0).astype(int) == 0],
+            ),
+            (
+                "deterministic",
+                eval_runs_df[eval_runs_df["deterministic"].fillna(0).astype(int) == 1],
+            ),
+        ]
+    )
     colors = {
         "all": "#1f77b4",
         "stochastic": "#1f77b4",
@@ -557,7 +618,9 @@ def _eval_figure(eval_runs_df: pd.DataFrame) -> go.Figure:
                     "type": "data",
                     "array": subset["std_reward"],
                     "visible": True,
-                } if "std_reward" in subset.columns else None,
+                }
+                if "std_reward" in subset.columns
+                else None,
             )
         )
     fig.update_layout(xaxis_title="Episode", yaxis_title="Mean reward")
@@ -594,13 +657,342 @@ def _eval_gap_figure(eval_runs_df: pd.DataFrame) -> go.Figure | None:
     return fig
 
 
+_POLICY_COUNT_LABELS = {
+    "rollout_policy_no_op_count": "no_op",
+    "rollout_policy_left_click_count": "left_click",
+    "rollout_policy_right_click_count": "right_click",
+}
+_FEEDBACK_COUNT_LABELS = {
+    "rollout_feedback_near_enemy_smart_count": "near_enemy",
+    "rollout_feedback_moved_toward_target_count": "moved_toward_target",
+    "rollout_feedback_enemy_health_drop_after_smart_count": "enemy_health_drop",
+    "rollout_feedback_null_unclear_smart_count": "null_unclear",
+}
+
+
+def _update_axis(ppo_updates_df: pd.DataFrame) -> pd.Series:
+    if "update_id" in ppo_updates_df.columns:
+        return ppo_updates_df["update_id"]
+    return pd.Series(np.arange(len(ppo_updates_df)), index=ppo_updates_df.index)
+
+
+def _update_action_mix_figure(ppo_updates_df: pd.DataFrame) -> go.Figure | None:
+    """Action mix per PPO update from rollout_policy_*_count aggregates.
+
+    This is the Ray-path replacement for the step-based action-mix panels:
+    the Ray trainer logs per-update action counts instead of STEP rows.
+    """
+    cols = [c for c in _POLICY_COUNT_LABELS if c in ppo_updates_df.columns]
+    if ppo_updates_df.empty or not cols:
+        return None
+    counts = ppo_updates_df[cols].fillna(0.0)
+    totals = counts.sum(axis=1)
+    if float(totals.sum()) <= 0.0:
+        return None
+    shares = counts.div(totals.clip(lower=1.0), axis=0)
+    x = _update_axis(ppo_updates_df)
+    fig = go.Figure()
+    for col in cols:
+        fig.add_trace(
+            go.Scatter(
+                x=x,
+                y=shares[col],
+                mode="lines",
+                stackgroup="one",
+                name=_POLICY_COUNT_LABELS[col],
+            )
+        )
+    fig.update_layout(
+        title="Rollout action mix per PPO update",
+        xaxis_title="PPO update",
+        yaxis_title="Share of rollout steps",
+        yaxis_range=[0, 1],
+    )
+    return fig
+
+
+def _feedback_quality_figure(ppo_updates_df: pd.DataFrame) -> go.Figure | None:
+    """Click-outcome feedback per update, as a share of executed Smart
+    clicks (rollout_feedback_smart_executed_count)."""
+    executed_col = "rollout_feedback_smart_executed_count"
+    cols = [c for c in _FEEDBACK_COUNT_LABELS if c in ppo_updates_df.columns]
+    if ppo_updates_df.empty or executed_col not in ppo_updates_df.columns or not cols:
+        return None
+    executed = ppo_updates_df[executed_col].fillna(0.0)
+    if float(executed.sum()) <= 0.0:
+        return None
+    x = _update_axis(ppo_updates_df)
+    fig = go.Figure()
+    for col in cols:
+        fig.add_trace(
+            go.Scatter(
+                x=x,
+                y=ppo_updates_df[col].fillna(0.0) / executed.clip(lower=1.0),
+                mode="lines",
+                name=_FEEDBACK_COUNT_LABELS[col],
+            )
+        )
+    fig.update_layout(
+        title="Click feedback quality (share of executed Smart clicks)",
+        xaxis_title="PPO update",
+        yaxis_title="Share of executed clicks",
+    )
+    return fig
+
+
+def _grad_norm_decomposition_figure(
+    ppo_updates_df: pd.DataFrame,
+) -> go.Figure | None:
+    """Per-module gradient norms (trunk / actor / critic / target heads)
+    next to the total grad_norm, log scale."""
+    decomp_cols = [
+        c
+        for c in GRAD_NORM_DECOMP_FIELDS
+        if c in ppo_updates_df.columns and ppo_updates_df[c].notna().any()
+    ]
+    if ppo_updates_df.empty or not decomp_cols:
+        return None
+    cols = decomp_cols
+    if "grad_norm" in ppo_updates_df.columns:
+        cols = ["grad_norm", *decomp_cols]
+    x = _update_axis(ppo_updates_df)
+    fig = go.Figure()
+    for col in cols:
+        fig.add_trace(
+            go.Scatter(
+                x=x,
+                y=ppo_updates_df[col],
+                mode="lines",
+                name=col.replace("grad_norm_", "") if col != "grad_norm" else "total",
+            )
+        )
+    fig.update_layout(
+        title="Gradient norm decomposition",
+        xaxis_title="PPO update",
+        yaxis_title="Gradient norm (log)",
+        yaxis_type="log",
+    )
+    return fig
+
+
+def _render_sil_health(ppo_updates_df: pd.DataFrame) -> None:
+    """SIL trophy-buffer health from ppo_updates sil_* columns. Rendered
+    only when the run actually logged SIL passes."""
+    cols = [
+        c
+        for c in SIL_FIELDS
+        if c in ppo_updates_df.columns and ppo_updates_df[c].notna().any()
+    ]
+    if not cols:
+        return
+    sil = ppo_updates_df[ppo_updates_df[cols[0]].notna()]
+    if sil.empty:
+        return
+    st.markdown("#### SIL health")
+    latest = sil.iloc[-1]
+    metric_cols = st.columns(4)
+    for slot, (column, label, fmt) in enumerate(
+        [
+            ("sil_buffer_size", "Trophy buffer size", ".0f"),
+            ("sil_gate_open_fraction", "Gate open fraction", ".3f"),
+            ("sil_steps_replayed", "Steps replayed (last)", ".0f"),
+            ("sil_grad_norm", "SIL grad norm (last)", ".2f"),
+        ]
+    ):
+        if column in sil.columns:
+            metric_cols[slot].metric(label, _metric_text(latest.get(column), fmt))
+    chart_specs = [
+        ("sil_loss", "SIL loss"),
+        ("sil_gate_open_fraction", "SIL gate open fraction"),
+        ("sil_buffer_size", "SIL buffer size"),
+        ("sil_steps_replayed", "SIL steps replayed"),
+    ]
+    chart_specs = [
+        (column, title)
+        for column, title in chart_specs
+        if column in sil.columns and sil[column].notna().any()
+    ]
+    chart_columns = st.columns(2)
+    x = _update_axis(sil)
+    for index, (column, title) in enumerate(chart_specs):
+        fig = px.line(x=x, y=sil[column], title=title)
+        fig.update_layout(xaxis_title="PPO update", yaxis_title=column)
+        with chart_columns[index % 2]:
+            st.plotly_chart(fig, width="stretch")
+
+
+def _registry_fingerprint(run_name: str) -> str:
+    """Cache key over the run's .pth artifacts (names + mtime + size)."""
+    run_dir = _MODELS_DIR / run_name
+    paths = [run_dir / "checkpoint.pth", run_dir / "best_checkpoint.pth"]
+    snapshot_dir = run_dir / "snapshots"
+    if snapshot_dir.is_dir():
+        paths.extend(sorted(snapshot_dir.glob("policy_u*.pth")))
+    parts = []
+    for path in paths:
+        try:
+            stat = path.stat()
+            parts.append(f"{path.name}:{stat.st_mtime_ns}:{stat.st_size}")
+        except OSError:
+            continue
+    return "|".join(parts)
+
+
+@st.cache_data
+def _load_registry_rows(run_name: str, fingerprint: str = "") -> list[dict]:
+    # fingerprint only keys the cache (files may be appended by training).
+    entries = list_run_entries(run_name, models_dir=_MODELS_DIR)
+    rows = []
+    for entry in entries:
+        metadata = entry.metadata
+        git_commit = metadata.get("git_commit")
+        rows.append(
+            {
+                "file": entry.name,
+                "kind": entry.kind,
+                "policy_version": entry.policy_version,
+                "episode": metadata.get("episode"),
+                "size_mib": round(entry.size_mib, 2),
+                "eval_mean": entry.eval_mean,
+                "eval_at_version": entry.eval_policy_version,
+                "git_commit": str(git_commit)[:8] if git_commit else None,
+                "config_hash": metadata.get("config_hash"),
+                "saved": metadata.get("wall_time_iso"),
+                "path": str(entry.path),
+            },
+        )
+    return rows
+
+
+@st.cache_data
+def _load_registry_diff(path_a: str, path_b: str, fingerprint: str = "") -> dict:
+    return diff_entries(path_a, path_b)
+
+
+def _render_snapshots_tab(selected_run: str | None) -> None:
+    st.subheader("Snapshot registry")
+    if not selected_run:
+        st.info(
+            "The snapshot registry needs a local run (upload mode has no run directory)."
+        )
+        return
+    try:
+        rows = _load_registry_rows(
+            selected_run,
+            _registry_fingerprint(selected_run),
+        )
+    except Exception as exc:
+        st.error(f"Failed to read registry for `{selected_run}`: {exc}")
+        return
+    if not rows:
+        st.info(
+            "No .pth artifacts found for this run. To record snapshot "
+            "lineage, enable the `snapshot_*` keys in config.yaml "
+            "(distributed section). CLI: `python -m tools.registry`."
+        )
+        return
+
+    st.dataframe(
+        pd.DataFrame(rows).drop(columns=["path"]),
+        width="stretch",
+        hide_index=True,
+    )
+    st.caption(
+        "CLI: `python -m tools.registry list <run>` | `show <ref>` | "
+        "`diff <a> <b>` (refs accept `<run>:u<N>`, `:checkpoint`, `:best`)."
+    )
+
+    if len(rows) < 2:
+        st.info("Need at least two artifacts to diff.")
+        return
+    st.markdown("#### Diff two artifacts")
+    labels = [row["file"] for row in rows]
+    path_by_label = {row["file"]: row["path"] for row in rows}
+    col_a, col_b = st.columns(2)
+    with col_a:
+        label_a = st.selectbox("A (baseline)", labels, index=0)
+    with col_b:
+        label_b = st.selectbox("B (comparison)", labels, index=len(labels) - 1)
+    if label_a == label_b:
+        st.info("Pick two different artifacts.")
+        return
+    try:
+        diff = _load_registry_diff(
+            path_by_label[label_a],
+            path_by_label[label_b],
+            _registry_fingerprint(selected_run),
+        )
+    except Exception as exc:
+        st.error(f"Diff failed: {exc}")
+        return
+
+    unchanged = sum(1 for row in diff["layers"] if row["l2"] == 0.0)
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Global L2 delta", _metric_text(diff["total_l2"], ".4f"))
+    metric_cols[1].metric("Layers compared", f"{len(diff['layers'])}")
+    metric_cols[2].metric("Bit-identical layers", f"{unchanged}")
+
+    if diff["metadata_diff"]:
+        st.markdown("**Metadata differences (A -> B)**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"key": key, "A": str(value_a), "B": str(value_b)}
+                    for key, (value_a, value_b) in diff["metadata_diff"].items()
+                ],
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    config_diff = diff.get("config_diff") or {}
+    if config_diff.get("changed"):
+        st.markdown("**Config differences (A -> B)**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"key": key, "A": str(value_a), "B": str(value_b)}
+                    for key, (value_a, value_b) in config_diff["changed"].items()
+                ],
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    if diff["layers"]:
+        st.markdown("**Top layer deltas (by L2)**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "layer": row["name"],
+                        "shape": str(row["shape"]),
+                        "l2": row["l2"],
+                        "rel_l2": row["rel_l2"],
+                        "cosine": row["cosine"],
+                    }
+                    for row in diff["layers"][:40]
+                ],
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    for label, key in (("Only in A", "only_in_a"), ("Only in B", "only_in_b")):
+        names = diff.get(key) or []
+        if names:
+            suffix = " ..." if len(names) > 10 else ""
+            st.caption(f"{label}: {', '.join(names[:10])}{suffix}")
+
+
 def _render_checkpoint_panel(ckpt_path: str | None) -> None:
     st.subheader("Checkpoint Introspection")
     if not ckpt_path:
         st.info("No checkpoint selected.")
         return
 
-    ckpt = load_model_ckpt(ckpt_path)
+    try:
+        ckpt = load_model_ckpt(ckpt_path)
+    except Exception as exc:
+        st.error(f"Failed to load checkpoint `{ckpt_path}`: {exc}")
+        return
     state_dict = get_state_dict(ckpt)
     st.caption(f"Checkpoint: `{ckpt_path}`")
 
@@ -614,14 +1006,14 @@ def _render_checkpoint_panel(ckpt_path: str | None) -> None:
         meta_df = pd.DataFrame(
             [{"key": key, "value": value} for key, value in sorted(metadata.items())],
         )
-        st.dataframe(meta_df, use_container_width=True, hide_index=True)
+        st.dataframe(meta_df, width="stretch", hide_index=True)
 
     time_constant_rows = collect_time_constant_rows(state_dict)
     if time_constant_rows:
         st.markdown("#### Learned alpha / beta")
         st.dataframe(
             pd.DataFrame(time_constant_rows),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -632,13 +1024,12 @@ def _render_checkpoint_panel(ckpt_path: str | None) -> None:
         for index, (normalizer_name, summary) in enumerate(extractor_rows.items()):
             with normalizer_cols[index % 2]:
                 st.caption(
-                    f"{normalizer_name}: count={summary['count']:.1f}, "
-                    f"warm={summary['warm']}",
+                    f"{normalizer_name}: count={summary['count']:.1f}, warm={summary['warm']}",
                 )
                 if summary["rows"]:
                     st.dataframe(
                         pd.DataFrame(summary["rows"]),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                     )
                 else:
@@ -654,9 +1045,7 @@ def _render_checkpoint_panel(ckpt_path: str | None) -> None:
         st.write(f"Shape: {tuple(tensor.shape)}")
         st.write(f"Dtype: {tensor.dtype}")
         std_value = (
-            tensor_float.std(unbiased=False).item()
-            if tensor_float.numel() > 1
-            else 0.0
+            tensor_float.std(unbiased=False).item() if tensor_float.numel() > 1 else 0.0
         )
         st.write(f"Mean: {tensor_float.mean().item():.4f}")
         st.write(f"Std: {std_value:.4f}")
@@ -671,17 +1060,23 @@ def _render_checkpoint_panel(ckpt_path: str | None) -> None:
             title=f"Weight distribution: {selected_layer}",
             log_y=True,
         )
-        st.plotly_chart(fig_hist, use_container_width=True)
+        st.plotly_chart(fig_hist, width="stretch")
 
     st.markdown("#### Tensor visualization")
     if tensor.ndim == 4:
+        grid_modes = (
+            []
+            if torchvision is None
+            else ["Grid (First Input Channel)", "Grid (First Output Channel)"]
+        )
+        if torchvision is None:
+            st.info(
+                "torchvision is not installed - kernel grid views are "
+                "unavailable. Showing the slice explorer only."
+            )
         view_mode = st.radio(
             "View mode",
-            [
-                "Grid (First Input Channel)",
-                "Grid (First Output Channel)",
-                "Slice Explorer",
-            ],
+            [*grid_modes, "Slice Explorer"],
         )
         if view_mode == "Grid (First Input Channel)":
             kernels = tensor[:, 0:1, :, :].float()
@@ -711,7 +1106,7 @@ def _render_checkpoint_panel(ckpt_path: str | None) -> None:
                 color_continuous_scale="RdBu",
                 title=f"Kernel [{sel_out}, {sel_in}]",
             )
-            st.plotly_chart(fig_kernel, use_container_width=False)
+            st.plotly_chart(fig_kernel, width="content")
     elif tensor.ndim == 2:
         matrix_slice = tensor_float.cpu().numpy()
         if tensor.numel() > 10000:
@@ -722,9 +1117,144 @@ def _render_checkpoint_panel(ckpt_path: str | None) -> None:
             color_continuous_scale="RdBu",
             title="Weight heatmap",
         )
-        st.plotly_chart(fig_matrix, use_container_width=True)
+        st.plotly_chart(fig_matrix, width="stretch")
     else:
         st.info("No spatial visualization for this tensor rank.")
+
+
+def _models_dir_fingerprint() -> str:
+    """Cache key over every run DB's mtime/size, so the overview table
+    refreshes when any run advances."""
+    parts = []
+    try:
+        for run_dir in sorted(_MODELS_DIR.iterdir()):
+            db_path = run_dir / "training_logs.db"
+            if db_path.exists():
+                stat = db_path.stat()
+                parts.append(f"{run_dir.name}:{stat.st_mtime_ns}:{stat.st_size}")
+    except OSError:
+        pass
+    return "|".join(parts)
+
+
+@st.cache_data(show_spinner=False)
+def _load_runs_overview(fingerprint: str) -> pd.DataFrame:
+    del fingerprint  # cache key only
+    rows = []
+    for overview in mission_control.list_runs_overview(_MODELS_DIR):
+        share = overview.right_click_share_last
+        rows.append(
+            {
+                "run": overview.name,
+                "updates": overview.updates_total,
+                "last update": overview.last_update_index,
+                "right-click share (last)": (
+                    None if share is None else round(share, 3)
+                ),
+                "last eval": overview.last_eval_mean,
+                "eval @ version": overview.last_eval_policy_version,
+                "snapshots": overview.snapshot_count,
+                "checkpoint": overview.has_checkpoint,
+                "best": overview.has_best,
+                "DB modified": overview.db_modified_iso,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _render_mission_control_tab() -> None:
+    st.caption(
+        "Read-only mission control: this dashboard never launches or stops "
+        "processes. Generated commands are for your own terminal."
+    )
+
+    st.subheader("All runs")
+    overview_df = _load_runs_overview(_models_dir_fingerprint())
+    if overview_df.empty:
+        st.info(f"No runs found under {_MODELS_DIR}.")
+    else:
+        st.dataframe(overview_df, width="stretch", hide_index=True)
+
+    st.subheader("Config diff")
+    config_runs = mission_control.runs_with_config(_MODELS_DIR)
+    if len(config_runs) < 2:
+        st.caption("Need at least two runs with effective_config.json to diff.")
+    else:
+        col_a, col_b = st.columns(2)
+        run_a = col_a.selectbox("Run A", config_runs, index=0, key="mc_diff_a")
+        run_b = col_b.selectbox(
+            "Run B",
+            config_runs,
+            index=len(config_runs) - 1,
+            key="mc_diff_b",
+        )
+        diff = mission_control.diff_run_configs(run_a, run_b, _MODELS_DIR)
+        if diff.get("error"):
+            st.warning(diff["error"])
+        else:
+            if diff["changed"]:
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {"key": key, "A": repr(a), "B": repr(b)}
+                            for key, (a, b) in diff["changed"].items()
+                        ]
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.caption("No changed keys between these runs.")
+            for label, keys in (
+                ("Only in A", diff["only_a"]),
+                ("Only in B", diff["only_b"]),
+            ):
+                if keys:
+                    st.caption(f"{label}: {', '.join(keys)}")
+
+    st.subheader("Launch command generator")
+    st.caption(
+        "Flags mirror distributed/ray_train.py; anything left at its "
+        "default falls back to config.yaml exactly as the trainer would. "
+        "Snapshot recording is enabled by uncommenting the snapshot_* keys "
+        "under distributed: in config.yaml."
+    )
+    col1, col2, col3 = st.columns(3)
+    run_name = col1.text_input(
+        "--run-name",
+        value="",
+        placeholder="e.g. banana_glasses_v8_...",
+        key="mc_run_name",
+    )
+    num_actors = col2.number_input(
+        "--num-actors",
+        min_value=1,
+        max_value=64,
+        value=10,
+        key="mc_actors",
+    )
+    max_updates = col3.number_input(
+        "--max-updates (0 = config default)",
+        min_value=0,
+        value=0,
+        key="mc_max_updates",
+    )
+    config_path = st.text_input(
+        "--config (blank = repo config.yaml / SNN_CONFIG_PATH)",
+        value="",
+        key="mc_config",
+    )
+    command = mission_control.build_launch_command(
+        run_name=run_name.strip(),
+        num_actors=int(num_actors),
+        max_updates=int(max_updates) or None,
+        config_path=config_path.strip() or None,
+    )
+    st.code(command, language="powershell")
+    if not run_name.strip():
+        st.caption(
+            "Without --run-name the trainer uses environment.run_name or a timestamp."
+        )
 
 
 def render_dashboard() -> None:
@@ -746,7 +1276,7 @@ def render_dashboard() -> None:
             st.info("No local runs with `training_logs.db` found under `models/`.")
             return
         selected_run = st.sidebar.selectbox("Run", runs, index=0)
-        db_path = str(Path("models") / selected_run / "training_logs.db")
+        db_path = str(_MODELS_DIR / selected_run / "training_logs.db")
         st.sidebar.caption(f"DB: `{db_path}`")
     else:
         uploaded_db = st.sidebar.file_uploader(
@@ -785,7 +1315,17 @@ def render_dashboard() -> None:
         return
 
     with st.spinner("Loading analysis..."):
-        bundle = load_analysis_bundle(db_path, window, num_bins, win_threshold)
+        try:
+            bundle = load_analysis_bundle(
+                db_path,
+                window,
+                num_bins,
+                win_threshold,
+                db_fingerprint=_db_fingerprint(db_path),
+            )
+        except Exception as exc:
+            st.error(f"Failed to load `{db_path}`: {exc}")
+            return
 
     episodes_df = bundle["episodes"]
     steps_df = bundle["steps"]
@@ -793,6 +1333,7 @@ def render_dashboard() -> None:
     reward_components_df = bundle["reward_components"]
     ppo_updates_df = bundle["updates"]
     eval_runs_df = bundle["evals"]
+    eval_episodes_df = bundle.get("eval_episodes", pd.DataFrame())
     action_labels = bundle["action_labels"]
     action_semantics = bundle["action_semantics"]
     diagnosis = bundle["diagnosis"]
@@ -804,22 +1345,25 @@ def render_dashboard() -> None:
     action_shift = diagnosis["action_shift"]
     plateau_ep = diagnosis["plateau_episode"]
     late_cov = diagnosis["late_cov"]
-    cov_series = (
-        episodes_df["total_reward"].rolling(50, min_periods=1).std().fillna(0)
-        / (episodes_df["total_reward"].rolling(50, min_periods=1).mean().abs() + 1e-6)
-    )
-    cov_series.index = episodes_df["episode_id"]
+    if episodes_df.empty:
+        cov_series = pd.Series(dtype=float)
+    else:
+        cov_series = episodes_df["total_reward"].rolling(
+            50, min_periods=1
+        ).std().fillna(0) / (
+            episodes_df["total_reward"].rolling(50, min_periods=1).mean().abs() + 1e-6
+        )
+        cov_series.index = episodes_df["episode_id"]
 
     if len(steps_df) > 1_000_000:
         st.warning(
-            f"Large dataset detected ({len(steps_df):,} step rows). "
-            "Some plots may take a moment."
+            f"Large dataset detected ({len(steps_df):,} step rows). Some plots may take a moment."
         )
 
     metrics = st.columns(5)
     metrics[0].metric("Episodes", f"{summary['total_episodes']}")
-    metrics[1].metric("Final 100 avg", f"{summary['final_100_avg_reward']:.2f}")
-    metrics[2].metric("Max reward", f"{summary['max_total_reward']:.2f}")
+    metrics[1].metric("Final 100 avg", _metric_text(summary["final_100_avg_reward"]))
+    metrics[2].metric("Max reward", _metric_text(summary["max_total_reward"]))
     metrics[3].metric(
         "Plateau",
         f"ep {plateau_ep}" if plateau_ep is not None else "none",
@@ -828,15 +1372,17 @@ def render_dashboard() -> None:
         latest_eval = eval_runs_df.iloc[-1]
         metrics[4].metric(
             "Latest eval mean",
-            f"{float(latest_eval['mean_reward']):.2f}",
+            _metric_text(latest_eval["mean_reward"]),
         )
     elif not ppo_updates_df.empty and "clip_fraction" in ppo_updates_df.columns:
         metrics[4].metric(
             "Late clip frac",
-            f"{float(ppo_updates_df['clip_fraction'].tail(20).mean()):.3f}",
+            _metric_text(ppo_updates_df["clip_fraction"].tail(20).mean(), ".3f"),
         )
     else:
-        metrics[4].metric("Avg ep length", f"{summary['avg_episode_length']:.1f}")
+        metrics[4].metric(
+            "Avg ep length", _metric_text(summary["avg_episode_length"], ".1f")
+        )
 
     st.caption(
         f"Source DB: `{db_path}` | action semantics: `{action_semantics}` "
@@ -872,67 +1418,106 @@ def render_dashboard() -> None:
         else:
             info_cols[2].metric("PPO updates", f"{len(ppo_updates_df)}")
 
-    tab_overview, tab_policy, tab_ppo, tab_rewards, tab_checkpoint = st.tabs(
-        ["Overview", "Policy", "PPO / Eval", "Reward Shaping", "Checkpoint"]
+    (
+        tab_overview,
+        tab_policy,
+        tab_ppo,
+        tab_rewards,
+        tab_snapshots,
+        tab_checkpoint,
+        tab_mission,
+    ) = st.tabs(
+        [
+            "Overview",
+            "Policy",
+            "PPO / Eval",
+            "Reward Shaping",
+            "Snapshots",
+            "Checkpoint",
+            "Mission Control",
+        ]
     )
 
     with tab_overview:
-        st.plotly_chart(
-            _reward_figure(episodes_df, rolling_stats),
-            use_container_width=True,
-        )
-        col1, col2 = st.columns(2)
-        with col1:
-            st.plotly_chart(
-                _episode_length_figure(episodes_df, window),
-                use_container_width=True,
+        if episodes_df.empty:
+            st.info(
+                "No completed episodes in this DB yet. Episode-level panels "
+                "will populate once episodes finish; PPO / Eval may already "
+                "have data."
             )
-        with col2:
+        else:
             st.plotly_chart(
-                _oscillation_figure(cov_series),
-                use_container_width=True,
+                _reward_figure(episodes_df, rolling_stats),
+                width="stretch",
             )
+            col1, col2 = st.columns(2)
+            with col1:
+                st.plotly_chart(
+                    _episode_length_figure(episodes_df, window),
+                    width="stretch",
+                )
+            with col2:
+                st.plotly_chart(
+                    _oscillation_figure(cov_series),
+                    width="stretch",
+                )
 
-        scatter = px.scatter(
-            episodes_df,
-            x="steps",
-            y="total_reward",
-            color="episode_id",
-            title="Episode length vs reward",
-            hover_data=["episode_id"],
-        )
-        st.plotly_chart(scatter, use_container_width=True)
-        st.plotly_chart(
-            _reward_efficiency_figure(episodes_df, window),
-            use_container_width=True,
-        )
+            scatter = px.scatter(
+                episodes_df,
+                x="steps",
+                y="total_reward",
+                color="episode_id",
+                title="Episode length vs reward",
+                hover_data=["episode_id"],
+            )
+            st.plotly_chart(scatter, width="stretch")
+            st.plotly_chart(
+                _reward_efficiency_figure(episodes_df, window),
+                width="stretch",
+            )
 
     with tab_policy:
+        update_mix_fig = _update_action_mix_figure(ppo_updates_df)
+        feedback_fig = _feedback_quality_figure(ppo_updates_df)
+        if update_mix_fig is not None or feedback_fig is not None:
+            st.markdown("#### Rollout action mix (from `ppo_updates`)")
+            if update_mix_fig is not None:
+                st.plotly_chart(update_mix_fig, width="stretch")
+            if feedback_fig is not None:
+                st.plotly_chart(feedback_fig, width="stretch")
+
         if mix_df.empty:
-            st.info("No step data available for action-mix analysis.")
+            st.info(
+                "Ray runs don't log per-step data (the Ray training path "
+                "emits no STEP rows), so step-based action-mix, entropy, and "
+                "target-heatmap panels are unavailable for this run. The "
+                "per-update rollout aggregates above are the real signal."
+                if not ppo_updates_df.empty
+                else "No step data available for action-mix analysis."
+            )
         else:
             st.plotly_chart(
                 _action_mix_figure(mix_df, action_labels),
-                use_container_width=True,
+                width="stretch",
             )
             phase_cols = st.columns(3)
             for idx, phase in enumerate(["early", "mid", "late"]):
                 with phase_cols[idx]:
                     st.plotly_chart(
                         _phase_action_mix_figure(phase_mix_df, phase, action_labels),
-                        use_container_width=True,
+                        width="stretch",
                     )
 
             left, right = st.columns(2)
             with left:
                 st.plotly_chart(
                     _action_heatmap_figure(steps_df, num_bins, action_labels),
-                    use_container_width=True,
+                    width="stretch",
                 )
             with right:
                 st.plotly_chart(
                     _entropy_figure(entropy_df),
-                    use_container_width=True,
+                    width="stretch",
                 )
             st.plotly_chart(
                 _move_target_heatmap_figure(
@@ -940,7 +1525,7 @@ def render_dashboard() -> None:
                     action_semantics=action_semantics,
                     noop_action_id=diagnosis["noop_action_id"],
                 ),
-                use_container_width=True,
+                width="stretch",
             )
 
     with tab_ppo:
@@ -996,6 +1581,9 @@ def render_dashboard() -> None:
                 "learner_transitions_per_second",
                 "rollout_steps_per_second",
                 "forward_calls_per_second",
+                *POLICY_MIX_FIELDS,
+                *GRAD_NORM_DECOMP_FIELDS,
+                *SIL_FIELDS,
             ]
             present_metrics = [
                 metric for metric in metrics_to_plot if metric in ppo_updates_df.columns
@@ -1022,8 +1610,15 @@ def render_dashboard() -> None:
                     with cols[index % 2]:
                         st.plotly_chart(
                             _ppo_metric_figure(ppo_updates_df, metric),
-                            use_container_width=True,
+                            width="stretch",
                         )
+
+            grad_decomp_fig = _grad_norm_decomposition_figure(ppo_updates_df)
+            if grad_decomp_fig is not None:
+                st.markdown("#### Gradient norm decomposition")
+                st.plotly_chart(grad_decomp_fig, width="stretch")
+
+            _render_sil_health(ppo_updates_df)
 
             speed_fields = {
                 "update_wall_seconds",
@@ -1049,26 +1644,23 @@ def render_dashboard() -> None:
                     "transitions_in_update",
                     "update_wall_seconds",
                 }.issubset(set(tail.columns)):
-                    tail["transitions_per_second"] = (
-                        tail["transitions_in_update"] /
-                        tail["update_wall_seconds"].clip(lower=1.0e-6)
-                    )
+                    tail["transitions_per_second"] = tail[
+                        "transitions_in_update"
+                    ] / tail["update_wall_seconds"].clip(lower=1.0e-6)
                 if {
                     "tbptt_forward_calls",
                     "update_wall_seconds",
                 }.issubset(set(tail.columns)):
-                    tail["forward_calls_per_second"] = (
-                        tail["tbptt_forward_calls"] /
-                        tail["update_wall_seconds"].clip(lower=1.0e-6)
-                    )
+                    tail["forward_calls_per_second"] = tail[
+                        "tbptt_forward_calls"
+                    ] / tail["update_wall_seconds"].clip(lower=1.0e-6)
                 if {
                     "rollout_steps_collected",
                     "rollout_wall_seconds",
                 }.issubset(set(tail.columns)):
-                    tail["rollout_steps_per_second"] = (
-                        tail["rollout_steps_collected"] /
-                        tail["rollout_wall_seconds"].clip(lower=1.0e-6)
-                    )
+                    tail["rollout_steps_per_second"] = tail[
+                        "rollout_steps_collected"
+                    ] / tail["rollout_wall_seconds"].clip(lower=1.0e-6)
                 summary_cols = st.columns(4)
                 if "update_wall_seconds" in tail.columns:
                     summary_cols[0].metric(
@@ -1103,7 +1695,7 @@ def render_dashboard() -> None:
 
                 timing_fig = _timing_breakdown_figure(ppo_updates_df)
                 if timing_fig.data:
-                    st.plotly_chart(timing_fig, use_container_width=True)
+                    st.plotly_chart(timing_fig, width="stretch")
 
                 speed_left, speed_right = st.columns(2)
                 if {
@@ -1118,7 +1710,7 @@ def render_dashboard() -> None:
                                 "transitions_in_update",
                                 "Transitions per update vs wall time",
                             ),
-                            use_container_width=True,
+                            width="stretch",
                         )
                 if {
                     "update_wall_seconds",
@@ -1132,7 +1724,7 @@ def render_dashboard() -> None:
                                 "tbptt_forward_calls",
                                 "Forward calls vs wall time",
                             ),
-                            use_container_width=True,
+                            width="stretch",
                         )
 
             if "nonfinite_grad_steps" in ppo_updates_df.columns:
@@ -1143,7 +1735,9 @@ def render_dashboard() -> None:
                     ppo_updates_df.get(
                         "skipped_optimizer_steps",
                         pd.Series(dtype=float),
-                    ).fillna(0).sum()
+                    )
+                    .fillna(0)
+                    .sum()
                 )
                 st.caption(
                     f"Non-finite grad steps: {total_nonfinite} | "
@@ -1153,17 +1747,34 @@ def render_dashboard() -> None:
         if eval_runs_df.empty:
             st.info("No `eval_runs` table found in this DB.")
         else:
-            st.plotly_chart(_eval_figure(eval_runs_df), use_container_width=True)
+            st.plotly_chart(_eval_figure(eval_runs_df), width="stretch")
             eval_gap_fig = _eval_gap_figure(eval_runs_df)
             if eval_gap_fig is not None:
-                st.plotly_chart(eval_gap_fig, use_container_width=True)
+                st.plotly_chart(eval_gap_fig, width="stretch")
+            if not eval_episodes_df.empty:
+                with st.expander("Individual evaluation episodes"):
+                    st.dataframe(eval_episodes_df, width="stretch", hide_index=True)
 
     with tab_rewards:
+        run_config = bundle.get("run_config")
+        reward_config = (run_config or {}).get("reward")
+
         reward_fig = _reward_components_figure(reward_components_df, window)
         if reward_fig is None:
-            st.info("No reward component table available for this run.")
+            st.info(
+                "No per-step reward components in this DB. The Ray training "
+                "path does not emit REWARD_COMP rows, so per-step shaping "
+                "breakdowns are only available for local `train.py` runs."
+            )
         else:
-            st.plotly_chart(reward_fig, use_container_width=True)
+            st.caption(
+                "Schema note: components use the legacy 6-column layout "
+                "(v3 names: health / engagement / positioning / score / "
+                "bonus / end-of-episode). For `defeat_roaches_v4` runs, the "
+                "v4 action-guidance and smart-outcome terms are folded into "
+                "`bonus_reward`."
+            )
+            st.plotly_chart(reward_fig, width="stretch")
 
         if not reward_components_df.empty:
             reward_cols = [
@@ -1177,10 +1788,33 @@ def render_dashboard() -> None:
                     y=reward_cols,
                     title="Reward component distribution",
                 )
-                st.plotly_chart(dist_fig, use_container_width=True)
+                st.plotly_chart(dist_fig, width="stretch")
+
+        if isinstance(reward_config, dict) and reward_config:
+            reward_name = reward_config.get("name", "unknown")
+            st.markdown(
+                f"#### Reward config for this run: `{reward_name}` (from `effective_config.json`)"
+            )
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {"parameter": key, "value": value}
+                        for key, value in sorted(reward_config.items())
+                        if key != "name"
+                    ]
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+
+    with tab_snapshots:
+        _render_snapshots_tab(selected_run)
 
     with tab_checkpoint:
         _render_checkpoint_panel(ckpt_path)
+
+    with tab_mission:
+        _render_mission_control_tab()
 
 
 if __name__ == "__main__":

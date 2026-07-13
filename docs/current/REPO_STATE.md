@@ -99,6 +99,10 @@ controls for V5/SNN architecture decisions.
   `use_smart_outcome_diagnostics`; eval flags in `eval.py`.
 - `tools/analysis/probe_action_logits.py`: fidelity-exact replay of eval-trace
   inputs → per-step action logits/probs/value (built to diagnose det-eval idling).
+- Immutable run manifest plus append-only resume phases; phase-aware shaped/native
+  episode logging and individual eval rows.
+- Content-addressed Model Git snapshots with parent/fork ancestry, immutable
+  tags, hash-chain verification, and fixed-probe representation migration.
 
 ## What Is Still Open
 
@@ -108,9 +112,8 @@ Measurement questions flagged 2026-07-02 (see `learning/TUTOR_INSTRUCTIONS.md`
 - Gradient scale: logged `grad_norm` (pre-clip) averages ~160 against a 0.5
   clip — every update is direction-only. Suspect: unnormalized value-loss on
   the shared trunk. Measure policy-loss vs value-loss grad norms separately.
-- SIL trophy staleness: stored pre-step recurrent states age in the FIFO
-  buffer across many policy versions. Log trophy age at replay; check V(s)
-  sanity on old trophies.
+- SIL trophy staleness remains a modeling risk; replay age and gate-weight
+  distributions are now logged, so use those measurements before changing it.
 - SIL vs trust region: is SIL's separate optimizer step the cause of the
   sustained 56% clip fraction / KL 0.066?
 - Ground-click semantics: does a missed `Smart_screen` (move order) cancel
@@ -143,5 +146,6 @@ python dashboard.py
 - `docs/current/V5_COLLAPSE_AUDIT.md`: V5 diagnosis and stale-claim cleanup
 - `docs/current/ACTION_FEEDBACK_PLAN.md`: protocol-3 feedback token contract
 - `docs/current/RAY_STATUS.md`: current distributed status
+- `docs/current/EXPERIMENT_LINEAGE.md`: provenance and model-lineage tooling
 - `docs/current/THE_BPTT.md`: TBPTT reasoning note
 - `docs/SPATIAL_HEADS.md`: target-head reference

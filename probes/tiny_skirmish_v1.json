@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "kind": "snn-probe-bank-spec",
+  "name": "tiny_skirmish_scripted_v1",
+  "seeds": [0, 1, 2, 3],
+  "steps_per_seed": 8,
+  "expected_probe_bank_sha256": "444f50828d1fa67a11301a48e70014528c53aa2b17511b720017be61f717211e"
+}

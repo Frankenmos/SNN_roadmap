@@ -1,8 +1,56 @@
 # Working Log
 
-Updated: 2026-07-02
+Updated: 2026-07-07
 
 This file is intentionally short and only tracks current-era repo state.
+
+## 2026-07-07 V7 @ ep 5500 read: SIL trust-region runaway CONFIRMED
+
+- The 2026-07-02 smell-list question "SIL vs trust region" is now answered
+  empirically from the run DB (`ppo_updates`, 316 rows): approx KL grows
+  monotonically 0.004 (u1) -> 0.03 (u46) -> 0.31 (u76) -> ~1.0 (u180+),
+  clip fraction saturates ~0.88 at clip_eps 0.10. Curriculum ended at u120,
+  KL kept climbing after — curriculum-drift excuse is dead.
+- SIL gate never closes: `sil_gate_open_fraction` flat at 0.52-0.66 for 240+
+  updates, buffer pinned at 5000, `sil_grad_norm` (pre-clip) rising 3 -> 13.
+  Cause: critic miscalibrated (EV 0.12-0.20; trace replay showed V~-25 vs
+  episode landing +1) so (R-V)+ stays wide open -> permanent imitation push.
+- Behavior: det eval declines monotonically -3.6 (ep1469) -> -5.4 (~ep3700)
+  -> -9.0 (ep5227, n=5, std=0.00 = stereotyped). Det diagnostics: 3254/3274
+  actions are Smart_screen. Aiming (WHERE) is good — trace replay shows
+  clicks on roaches; dosage (WHEN/how often) is the failure. Training shaped
+  reward climbs (-70 -> -43) while native eval score falls = shaped-vs-raw
+  divergence; the queued raw-score validation is now urgent.
+- `docs/notes/more-opinions-to-check.md` verified claim-by-claim against
+  code: SIL separate-step (2a) CONFIRMED (`_run_sil_pass` own backward+step,
+  ppo_trainer.py:2514, called after epoch loop :1341) — note it also shares
+  the Adam optimizer (moment contamination). Stale stored SNN state in SIL
+  entries (2b) CONFIRMED (:2392). "Clip SIL advantage to (R-V)+" ALREADY
+  IMPLEMENTED (:2507). Window-boundary zeroing worry NOT APPLICABLE — chunks
+  start from stored per-step state (:1516-1524). Delay-line burn-in claim
+  NOT APPLICABLE (no delay lines in agent_core; state is (syn, mem) only).
+  LEFT_CLICK entropy contamination HANDLED (masked_fill -1e4 :408 + per-head
+  entropy normalization :550). Entity/selection carry OFF CONFIRMED
+  (spiking_policy.py:418). V-trace/IMPALA: agree with notes' own conclusion —
+  premature; no actor lag exists.
+- Recommended order: (1) merge SIL into PPO loss (single backward, clipped)
+  or at minimum separate optimizer + KL guard, lower sil_coef; (2) fix the
+  critic so the gate can taper (return scale/normalization); (3) run the
+  cheap ratio diagnostic (one epoch, no optimizer step, ratio vs 1) to size
+  replay fidelity; (4) raw-score validation; (5) uint8 spatial storage +
+  admission tightening (R>0) later.
+- LATER SAME DAY — plan written: `docs/current/SIL_TRUST_REGION_FIX_PLAN.md`
+  (Stage 0 ratio probe = measurement-only, Stage 1 merged SIL, Stage 2
+  return normalization; one variable per run) + teaching doc
+  `learning/MERGING_LOSSES.md`. Two NEW findings while grounding the plan:
+  (a) `target_kl=0.03` early-stop (ppo_trainer.py:1331) has been firing at
+  epoch 1 → the run trains at EFFECTIVE EPOCHS = 1; (b) grad decomposition
+  shows `grad_norm_actor_head` decayed to 0.002–0.03 vs critic 11–160 →
+  PPO barely trains the actor (88% clipped = zero policy grad); SIL's
+  separate pass is the dominant actor-training signal. Collection verified
+  SYNCHRONOUS (`_collect_sync_fragments`) → at epoch-1/group-1 the ratio
+  MUST be ~1; whatever `kl_update_start` shows is replay fidelity, not
+  policy movement.
 
 ## 2026-07-02 V7 First Deterministic Engagement + Smell List + Learning Folder
 

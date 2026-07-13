@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #050510;
+  color-scheme: dark; /* native controls (live-entry <select>) match the theme */
+}
+
+/* Glassmorphic panel base */
+.glass {
+  background: rgba(10, 14, 28, 0.72);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  box-shadow:
+    0 0 40px rgba(34, 211, 238, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* Math blocks inside the info panel (content is trusted local HTML) */
+.math-html p {
+  margin: 0.4rem 0;
+  color: rgb(148 163 184);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+.math-html .eq {
+  font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  font-size: 0.82rem;
+  color: rgb(226 232 240);
+  background: rgba(30, 41, 59, 0.55);
+  border-left: 2px solid rgba(34, 211, 238, 0.5);
+  border-radius: 0.25rem;
+  padding: 0.4rem 0.6rem;
+  margin: 0.35rem 0;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.math-html b {
+  color: rgb(103 232 249);
+  font-weight: 600;
+}
+
+/* Thin neon scrollbars */
+.neon-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.neon-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.neon-scroll::-webkit-scrollbar-thumb {
+  background: rgba(34, 211, 238, 0.25);
+  border-radius: 3px;
+}
+.neon-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(34, 211, 238, 0.45);
+}
+
+/* Station label chips rendered via drei <Html> */
+.station-label {
+  font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  background: rgba(8, 12, 24, 0.78);
+  border: 1px solid currentColor;
+  text-transform: uppercase;
+  pointer-events: none;
+  user-select: none;
+}
+.station-tooltip {
+  font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(8, 12, 24, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  color: rgb(226 232 240);
+  pointer-events: none;
+  user-select: none;
+}
+.station-tooltip .dim {
+  color: rgb(100 116 139);
+}

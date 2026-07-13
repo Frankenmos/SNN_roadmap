@@ -15,6 +15,7 @@ focused on current code and active references.
 | `SPATIAL_HEADS.md` | Target-head reference |
 | `current/ACTION_FEEDBACK_PLAN.md` | Protocol-3 action feedback token |
 | `current/RAY_STATUS.md` | Current Ray rollout/eval status |
+| `current/EXPERIMENT_LINEAGE.md` | Immutable run identity, truthful logging, Model Git, representation migration |
 | `current/THE_BPTT.md` | TBPTT reasoning and entity-memory caveat |
 | `current/open_questions.md` | Questions that still need evidence |
 

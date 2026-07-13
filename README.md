@@ -105,6 +105,14 @@ Ray runs save under `models/<run_name>/`. Resuming uses the same command and sam
 
 The learner logs rollout, Ray, packing, replay, backward, checkpoint, payload, and CUDA peak-memory timings into `ppo_updates`. If learner updates are slow, inspect `tbptt_forward_calls`, `tbptt_group_mean_active_chunks`, `replay_forward_wall_seconds`, `chunk_pack_wall_seconds`, `backward_optimizer_wall_seconds`, and `cpu_to_gpu_transfer_wall_seconds`.
 
+Each run also has an immutable birth manifest, append-only launch phases,
+truthful shaped/native episode and per-episode eval logging, and content-addressed
+policy lineage. `checkpoint.pth` remains the mutable resume artifact; Model Git
+snapshots are analysis history, not resume points. See
+[`docs/current/EXPERIMENT_LINEAGE.md`](docs/current/EXPERIMENT_LINEAGE.md) for
+the artifact model, registry commands, representation-migration reports, and
+the deferred real-SC2 acceptance checklist.
+
 For TBPTT throughput, `hyperparameters.batch_size` controls how many recurrent chunks are replayed together. With the default `tbptt_window: 128`, `batch_size: 128` usually means one chunk per group and many tiny GPU forwards. Recent live runs use `batch_size: 2048` with `epochs: 4`; for quick Ray tuning/smoke work, smaller values such as `512` or `1024` and `epochs: 2` can still be useful before returning to the heavier setting.
 
 ### 3. Resuming from the Best Checkpoint
@@ -302,6 +310,7 @@ Recommended starting points:
 - [`docs/current/ARCHITECTURE.md`](docs/current/ARCHITECTURE.md): concise live architecture reference
 - [`docs/current/RAY_STATUS.md`](docs/current/RAY_STATUS.md): current distributed rollout status
 - [`docs/current/FRAGMENT_PPO.md`](docs/current/FRAGMENT_PPO.md): fragment-based PPO contract and invariants
+- [`docs/current/EXPERIMENT_LINEAGE.md`](docs/current/EXPERIMENT_LINEAGE.md): immutable manifests, truthful logs, Model Git, and representation migration
 - [`docs/current/ACTION_FEEDBACK_PLAN.md`](docs/current/ACTION_FEEDBACK_PLAN.md): current stream-token action feedback protocol
 - [`docs/SPATIAL_HEADS.md`](docs/SPATIAL_HEADS.md): spatial target-head options and current config default
 - [`docs/current/THE_BPTT.md`](docs/current/THE_BPTT.md): current BPTT/TBPTT reasoning note
