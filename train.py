@@ -60,6 +60,10 @@ class CheckpointProtocolMismatch(RuntimeError):
     pass
 
 
+class CheckpointResumeError(RuntimeError):
+    """A checkpoint exists but cannot be applied safely; abort the launch."""
+
+
 FLAGS = flags.FLAGS
 if "run_name" not in FLAGS:
     flags.DEFINE_string(
@@ -68,6 +72,23 @@ if "run_name" not in FLAGS:
         "Run directory to resume from/write into. Overrides config.run_name. "
         "Pass 'latest' to reuse the most recently modified run under models_dir.",
     )
+if "resume_weights_only" not in FLAGS:
+    flags.DEFINE_boolean(
+        "resume_weights_only",
+        False,
+        "Resume policy weights, extractor state, and run counters from the "
+        "checkpoint but start a fresh optimizer/scheduler. Use after a code "
+        "change that alters the trainable parameter set.",
+    )
+
+
+def _resume_weights_only_requested() -> bool:
+    try:
+        if not FLAGS.is_parsed():
+            return False
+        return bool(FLAGS.resume_weights_only)
+    except Exception:
+        return False
 
 
 def reset_environment():
@@ -296,69 +317,165 @@ def maybe_save_best_checkpoint(
     return eval_reward
 
 
-def load_checkpoint(agent, checkpoint_path=None):
+def _fresh_run_state():
+    return 0, float("-inf"), deque(maxlen=cfg.environment.reward_window)
+
+
+def _validate_checkpoint_protocol(checkpoint):
+    checkpoint_protocol = checkpoint.get("policy_protocol_version")
+    if checkpoint_protocol != POLICY_PROTOCOL_VERSION:
+        raise CheckpointProtocolMismatch(
+            "Checkpoint policy protocol mismatch: "
+            f"checkpoint={checkpoint_protocol!r}, "
+            f"current={POLICY_PROTOCOL_VERSION}. "
+            "Start a fresh run for stream action-feedback tokens.",
+        )
+    checkpoint_schema = checkpoint.get("policy_input_schema")
+    if checkpoint_schema != POLICY_INPUT_SCHEMA:
+        raise CheckpointProtocolMismatch(
+            "Checkpoint policy input schema mismatch: "
+            f"checkpoint={checkpoint_schema!r}, "
+            f"current={POLICY_INPUT_SCHEMA!r}. "
+            "Start a fresh run for stream action-feedback tokens.",
+        )
+
+
+def _validate_model_state(policy, saved_state):
+    current = policy.state_dict()
+    missing = sorted(set(current) - set(saved_state))
+    unexpected = sorted(set(saved_state) - set(current))
+    if missing or unexpected:
+        raise CheckpointResumeError(
+            "Checkpoint model state does not match the current policy. "
+            f"Missing keys: {missing[:5]}{'...' if len(missing) > 5 else ''}; "
+            "unexpected keys: "
+            f"{unexpected[:5]}{'...' if len(unexpected) > 5 else ''}. "
+            "The architecture changed since this checkpoint was saved; "
+            "resume is not possible. Start a fresh run, or restore the old "
+            "code version.",
+        )
+    mismatched = sorted(
+        key
+        for key in current
+        if getattr(current[key], "shape", None)
+        != getattr(saved_state[key], "shape", None)
+    )
+    if mismatched:
+        raise CheckpointResumeError(
+            "Checkpoint tensor shapes do not match the current policy for "
+            f"{mismatched[:5]}{'...' if len(mismatched) > 5 else ''}. "
+            "The architecture changed since this checkpoint was saved; "
+            "resume is not possible.",
+        )
+
+
+def _validate_optimizer_state(optimizer, saved_state):
+    saved_groups = None
+    if isinstance(saved_state, dict):
+        saved_groups = saved_state.get("param_groups")
+    if not saved_groups:
+        raise CheckpointResumeError(
+            "Checkpoint optimizer state is missing or malformed. "
+            "Resume with weights only (train.py --resume_weights_only / "
+            "ray_train --resume-weights-only) to keep the policy weights "
+            "and start a fresh optimizer.",
+        )
+    live_groups = optimizer.param_groups
+    saved_sizes = [len(group.get("params", ())) for group in saved_groups]
+    live_sizes = [len(group["params"]) for group in live_groups]
+    if saved_sizes != live_sizes:
+        raise CheckpointResumeError(
+            "Checkpoint optimizer state does not match the current "
+            f"optimizer: saved param group sizes {saved_sizes} vs current "
+            f"{live_sizes}. The trainable parameter set changed since this "
+            "checkpoint was saved (e.g. a parameter became a buffer). "
+            "Resume with weights only (train.py --resume_weights_only / "
+            "ray_train --resume-weights-only) to keep the policy weights "
+            "and start a fresh optimizer.",
+        )
+
+
+def load_checkpoint(agent, checkpoint_path=None, weights_only=False):
+    """Resume run state from checkpoint_path, or return a fresh-run state.
+
+    Fresh-run state is returned only for the two known-benign cases: no
+    checkpoint file, or an explicit policy-protocol mismatch. Everything
+    else raises CheckpointResumeError so the launch aborts instead of
+    silently training from episode 0 — the checkpoint file is never
+    renamed or deleted. Model and optimizer compatibility are validated
+    before any state is applied, so a raise here leaves the agent as
+    constructed. With weights_only=True the optimizer and scheduler start
+    fresh while policy weights, extractor state, and run counters resume.
+    """
     if checkpoint_path is None:
         checkpoint_path = _run_path(cfg.environment.checkpoint_path)
-    if os.path.exists(checkpoint_path):
-        try:
-            checkpoint = torch.load(
-                checkpoint_path,
-                map_location=torch.device("cpu"),
-            )
-            checkpoint_protocol = checkpoint.get("policy_protocol_version")
-            if checkpoint_protocol != POLICY_PROTOCOL_VERSION:
-                raise CheckpointProtocolMismatch(
-                    "Checkpoint policy protocol mismatch: "
-                    f"checkpoint={checkpoint_protocol!r}, "
-                    f"current={POLICY_PROTOCOL_VERSION}. "
-                    "Start a fresh run for stream action-feedback tokens.",
-                )
-            checkpoint_schema = checkpoint.get("policy_input_schema")
-            if checkpoint_schema != POLICY_INPUT_SCHEMA:
-                raise CheckpointProtocolMismatch(
-                    "Checkpoint policy input schema mismatch: "
-                    f"checkpoint={checkpoint_schema!r}, "
-                    f"current={POLICY_INPUT_SCHEMA!r}. "
-                    "Start a fresh run for stream action-feedback tokens.",
-                )
-            agent.policy.load_state_dict(checkpoint["agent_state"])
-            agent.ppo.optimizer.load_state_dict(checkpoint["optimizer_state"])
-            sched_state = checkpoint.get("scheduler_state")
-            if sched_state is not None and agent.ppo.scheduler is not None:
-                agent.ppo.scheduler.load_state_dict(sched_state)
-            agent.ppo.update_count = int(
-                checkpoint.get(
-                    "global_update_index",
-                    checkpoint.get("policy_version", 0),
-                )
-                or 0
-            )
-            agent.extractor.load_state_dict(checkpoint.get("extractor_state", {}))
-            episode = checkpoint["episode"]
-            best_eval_reward = checkpoint.get("best_eval_reward", float("-inf"))
-            episode_rewards = deque(
-                checkpoint["episode_rewards"],
-                maxlen=cfg.environment.reward_window,
-            )
-            print(f"Checkpoint loaded from episode {episode}.")
-            return episode, best_eval_reward, episode_rewards
-        except CheckpointProtocolMismatch as exc:
-            print(f"Skipping incompatible checkpoint '{checkpoint_path}': {exc}")
-            return 0, float("-inf"), deque(maxlen=cfg.environment.reward_window)
-        except (EOFError, RuntimeError, Exception) as exc:
-            print(
-                f"Warning: Failed to load checkpoint '{checkpoint_path}': {exc}",
-            )
-            print(
-                "Starting from scratch. The corrupted checkpoint will be "
-                "renamed to avoid future errors.",
-            )
-            try:
-                os.rename(checkpoint_path, checkpoint_path + ".corrupted")
-            except OSError:
-                pass
-            return 0, float("-inf"), deque(maxlen=cfg.environment.reward_window)
-    return 0, float("-inf"), deque(maxlen=cfg.environment.reward_window)
+    if not os.path.exists(checkpoint_path):
+        return _fresh_run_state()
+
+    try:
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location=torch.device("cpu"),
+        )
+    except Exception as exc:
+        raise CheckpointResumeError(
+            f"Checkpoint '{checkpoint_path}' could not be deserialized: "
+            f"{exc}. The file was left in place. Inspect it, move it aside "
+            "manually to start fresh, or resume from a snapshot under "
+            "models/<run>/snapshots/.",
+        ) from exc
+
+    try:
+        _validate_checkpoint_protocol(checkpoint)
+    except CheckpointProtocolMismatch as exc:
+        print(f"Skipping incompatible checkpoint '{checkpoint_path}': {exc}")
+        return _fresh_run_state()
+
+    required = ["agent_state", "episode", "episode_rewards"]
+    if not weights_only:
+        required.append("optimizer_state")
+    absent = [key for key in required if key not in checkpoint]
+    if absent:
+        raise CheckpointResumeError(
+            f"Checkpoint '{checkpoint_path}' is missing required entries "
+            f"{absent}. The file was left in place; inspect it before "
+            "resuming.",
+        )
+
+    _validate_model_state(agent.policy, checkpoint["agent_state"])
+    if not weights_only:
+        _validate_optimizer_state(
+            agent.ppo.optimizer,
+            checkpoint["optimizer_state"],
+        )
+
+    agent.policy.load_state_dict(checkpoint["agent_state"])
+    if weights_only:
+        print(
+            "Weights-only resume: policy weights, extractor state, and "
+            "counters restored; optimizer and scheduler start fresh.",
+        )
+    else:
+        agent.ppo.optimizer.load_state_dict(checkpoint["optimizer_state"])
+        sched_state = checkpoint.get("scheduler_state")
+        if sched_state is not None and agent.ppo.scheduler is not None:
+            agent.ppo.scheduler.load_state_dict(sched_state)
+    agent.ppo.update_count = int(
+        checkpoint.get(
+            "global_update_index",
+            checkpoint.get("policy_version", 0),
+        )
+        or 0
+    )
+    agent.extractor.load_state_dict(checkpoint.get("extractor_state", {}))
+    episode = checkpoint["episode"]
+    best_eval_reward = checkpoint.get("best_eval_reward", float("-inf"))
+    episode_rewards = deque(
+        checkpoint["episode_rewards"],
+        maxlen=cfg.environment.reward_window,
+    )
+    print(f"Checkpoint loaded from episode {episode}.")
+    return episode, best_eval_reward, episode_rewards
 
 
 def build_effective_config(agent, *, distributed_overrides=None):
@@ -603,7 +720,10 @@ def train_agent(env, agent, observation_extractor, log_queue):
     eval_frequency = int(getattr(cfg.environment, "eval_frequency", 0) or 0)
     eval_episodes = int(getattr(cfg.environment, "eval_episodes", 0) or 0)
 
-    start_episode, best_eval_reward, episode_rewards = load_checkpoint(agent)
+    start_episode, best_eval_reward, episode_rewards = load_checkpoint(
+        agent,
+        weights_only=_resume_weights_only_requested(),
+    )
 
     steps_per_episode = cfg.environment.steps_per_episode
     learnable_steps = 0

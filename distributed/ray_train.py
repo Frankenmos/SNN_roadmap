@@ -78,6 +78,13 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Override environment.eval_episodes for this launch.",
     )
+    parser.add_argument(
+        "--resume-weights-only",
+        action="store_true",
+        help="Resume policy weights, extractor state, and run counters from "
+        "the checkpoint but start a fresh optimizer/scheduler. Use after a "
+        "code change that alters the trainable parameter set.",
+    )
     return parser.parse_args()
 
 
@@ -568,6 +575,7 @@ def main() -> None:
             "ray_local_mode": bool(resolved_local_mode),
             "eval_every_updates": int(eval_every),
             "eval_episodes": int(eval_episodes),
+            "resume_weights_only": bool(args.resume_weights_only),
         }
         _manifest_path, _events_path, phase_id = initialize_run_provenance(
             learner.agent,
@@ -585,6 +593,7 @@ def main() -> None:
         )
         start_episode, best_eval_reward, episode_rewards = load_checkpoint(
             learner.agent,
+            weights_only=bool(args.resume_weights_only),
         )
         if not isinstance(episode_rewards, deque):
             episode_rewards = deque(

@@ -1,8 +1,42 @@
 # Working Log
 
-Updated: 2026-07-07
+Updated: 2026-07-13
 
 This file is intentionally short and only tracks current-era repo state.
+
+## 2026-07-13 Checkpoint resume safety (branch fix/checkpoint-resume-safety)
+
+- Context: verified that `attention.lif_q/k/v.beta` receive an exactly-zero
+  gradient (membranes re-init to zero every forward + single LIF step, so
+  beta multiplies zero; outputs bit-identical under beta 0.01<->0.99; smoke
+  snapshots u5-u20 all 0.5 exact). Same finding + fix already existed in
+  `analysis_results/archive-old/Zero/parameter_drift_analysis.md`
+  (2026-04-26) and was forgotten. The planned `learn_beta=False` cleanup is
+  checkpoint-safe for MODEL state (buffer keeps the `beta` key) but would
+  have tripped a resume trap: optimizer `load_state_dict` raises on the
+  changed param set, the old blanket `except` renamed checkpoint.pth to
+  `.corrupted` and silently restarted at episode 0 with already-loaded
+  weights + fresh optimizer. This branch removes that trap first.
+- `train.load_checkpoint` rewritten (validate-then-apply): model keys/shapes
+  and optimizer param-group sizes are checked BEFORE any state is applied;
+  incompatibility raises `CheckpointResumeError` with an actionable message
+  instead of mutating the agent. The checkpoint file is never renamed or
+  deleted anymore. Fresh-run state only for: no file, or the deliberate
+  policy-protocol mismatch skip (unchanged).
+- Explicit weights-only resume added: `train.py --resume_weights_only` /
+  `ray_train --resume-weights-only` restores policy weights, extractor
+  state, and counters (episode, update_count, best_eval_reward) with a
+  fresh optimizer/scheduler — the sanctioned path across a trainable-
+  param-set change. Recorded in the run manifest via `resolved_launch`;
+  Mission Control `build_launch_command` mirrors the new flag.
+- Tests: `tests/test_checkpoint_resume.py` (8) — clean roundtrip, optimizer
+  mismatch fails atomically (param->buffer scenario in miniature), weights-
+  only resume, shape mismatch, unreadable file left in place, protocol
+  mismatch, missing file. Full suite 239 passing. CLI parse smoke-tested on
+  both entry points with real imports.
+- NOTE: the attention-beta cleanup itself is NOT in this branch (one fix at
+  a time); it should land at a run boundary and use weights-only resume if
+  a lineage needs to continue across it.
 
 ## 2026-07-07 V7 @ ep 5500 read: SIL trust-region runaway CONFIRMED
 

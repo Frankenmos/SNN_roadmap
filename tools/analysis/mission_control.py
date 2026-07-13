@@ -171,6 +171,7 @@ def build_launch_command(
     global_rollout_steps: int | None = None,
     config_path: str | None = None,
     local_mode: bool = False,
+    resume_weights_only: bool = False,
 ) -> str:
     """The exact ray_train invocation for the user's terminal. Flags
     mirror distributed/ray_train.py:_parse_args; omitted flags fall back
@@ -191,4 +192,6 @@ def build_launch_command(
         parts += ["--config", quoted]
     if local_mode:
         parts.append("--local-mode")
+    if resume_weights_only:
+        parts.append("--resume-weights-only")
     return " ".join(parts)

@@ -108,11 +108,12 @@ def test_build_launch_command():
         global_rollout_steps=2048,
         config_path="alt config.yaml",
         local_mode=True,
+        resume_weights_only=True,
     )
     assert full == (
         "python -m distributed.ray_train --num-actors 8 --run-name my_run "
         "--max-updates 500 --fragment-steps 64 --global-rollout-steps 2048 "
-        '--config "alt config.yaml" --local-mode'
+        '--config "alt config.yaml" --local-mode --resume-weights-only'
     )
     # blank run name / no actors -> flags omitted entirely
     assert build_launch_command("", num_actors=None) == (
