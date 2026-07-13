@@ -1,10 +1,12 @@
+import json
 import multiprocessing
 import sqlite3
 import time
+import uuid
 from queue import Empty
 
-
 PPO_UPDATE_COLUMNS = [
+    ("phase_id", "INTEGER"),
     ("episode_index", "INTEGER"),
     ("global_update_index", "INTEGER"),
     ("policy_version", "INTEGER"),
@@ -15,6 +17,17 @@ PPO_UPDATE_COLUMNS = [
     ("mean_entropy", "REAL"),
     ("mean_kl", "REAL"),
     ("clip_fraction", "REAL"),
+    ("epochs_ran", "INTEGER"),
+    ("update_start_scope", "TEXT"),
+    ("update_start_sample_count", "INTEGER"),
+    ("kl_update_start", "REAL"),
+    ("clip_frac_update_start", "REAL"),
+    ("log_ratio_update_start_mean", "REAL"),
+    ("log_ratio_update_start_std", "REAL"),
+    ("log_ratio_update_start_p50", "REAL"),
+    ("log_ratio_update_start_p90", "REAL"),
+    ("log_ratio_update_start_p99", "REAL"),
+    ("log_ratio_update_start_max_abs", "REAL"),
     ("explained_variance", "REAL"),
     ("grad_norm", "REAL"),
     ("grad_norm_trunk", "REAL"),
@@ -27,6 +40,21 @@ PPO_UPDATE_COLUMNS = [
     ("sil_steps_replayed", "INTEGER"),
     ("sil_groups", "INTEGER"),
     ("sil_grad_norm", "REAL"),
+    ("sil_grad_norm_trunk", "REAL"),
+    ("sil_grad_norm_actor_head", "REAL"),
+    ("sil_grad_norm_target_head", "REAL"),
+    ("sil_admitted", "INTEGER"),
+    ("sil_admitted_near_enemy", "INTEGER"),
+    ("sil_admitted_health_drop", "INTEGER"),
+    ("sil_admitted_both", "INTEGER"),
+    ("sil_age_mean", "REAL"),
+    ("sil_age_p50", "REAL"),
+    ("sil_age_p90", "REAL"),
+    ("sil_age_max", "REAL"),
+    ("sil_gate_weight_mean", "REAL"),
+    ("sil_gate_weight_p50", "REAL"),
+    ("sil_gate_weight_p90", "REAL"),
+    ("sil_gate_weight_max", "REAL"),
     ("lr", "REAL"),
     ("nonfinite_grad_steps", "INTEGER"),
     ("skipped_optimizer_steps", "INTEGER"),
@@ -111,11 +139,20 @@ def initialize_db(db_path):
             """
             CREATE TABLE IF NOT EXISTS episodes (
                 episode_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phase_id INTEGER,
                 actor_id INTEGER,
                 policy_version INTEGER,
                 total_reward REAL,
+                shaped_reward REAL,
+                native_reward REAL,
                 average_reward REAL,
                 steps INTEGER,
+                terminated INTEGER,
+                truncated INTEGER,
+                reward_components_json TEXT,
+                policy_no_op_count INTEGER,
+                policy_left_click_count INTEGER,
+                policy_right_click_count INTEGER,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -169,6 +206,8 @@ def initialize_db(db_path):
             """
             CREATE TABLE IF NOT EXISTS eval_runs (
                 eval_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                eval_group_id TEXT,
+                phase_id INTEGER,
                 episode_index INTEGER,
                 num_episodes INTEGER,
                 mean_reward REAL,
@@ -183,9 +222,44 @@ def initialize_db(db_path):
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS eval_episodes (
+                eval_episode_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                eval_group_id TEXT NOT NULL,
+                phase_id INTEGER,
+                episode_index INTEGER,
+                episode_number INTEGER,
+                actor_id INTEGER,
+                seed INTEGER,
+                native_reward REAL,
+                steps INTEGER,
+                terminated INTEGER,
+                truncated INTEGER,
+                deterministic INTEGER,
+                policy_version INTEGER,
+                policy_protocol_version INTEGER,
+                policy_input_schema TEXT,
+                policy_no_op_count INTEGER,
+                policy_left_click_count INTEGER,
+                policy_right_click_count INTEGER,
+                snapshot_sha256 TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
 
+        _safe_add_column(conn, "episodes", "phase_id INTEGER")
         _safe_add_column(conn, "episodes", "actor_id INTEGER")
         _safe_add_column(conn, "episodes", "policy_version INTEGER")
+        _safe_add_column(conn, "episodes", "shaped_reward REAL")
+        _safe_add_column(conn, "episodes", "native_reward REAL")
+        _safe_add_column(conn, "episodes", "terminated INTEGER")
+        _safe_add_column(conn, "episodes", "truncated INTEGER")
+        _safe_add_column(conn, "episodes", "reward_components_json TEXT")
+        _safe_add_column(conn, "episodes", "policy_no_op_count INTEGER")
+        _safe_add_column(conn, "episodes", "policy_left_click_count INTEGER")
+        _safe_add_column(conn, "episodes", "policy_right_click_count INTEGER")
         _safe_add_column(conn, "steps", "move_x INTEGER")
         _safe_add_column(conn, "steps", "move_y INTEGER")
         _safe_add_column(conn, "steps", "actor_id INTEGER")
@@ -195,9 +269,32 @@ def initialize_db(db_path):
         _safe_add_column(conn, "steps", "policy_input_schema TEXT")
         for column_name, column_type in PPO_UPDATE_COLUMNS:
             _safe_add_column(conn, "ppo_updates", f"{column_name} {column_type}")
+        _safe_add_column(conn, "eval_runs", "eval_group_id TEXT")
+        _safe_add_column(conn, "eval_runs", "phase_id INTEGER")
         _safe_add_column(conn, "eval_runs", "policy_version INTEGER")
         _safe_add_column(conn, "eval_runs", "policy_protocol_version INTEGER")
         _safe_add_column(conn, "eval_runs", "policy_input_schema TEXT")
+        for column_sql in (
+            "eval_group_id TEXT",
+            "phase_id INTEGER",
+            "episode_index INTEGER",
+            "episode_number INTEGER",
+            "actor_id INTEGER",
+            "seed INTEGER",
+            "native_reward REAL",
+            "steps INTEGER",
+            "terminated INTEGER",
+            "truncated INTEGER",
+            "deterministic INTEGER",
+            "policy_version INTEGER",
+            "policy_protocol_version INTEGER",
+            "policy_input_schema TEXT",
+            "policy_no_op_count INTEGER",
+            "policy_left_click_count INTEGER",
+            "policy_right_click_count INTEGER",
+            "snapshot_sha256 TEXT",
+        ):
+            _safe_add_column(conn, "eval_episodes", column_sql)
 
     return conn
 
@@ -218,10 +315,12 @@ class LogListener(multiprocessing.Process):
         buffer_rewards = []
         buffer_updates = []
         buffer_evals = []
+        buffer_eval_episodes = []
         last_commit = time.time()
 
         def flush_buffers():
-            nonlocal buffer_steps, buffer_rewards, buffer_updates, buffer_evals, last_commit
+            nonlocal buffer_steps, buffer_rewards, buffer_updates, buffer_evals
+            nonlocal buffer_eval_episodes, last_commit
             if buffer_steps:
                 cursor.executemany(
                     "INSERT INTO steps (episode_id, step_number, action, "
@@ -256,14 +355,27 @@ class LogListener(multiprocessing.Process):
                 buffer_updates = []
             if buffer_evals:
                 cursor.executemany(
-                    "INSERT INTO eval_runs (episode_index, num_episodes, "
+                    "INSERT INTO eval_runs (eval_group_id, phase_id, episode_index, num_episodes, "
                     "mean_reward, std_reward, min_reward, max_reward, "
                     "deterministic, policy_version, policy_protocol_version, "
                     "policy_input_schema) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     buffer_evals,
                 )
                 buffer_evals = []
+            if buffer_eval_episodes:
+                cursor.executemany(
+                    "INSERT INTO eval_episodes (eval_group_id, phase_id, "
+                    "episode_index, episode_number, actor_id, seed, "
+                    "native_reward, steps, terminated, truncated, "
+                    "deterministic, policy_version, policy_protocol_version, "
+                    "policy_input_schema, policy_no_op_count, "
+                    "policy_left_click_count, policy_right_click_count, "
+                    "snapshot_sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    "?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    buffer_eval_episodes,
+                )
+                buffer_eval_episodes = []
             conn.commit()
             last_commit = time.time()
 
@@ -275,10 +387,11 @@ class LogListener(multiprocessing.Process):
 
                 if record["type"] == "EPISODE_START":
                     cursor.execute(
-                        "INSERT INTO episodes (actor_id, policy_version, "
+                        "INSERT INTO episodes (phase_id, actor_id, policy_version, "
                         "total_reward, average_reward, steps) "
-                        "VALUES (?, ?, 0, 0, 0)",
+                        "VALUES (?, ?, ?, 0, 0, 0)",
                         (
+                            record.get("phase_id"),
                             record.get("actor_id"),
                             record.get("policy_version"),
                         ),
@@ -289,11 +402,26 @@ class LogListener(multiprocessing.Process):
                     db_id = episode_map.get(record["internal_ep"])
                     if db_id:
                         cursor.execute(
-                            "UPDATE episodes SET total_reward=?, average_reward=?, steps=? WHERE episode_id=?",
+                            "UPDATE episodes SET total_reward=?, shaped_reward=?, "
+                            "native_reward=?, average_reward=?, steps=?, "
+                            "terminated=?, truncated=?, reward_components_json=?, "
+                            "policy_no_op_count=?, policy_left_click_count=?, "
+                            "policy_right_click_count=? WHERE episode_id=?",
                             (
                                 record["total"],
+                                record.get("shaped_reward", record["total"]),
+                                record.get("native_reward"),
                                 record["avg"],
                                 record["steps"],
+                                int(bool(record.get("terminated", False))),
+                                int(bool(record.get("truncated", False))),
+                                json.dumps(
+                                    record.get("reward_components", {}),
+                                    sort_keys=True,
+                                ),
+                                record.get("policy_no_op_count"),
+                                record.get("policy_left_click_count"),
+                                record.get("policy_right_click_count"),
                                 db_id,
                             ),
                         )
@@ -349,8 +477,11 @@ class LogListener(multiprocessing.Process):
                         )
 
                 elif record["type"] == "EVAL":
+                    eval_group_id = record.get("eval_group_id") or str(uuid.uuid4())
                     buffer_evals.append(
                         (
+                            eval_group_id,
+                            record.get("phase_id"),
                             record.get("episode_index"),
                             record.get("num_episodes"),
                             record.get("mean_reward"),
@@ -363,6 +494,31 @@ class LogListener(multiprocessing.Process):
                             record.get("policy_input_schema"),
                         )
                     )
+                    for episode_number, episode in enumerate(
+                        record.get("episode_results", [])
+                    ):
+                        buffer_eval_episodes.append(
+                            (
+                                eval_group_id,
+                                record.get("phase_id"),
+                                record.get("episode_index"),
+                                episode.get("episode_number", episode_number),
+                                episode.get("actor_id"),
+                                episode.get("seed"),
+                                episode.get("native_reward", episode.get("reward")),
+                                episode.get("steps"),
+                                int(bool(episode.get("terminated", False))),
+                                int(bool(episode.get("truncated", False))),
+                                int(bool(record.get("deterministic", False))),
+                                record.get("policy_version"),
+                                record.get("policy_protocol_version"),
+                                record.get("policy_input_schema"),
+                                episode.get("policy_no_op_count"),
+                                episode.get("policy_left_click_count"),
+                                episode.get("policy_right_click_count"),
+                                record.get("snapshot_sha256"),
+                            )
+                        )
 
                 elif record["type"] == "KILL":
                     flush_buffers()

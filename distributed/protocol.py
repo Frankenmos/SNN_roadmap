@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any
 
 import torch
 
@@ -21,13 +22,11 @@ def validate_policy_protocol(
 ) -> None:
     if int(policy_protocol_version) != int(POLICY_PROTOCOL_VERSION):
         raise ValueError(
-            "policy protocol mismatch: "
-            f"{policy_protocol_version!r} != {POLICY_PROTOCOL_VERSION!r}",
+            f"policy protocol mismatch: {policy_protocol_version!r} != {POLICY_PROTOCOL_VERSION!r}",
         )
     if str(policy_input_schema) != str(POLICY_INPUT_SCHEMA):
         raise ValueError(
-            "policy input schema mismatch: "
-            f"{policy_input_schema!r} != {POLICY_INPUT_SCHEMA!r}",
+            f"policy input schema mismatch: {policy_input_schema!r} != {POLICY_INPUT_SCHEMA!r}",
         )
 
 
@@ -40,6 +39,9 @@ class EpisodeSummary:
     terminated: bool
     truncated: bool
     policy_version: int | None = None
+    native_reward: float = 0.0
+    reward_components: Mapping[str, float] = field(default_factory=dict)
+    action_counts: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True, frozen=True)
@@ -138,7 +140,9 @@ class RolloutFragment:
     def truncated(self) -> bool:
         return bool((self.truncateds > 0.5).any().item())
 
-    def as_policy_input_batch(self, state_in: SNNState | None = None) -> PolicyInputBatch:
+    def as_policy_input_batch(
+        self, state_in: SNNState | None = None
+    ) -> PolicyInputBatch:
         return PolicyInputBatch(
             spatial_obs=self.spatial_obs,
             entity_features=self.entity_features,
@@ -189,7 +193,9 @@ class RolloutFragment:
         self.as_policy_input_batch(state_in=None)
 
         if self.pre_step_snn_state is not None:
-            self._validate_state("pre_step_snn_state", self.pre_step_snn_state, expected)
+            self._validate_state(
+                "pre_step_snn_state", self.pre_step_snn_state, expected
+            )
         if self.tail_next_snn_state is not None:
             self._validate_state("tail_next_snn_state", self.tail_next_snn_state, 1)
         if (
@@ -229,6 +235,5 @@ class RolloutFragment:
             )
         if int(syn.shape[0]) != int(expected_batch):
             raise ValueError(
-                f"{name} batch dimension must be {expected_batch}, "
-                f"got {int(syn.shape[0])}",
+                f"{name} batch dimension must be {expected_batch}, got {int(syn.shape[0])}",
             )

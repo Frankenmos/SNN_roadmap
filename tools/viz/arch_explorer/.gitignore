@@ -1,0 +1,10 @@
+node_modules/
+dist/
+smoke_screenshot.png
+smoke_screenshot_live.png
+smoke_screenshot_lab.png
+# local bundles written by `python -m tools.registry export <run>` and
+# `python -m tools.analysis.trace_export <run>`
+public/run_data.json
+public/trace_data.json
+smoke_screenshot_trace.png

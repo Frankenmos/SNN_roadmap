@@ -23,6 +23,7 @@ from distributed.ray_train import (
     _run_eval_and_maybe_save,
     _split_episodes,
 )
+from train import run_eval_sweep
 
 
 def _summary(mean, *, n=1, std=0.0, lo=None, hi=None, deterministic=True):
@@ -89,6 +90,7 @@ def _make_actor(agent, worker, device="cpu"):
     actor.env = object()
     actor.device = device
     actor.policy_version = 3
+    actor.actor_id = 4
     return actor
 
 
@@ -97,8 +99,7 @@ def test_run_eval_resets_worker_and_ppo(monkeypatch):
 
     captured = {}
 
-    def fake_sweep(env, agent, episodes, steps, deterministic=True,
-                   reset_lock=None):
+    def fake_sweep(env, agent, episodes, steps, deterministic=True, reset_lock=None):
         captured["call"] = (episodes, steps, deterministic)
         captured["reset_lock"] = reset_lock
         return _summary(2.0)
@@ -156,16 +157,15 @@ def test_run_eval_resets_even_when_sweep_raises(monkeypatch):
 def test_run_eval_preserves_versions(monkeypatch):
     import train
 
-    monkeypatch.setattr(train, "run_eval_sweep",
-                        lambda *a, **k: _summary(0.0))
+    monkeypatch.setattr(train, "run_eval_sweep", lambda *a, **k: _summary(0.0))
 
     agent = _FakeAgent()
     actor = _make_actor(agent, _FakeWorker())
 
     actor.run_eval(1, 50)
 
-    assert agent.ppo.update_count == 7      # only update_policy may bump this
-    assert actor.policy_version == 3        # eval never re-versions the actor
+    assert agent.ppo.update_count == 7  # only update_policy may bump this
+    assert actor.policy_version == 3  # eval never re-versions the actor
 
 
 # --------------------------------------------------------------------------- #
@@ -185,6 +185,62 @@ def test_split_episodes_even_and_clamped():
     assert _split_episodes(3, 5) == [1, 1, 1]
     # Fewer actors than episodes -> pack evenly, biggest slots first.
     assert _split_episodes(10, 3) == [4, 3, 3]
+
+
+def test_eval_episode_rows_tolerate_bootstrap_action_without_policy_id():
+    class Obs:
+        reward = 1.0
+
+        def __init__(self, done=False):
+            self.done = done
+
+        def last(self):
+            return self.done
+
+    class Env:
+        def reset(self):
+            self.steps = 0
+            return [Obs()]
+
+        def step(self, _actions):
+            self.steps += 1
+            return [Obs(done=self.steps >= 2)]
+
+    class Policy:
+        training = True
+
+        def eval(self):
+            self.training = False
+
+        def train(self):
+            self.training = True
+
+    class Agent:
+        policy = Policy()
+
+        def reset(self):
+            self.steps = 0
+
+        def step(self, _obs, deterministic=True):
+            del deterministic
+            self.steps += 1
+            action_id = None if self.steps == 1 else 2
+            return ("action", action_id)
+
+    summary = run_eval_sweep(Env(), Agent(), 1, 10, deterministic=True)
+
+    assert summary["episode_results"] == [
+        {
+            "episode_number": 0,
+            "native_reward": 2.0,
+            "steps": 2,
+            "terminated": True,
+            "truncated": False,
+            "policy_no_op_count": 0,
+            "policy_left_click_count": 0,
+            "policy_right_click_count": 1,
+        }
+    ]
 
 
 def test_aggregate_matches_numpy_one_episode_per_actor():
@@ -218,6 +274,29 @@ def test_aggregate_weighted_mean_and_empty():
     empty = _aggregate_eval_summaries([None, {}])
     assert empty["num_episodes"] == 0
     assert empty["mean_reward"] == 0.0
+
+
+def test_aggregate_uses_individual_episode_rows_for_exact_std():
+    summaries = [
+        {
+            **_summary(5.0, n=2),
+            "episode_results": [
+                {"native_reward": 0.0, "actor_id": 0},
+                {"native_reward": 10.0, "actor_id": 0},
+            ],
+        },
+        {
+            **_summary(20.0, n=1),
+            "episode_results": [{"native_reward": 20.0, "actor_id": 1}],
+        },
+    ]
+
+    agg = _aggregate_eval_summaries(summaries)
+
+    assert agg["num_episodes"] == 3
+    assert agg["mean_reward"] == pytest.approx(10.0)
+    assert agg["std_reward"] == pytest.approx(np.asarray([0.0, 10.0, 20.0]).std())
+    assert [row["episode_number"] for row in agg["episode_results"]] == [0, 1, 2]
 
 
 # --------------------------------------------------------------------------- #
@@ -271,8 +350,8 @@ class _FakeQueue:
 
 
 def test_eval_syncs_before_best_save_and_threads_reward(monkeypatch):
-    import train
     import distributed.ray_train as rt
+    import train
 
     calls = []
 
@@ -286,8 +365,7 @@ def test_eval_syncs_before_best_save_and_threads_reward(monkeypatch):
 
     seen = {}
 
-    def fake_best(agent, episode, avg_reward, eval_summary, best,
-                  episode_rewards):
+    def fake_best(agent, episode, avg_reward, eval_summary, best, episode_rewards):
         calls.append(("best", agent.extractor.count))
         seen["best_in"] = best
         seen["episode"] = episode

@@ -3,8 +3,8 @@ import math
 import pytest
 import torch
 import torch.nn as nn
-
 from MockedEnv.policy_batch import make_policy_batch
+
 from agent_core.policy_protocol import (
     ACTION_FEEDBACK_BRIDGE_TYPE_OFFSET,
     ACTION_FEEDBACK_ENEMY_HEALTH_DROP_OFFSET,
@@ -443,7 +443,8 @@ def test_select_action_deterministic_uses_argmax_for_move_heads():
 
     batch = make_policy_batch(batch_size=1, meta_dim=META_VECTOR_DIM)
     sample = ppo.select_action(
-        batch, deterministic=True,
+        batch,
+        deterministic=True,
     )
 
     expected_log_prob = (
@@ -519,12 +520,14 @@ def test_compute_advantages_matches_hand_calculation():
     expected_adv_2 = 0.995 + 0.99 * 0.95 * expected_adv_3
     expected_adv_1 = 0.995 + 0.99 * 0.95 * expected_adv_2
     expected_adv_0 = 0.995 + 0.99 * 0.95 * expected_adv_1
-    expected = torch.tensor([
-        expected_adv_0,
-        expected_adv_1,
-        expected_adv_2,
-        expected_adv_3,
-    ])
+    expected = torch.tensor(
+        [
+            expected_adv_0,
+            expected_adv_1,
+            expected_adv_2,
+            expected_adv_3,
+        ]
+    )
 
     assert advantages.shape == rewards.cpu().shape
     assert torch.allclose(advantages, expected, atol=1e-5)
@@ -748,9 +751,7 @@ def test_finalize_fragment_records_action_effect_feedback_counters():
     assert fragment.step_counters["rollout_feedback_near_enemy_smart_count"] == 1
     assert fragment.step_counters["rollout_feedback_moved_toward_target_count"] == 0
     assert (
-        fragment.step_counters[
-            "rollout_feedback_enemy_health_drop_after_smart_count"
-        ]
+        fragment.step_counters["rollout_feedback_enemy_health_drop_after_smart_count"]
         == 1
     )
     assert fragment.step_counters["rollout_feedback_null_unclear_smart_count"] == 1
@@ -802,13 +803,27 @@ def test_update_policy_replays_state_and_clears_memory():
 
     changed_params = sum(
         not torch.equal(before, after)
-        for before, after in zip(initial_params, net.parameters())
+        for before, after in zip(initial_params, net.parameters(), strict=False)
     )
 
     assert len(losses) == 2
     assert stats is not None
     assert stats["transitions_in_update"] == rollout_steps
     assert stats["epochs_ran"] == 1
+    assert stats["update_start_scope"] == "first_tbptt_group_pre_optimizer"
+    assert stats["update_start_sample_count"] > 0
+    for diagnostic_key in (
+        "kl_update_start",
+        "clip_frac_update_start",
+        "log_ratio_update_start_mean",
+        "log_ratio_update_start_std",
+        "log_ratio_update_start_p50",
+        "log_ratio_update_start_p90",
+        "log_ratio_update_start_p99",
+        "log_ratio_update_start_max_abs",
+    ):
+        assert diagnostic_key in stats
+        assert math.isfinite(stats[diagnostic_key])
     assert stats["nonfinite_grad_steps"] == 0
     assert stats["skipped_optimizer_steps"] == 0
     assert 0.0 <= stats["entity_mask_utilization"] <= 1.0
@@ -846,6 +861,37 @@ def test_update_policy_replays_state_and_clears_memory():
     assert changed_params > 0
     assert ppo.memory == []
     assert ppo.final_next is None
+
+
+def test_sample_weighted_metric_accumulator_handles_uneven_groups():
+    sums = {name: 0.0 for name in ("policy", "value", "entropy", "kl", "clip_frac")}
+    count = PPO._accumulate_sample_weighted_metrics(
+        sums,
+        0.0,
+        sample_count=1,
+        policy=1.0,
+        value=2.0,
+        entropy=3.0,
+        kl=0.1,
+        clip_frac=0.2,
+    )
+    count = PPO._accumulate_sample_weighted_metrics(
+        sums,
+        count,
+        sample_count=3,
+        policy=5.0,
+        value=6.0,
+        entropy=7.0,
+        kl=0.5,
+        clip_frac=0.6,
+    )
+
+    assert count == 4.0
+    assert sums["policy"] / count == pytest.approx(4.0)
+    assert sums["value"] / count == pytest.approx(5.0)
+    assert sums["entropy"] / count == pytest.approx(6.0)
+    assert sums["kl"] / count == pytest.approx(0.4)
+    assert sums["clip_frac"] / count == pytest.approx(0.5)
 
 
 def test_update_policy_caches_fragment_observations_once_per_fragment(monkeypatch):
@@ -960,7 +1006,7 @@ def test_update_policy_uses_chunk_state_carry_and_resets_on_done():
 
     stored_states = [0.0, 99.0, 7.0]
     dones = [0.0, 1.0, 1.0]
-    for stored_state, done in zip(stored_states, dones):
+    for stored_state, done in zip(stored_states, dones, strict=False):
         batch = make_policy_batch(
             batch_size=1,
             meta_dim=META_VECTOR_DIM,
@@ -1050,7 +1096,9 @@ def test_packed_replay_matches_reference_replay():
 
     for column, chunk in enumerate(chunks):
         length = int(chunk["length"])
-        ref_action, ref_target_log_prob, ref_target_entropy, ref_values = reference[column]
+        ref_action, ref_target_log_prob, ref_target_entropy, ref_values = reference[
+            column
+        ]
         assert torch.allclose(
             packed["action_logits"][:length, column],
             ref_action,

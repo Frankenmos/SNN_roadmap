@@ -5,9 +5,9 @@ import math
 import os
 import time
 from collections import deque
+from collections.abc import Iterable
 from multiprocessing import Queue
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 
@@ -16,6 +16,7 @@ from distributed.learner import LearnerCoordinator
 from distributed.protocol import EpisodeSummary, RolloutFragment
 from distributed.ray_actor import RolloutActor
 from obs_space.obs_space_2 import ObservationExtractor
+from Utility.checkpoint_snapshots import SnapshotSchedule, save_policy_snapshot
 from Utility.config import cfg
 from Utility.logger_utils import LogListener
 
@@ -64,6 +65,18 @@ def _parse_args() -> argparse.Namespace:
         "--local-mode",
         action="store_true",
         help="Start Ray in local_mode for debugging.",
+    )
+    parser.add_argument(
+        "--eval-every-updates",
+        type=int,
+        default=None,
+        help="Override distributed.eval_every_updates for this launch.",
+    )
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=None,
+        help="Override environment.eval_episodes for this launch.",
     )
     return parser.parse_args()
 
@@ -136,6 +149,7 @@ def _log_episode_summaries(
     log_queue,
     fragments: Iterable[RolloutFragment],
     episode_rewards: deque,
+    phase_id: int = 0,
 ) -> int:
     logged = 0
     for summary in _iter_episode_summaries(fragments):
@@ -147,6 +161,7 @@ def _log_episode_summaries(
         log_queue.put(
             {
                 "type": "EPISODE_START",
+                "phase_id": int(phase_id),
                 "internal_ep": internal_ep,
                 "actor_id": int(summary.actor_id),
                 "policy_version": summary.policy_version,
@@ -155,10 +170,17 @@ def _log_episode_summaries(
         log_queue.put(
             {
                 "type": "EPISODE_END",
+                "phase_id": int(phase_id),
                 "internal_ep": internal_ep,
                 "total": float(summary.total_reward),
+                "shaped_reward": float(summary.total_reward),
+                "native_reward": float(summary.native_reward),
                 "avg": float(avg_reward),
                 "steps": int(summary.steps),
+                "terminated": bool(summary.terminated),
+                "truncated": bool(summary.truncated),
+                "reward_components": dict(summary.reward_components),
+                **dict(summary.action_counts),
             },
         )
         logged += 1
@@ -170,10 +192,12 @@ def _log_update(
     log_queue,
     stats: dict,
     episode_index: int,
+    phase_id: int = 0,
 ) -> None:
     log_queue.put(
         {
             "type": "UPDATE",
+            "phase_id": int(phase_id),
             "internal_ep": -1,
             "episode_index": int(episode_index),
             "policy_version": int(stats.get("policy_version", 0) or 0),
@@ -282,15 +306,8 @@ def _split_episodes(total: int, n: int) -> list[int]:
 
 def _aggregate_eval_summaries(
     summaries: list[dict],
-) -> dict[str, float | int | bool]:
-    """Pool per-actor eval summaries into one summary.
-
-    Exact when every actor ran the same number of episodes (the common
-    one-episode-per-actor case): each actor's mean is then that episode's
-    reward, so the spread of per-actor means is the true population std. With
-    unequal/multi-episode actors the std understates within-actor variance - an
-    accepted approximation; mean/min/max/num_episodes stay exact.
-    """
+) -> dict[str, object]:
+    """Pool actor evals from their individual episode rows when available."""
     summaries = [s for s in summaries if s]
     if not summaries:
         return {
@@ -300,7 +317,32 @@ def _aggregate_eval_summaries(
             "min_reward": 0.0,
             "max_reward": 0.0,
             "deterministic": True,
+            "episode_results": [],
         }
+    episode_results = []
+    for summary in summaries:
+        episode_results.extend(summary.get("episode_results", []))
+    for episode_number, episode in enumerate(episode_results):
+        episode["episode_number"] = int(episode_number)
+    if episode_results:
+        rewards = np.asarray(
+            [
+                float(row.get("native_reward", row.get("reward", 0.0)))
+                for row in episode_results
+            ],
+            dtype=np.float32,
+        )
+        return {
+            "num_episodes": int(len(episode_results)),
+            "mean_reward": float(rewards.mean()),
+            "std_reward": float(rewards.std()),
+            "min_reward": float(rewards.min()),
+            "max_reward": float(rewards.max()),
+            "deterministic": bool(summaries[0].get("deterministic", True)),
+            "episode_results": episode_results,
+        }
+
+    # Compatibility for older actors that only return aggregate summaries.
     counts = np.asarray([float(s.get("num_episodes", 0)) for s in summaries])
     means = np.asarray([float(s.get("mean_reward", 0.0)) for s in summaries])
     total = float(counts.sum())
@@ -316,6 +358,7 @@ def _aggregate_eval_summaries(
             max(float(s.get("max_reward", 0.0)) for s in summaries),
         ),
         "deterministic": bool(summaries[0].get("deterministic", True)),
+        "episode_results": [],
     }
 
 
@@ -332,6 +375,7 @@ def _run_eval_and_maybe_save(
     eval_episodes: int,
     eval_steps: int,
     update_index: int,
+    phase_id: int = 0,
 ) -> float:
     """Run deterministic eval on borrowed training actors and save the best.
 
@@ -359,6 +403,7 @@ def _run_eval_and_maybe_save(
     log_queue.put(
         {
             "type": "EVAL",
+            "phase_id": int(phase_id),
             "episode_index": int(episode_index),
             "policy_version": int(learner.policy_version),
             "policy_protocol_version": POLICY_PROTOCOL_VERSION,
@@ -448,13 +493,14 @@ def main() -> None:
         cfg.environment.run_name = args.run_name
 
     import ray
+
     from train import (
         _run_dir,
         _run_path,
+        initialize_run_provenance,
         load_checkpoint,
         save_checkpoint,
         save_initial_config,
-        write_effective_config,
     )
 
     num_actors = _resolve_num_actors(args)
@@ -464,13 +510,35 @@ def main() -> None:
         args,
         global_rollout_steps=global_rollout_steps,
     )
+    eval_every = int(
+        args.eval_every_updates
+        if args.eval_every_updates is not None
+        else (_distributed_value("eval_every_updates", 0) or 0)
+    )
+    eval_episodes = int(
+        args.eval_episodes
+        if args.eval_episodes is not None
+        else (getattr(cfg.environment, "eval_episodes", 0) or 0)
+    )
+    cfg.environment.eval_episodes = int(eval_episodes)
     actor_cpus = float(_distributed_value("actor_cpus", 1) or 1)
+    resolved_local_mode = bool(
+        args.local_mode or _distributed_value("ray_local_mode", False),
+    )
     repo_root = Path(__file__).resolve().parents[1]
     config_path = Path(cfg.config_path).resolve()
 
     log_queue = Queue()
     run_dir = _run_dir()
     run_name = cfg.environment.run_name
+    snapshot_schedule = SnapshotSchedule.from_distributed_config(_distributed_value)
+    if snapshot_schedule.enabled:
+        print(
+            "Policy snapshots enabled: "
+            f"dense every {snapshot_schedule.dense_every} updates until "
+            f"update {snapshot_schedule.dense_until}, then every "
+            f"{snapshot_schedule.sparse_every}.",
+        )
     print(f"Ray run directory: {run_dir}")
     print(
         "Starting synchronous Ray PPO: "
@@ -489,6 +557,32 @@ def main() -> None:
         ray.init(**_ray_init_kwargs(args))
         ray_started = True
         learner = LearnerCoordinator()
+        resolved_launch = {
+            "run_name": str(run_name),
+            "config_path": str(config_path),
+            "num_rollout_actors": int(num_actors),
+            "fragment_steps": int(fragment_steps),
+            "global_rollout_steps": int(global_rollout_steps),
+            "max_updates": int(max_updates),
+            "actor_cpus": float(actor_cpus),
+            "ray_local_mode": bool(resolved_local_mode),
+            "eval_every_updates": int(eval_every),
+            "eval_episodes": int(eval_episodes),
+        }
+        _manifest_path, _events_path, phase_id = initialize_run_provenance(
+            learner.agent,
+            launch_mode="ray",
+            resolved_launch=resolved_launch,
+            distributed_overrides={
+                "num_rollout_actors": int(num_actors),
+                "fragment_steps": int(fragment_steps),
+                "global_rollout_steps": int(global_rollout_steps),
+                "max_updates": int(max_updates),
+                "actor_cpus": float(actor_cpus),
+                "ray_local_mode": bool(resolved_local_mode),
+                "eval_every_updates": int(eval_every),
+            },
+        )
         start_episode, best_eval_reward, episode_rewards = load_checkpoint(
             learner.agent,
         )
@@ -498,7 +592,6 @@ def main() -> None:
                 maxlen=cfg.environment.reward_window,
             )
         episode_index = int(start_episode)
-        write_effective_config(learner.agent)
 
         RemoteRolloutActor = ray.remote(num_cpus=actor_cpus)(RolloutActor)
         actors = [
@@ -547,6 +640,7 @@ def main() -> None:
                 log_queue=log_queue,
                 fragments=fragments,
                 episode_rewards=episode_rewards,
+                phase_id=phase_id,
             )
             stats["episode_log_enqueue_wall_seconds"] = float(
                 time.perf_counter() - episode_log_started,
@@ -555,21 +649,34 @@ def main() -> None:
             episode_index += episodes_logged
 
             checkpoint_frequency = max(1, int(cfg.environment.log_frequency))
+            checkpoint_due = (update_index + 1) % checkpoint_frequency == 0
+            snapshot_due = snapshot_schedule.is_due(int(learner.policy_version))
             checkpoint_wall_seconds = 0.0
-            if (update_index + 1) % checkpoint_frequency == 0:
-                avg_reward = (
-                    float(np.mean(episode_rewards)) if episode_rewards else None
-                )
+            if checkpoint_due or snapshot_due:
                 checkpoint_started = time.perf_counter()
+                # One sync serves both writes; it must precede them so
+                # neither ships count=0 normalizer stats.
                 _sync_extractor_state_from_actors(ray, actors, learner)
-                save_checkpoint(
-                    learner.agent,
-                    episode_index,
-                    best_eval_reward,
-                    episode_rewards,
-                    avg_reward=avg_reward,
-                    require_rollout_clear=False,
-                )
+                if checkpoint_due:
+                    avg_reward = (
+                        float(np.mean(episode_rewards)) if episode_rewards else None
+                    )
+                    save_checkpoint(
+                        learner.agent,
+                        episode_index,
+                        best_eval_reward,
+                        episode_rewards,
+                        avg_reward=avg_reward,
+                        require_rollout_clear=False,
+                    )
+                if snapshot_due:
+                    save_policy_snapshot(
+                        learner.agent,
+                        run_dir=run_dir,
+                        episode=episode_index,
+                        run_name=run_name,
+                        phase_id=phase_id,
+                    )
                 checkpoint_wall_seconds = time.perf_counter() - checkpoint_started
             stats["checkpoint_wall_seconds"] = float(checkpoint_wall_seconds)
 
@@ -578,6 +685,7 @@ def main() -> None:
                 log_queue=log_queue,
                 stats=stats,
                 episode_index=episode_index,
+                phase_id=phase_id,
             )
             update_log_wall_seconds = time.perf_counter() - update_log_started
             cuda_peak_gib = float(
@@ -613,8 +721,6 @@ def main() -> None:
                 include_extractor_state=False,
             )
 
-            eval_every = int(_distributed_value("eval_every_updates", 0) or 0)
-            eval_episodes = int(getattr(cfg.environment, "eval_episodes", 0) or 0)
             if (
                 eval_every > 0
                 and eval_episodes > 0
@@ -639,6 +745,7 @@ def main() -> None:
                     eval_episodes=eval_episodes,
                     eval_steps=eval_steps,
                     update_index=update_index,
+                    phase_id=phase_id,
                 )
 
         if learner is not None and not interrupted:

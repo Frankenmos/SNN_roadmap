@@ -12,11 +12,24 @@ import torch
 from absl import app, flags
 
 from agent import DefeatRoaches
-from agent_core.policy_protocol import POLICY_INPUT_SCHEMA, POLICY_PROTOCOL_VERSION
-from Utility.config import cfg
-from Utility.logger_utils import LogListener
+from agent_core.policy_protocol import (
+    POLICY_ACTION_LEFT_CLICK,
+    POLICY_ACTION_NO_OP,
+    POLICY_ACTION_RIGHT_CLICK,
+    POLICY_INPUT_SCHEMA,
+    POLICY_PROTOCOL_VERSION,
+)
 from envs.setup_env import create_env
 from obs_space.obs_space_2 import ObservationExtractor
+from Utility.config import cfg
+from Utility.logger_utils import LogListener
+from Utility.run_manifest import (
+    RUN_MANIFEST_FILENAME,
+    append_resume_event,
+    build_manifest_payload,
+    ensure_run_manifest,
+    next_phase_id,
+)
 
 
 def _run_dir() -> str:
@@ -36,6 +49,11 @@ def _run_path(filename: str) -> str:
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+_ACTIVE_PHASE_ID = 0
+
+
+def current_phase_id() -> int:
+    return int(_ACTIVE_PHASE_ID)
 
 
 class CheckpointProtocolMismatch(RuntimeError):
@@ -59,7 +77,9 @@ def reset_environment():
             visualize=cfg.environment.visualize,
             use_action_printer=cfg.environment.use_action_printer,
             use_available_actions_diagnostics=getattr(
-                cfg.environment, "use_available_actions_diagnostics", False,
+                cfg.environment,
+                "use_available_actions_diagnostics",
+                False,
             ),
             available_actions_diagnostics_output_path=getattr(
                 cfg.environment,
@@ -67,10 +87,14 @@ def reset_environment():
                 "analysis_results/available_actions_diagnostics.jsonl",
             ),
             available_actions_diagnostics_every_n_steps=getattr(
-                cfg.environment, "available_actions_diagnostics_every_n_steps", 1,
+                cfg.environment,
+                "available_actions_diagnostics_every_n_steps",
+                1,
             ),
             use_last_action_diagnostics=getattr(
-                cfg.environment, "use_last_action_diagnostics", False,
+                cfg.environment,
+                "use_last_action_diagnostics",
+                False,
             ),
             last_action_diagnostics_output_path=getattr(
                 cfg.environment,
@@ -78,10 +102,14 @@ def reset_environment():
                 "analysis_results/last_action_diagnostics.jsonl",
             ),
             last_action_diagnostics_every_n_steps=getattr(
-                cfg.environment, "last_action_diagnostics_every_n_steps", 1,
+                cfg.environment,
+                "last_action_diagnostics_every_n_steps",
+                1,
             ),
             use_score_diagnostics=getattr(
-                cfg.environment, "use_score_diagnostics", False,
+                cfg.environment,
+                "use_score_diagnostics",
+                False,
             ),
             score_diagnostics_output_path=getattr(
                 cfg.environment,
@@ -89,10 +117,14 @@ def reset_environment():
                 "analysis_results/score_diagnostics.jsonl",
             ),
             score_diagnostics_every_n_steps=getattr(
-                cfg.environment, "score_diagnostics_every_n_steps", 1,
+                cfg.environment,
+                "score_diagnostics_every_n_steps",
+                1,
             ),
             use_observation_inspector=getattr(
-                cfg.environment, "use_observation_inspector", False,
+                cfg.environment,
+                "use_observation_inspector",
+                False,
             ),
             observation_inspector_output_path=getattr(
                 cfg.environment,
@@ -100,13 +132,19 @@ def reset_environment():
                 "analysis_results/observation_space.jsonl",
             ),
             observation_inspector_every_n_steps=getattr(
-                cfg.environment, "observation_inspector_every_n_steps", 10,
+                cfg.environment,
+                "observation_inspector_every_n_steps",
+                10,
             ),
             observation_inspector_max_unit_samples=getattr(
-                cfg.environment, "observation_inspector_max_unit_samples", 5,
+                cfg.environment,
+                "observation_inspector_max_unit_samples",
+                5,
             ),
             use_policy_input_diagnostics=getattr(
-                cfg.environment, "use_policy_input_diagnostics", False,
+                cfg.environment,
+                "use_policy_input_diagnostics",
+                False,
             ),
             policy_input_diagnostics_output_path=getattr(
                 cfg.environment,
@@ -114,7 +152,9 @@ def reset_environment():
                 "analysis_results/policy_input_diagnostics.jsonl",
             ),
             policy_input_diagnostics_every_n_steps=getattr(
-                cfg.environment, "policy_input_diagnostics_every_n_steps", 1,
+                cfg.environment,
+                "policy_input_diagnostics_every_n_steps",
+                1,
             ),
             policy_input_diagnostics_max_entity_samples=getattr(
                 cfg.environment,
@@ -184,9 +224,7 @@ def save_checkpoint(
         "agent_state": agent.policy.state_dict(),
         "optimizer_state": agent.ppo.optimizer.state_dict(),
         "scheduler_state": (
-            agent.ppo.scheduler.state_dict()
-            if agent.ppo.scheduler is not None
-            else None
+            agent.ppo.scheduler.state_dict() if agent.ppo.scheduler is not None else None
         ),
         "episode": episode,
         "best_eval_reward": best_eval_reward,
@@ -227,7 +265,9 @@ def maybe_save_best_checkpoint(
         return best_eval_reward
 
     best_name = getattr(
-        cfg.environment, "best_checkpoint_path", "best_checkpoint.pth",
+        cfg.environment,
+        "best_checkpoint_path",
+        "best_checkpoint.pth",
     )
     best_path = _run_path(best_name)
     min_eps = getattr(cfg.environment, "best_min_episodes", 50)
@@ -251,8 +291,7 @@ def maybe_save_best_checkpoint(
         return best_eval_reward
 
     print(
-        f"  -> new best deterministic eval reward: {eval_reward:.2f} "
-        f"(was {best_eval_reward:.2f})",
+        f"  -> new best deterministic eval reward: {eval_reward:.2f} (was {best_eval_reward:.2f})",
     )
     return eval_reward
 
@@ -263,7 +302,8 @@ def load_checkpoint(agent, checkpoint_path=None):
     if os.path.exists(checkpoint_path):
         try:
             checkpoint = torch.load(
-                checkpoint_path, map_location=torch.device("cpu"),
+                checkpoint_path,
+                map_location=torch.device("cpu"),
             )
             checkpoint_protocol = checkpoint.get("policy_protocol_version")
             if checkpoint_protocol != POLICY_PROTOCOL_VERSION:
@@ -321,7 +361,7 @@ def load_checkpoint(agent, checkpoint_path=None):
     return 0, float("-inf"), deque(maxlen=cfg.environment.reward_window)
 
 
-def write_effective_config(agent):
+def build_effective_config(agent, *, distributed_overrides=None):
     distributed_cfg = getattr(cfg, "distributed", None)
     distributed_payload = None
     if distributed_cfg is not None:
@@ -329,7 +369,11 @@ def write_effective_config(agent):
             distributed_payload = dict(distributed_cfg.items())
         except Exception:
             distributed_payload = None
-    payload = {
+    if distributed_overrides:
+        if distributed_payload is None:
+            distributed_payload = {}
+        distributed_payload.update(dict(distributed_overrides))
+    return {
         "run_name": getattr(cfg.environment, "run_name", ""),
         "environment": {
             "map_name": cfg.environment.map_name,
@@ -353,15 +397,91 @@ def write_effective_config(agent):
         "total_updates_estimate": int(agent.total_updates_estimate),
         "distributed": distributed_payload,
     }
+
+
+def write_effective_config(agent, *, distributed_overrides=None):
+    payload = build_effective_config(
+        agent,
+        distributed_overrides=distributed_overrides,
+    )
     with open(_run_path("effective_config.json"), "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
+    return payload
+
+
+def initialize_run_provenance(
+    agent,
+    *,
+    launch_mode,
+    resolved_launch=None,
+    distributed_overrides=None,
+    argv=None,
+):
+    """Create the immutable run birth certificate and append this launch.
+
+    ``effective_config.json`` remains for existing analysis tools, while the
+    manifest preserves the first resolved configuration and the JSONL stream
+    records every later resume/config/code phase.
+    """
+    global _ACTIVE_PHASE_ID
+
+    run_dir = Path(_run_dir()).resolve()
+    run_name = str(getattr(cfg.environment, "run_name", ""))
+    config_path = Path(getattr(cfg, "config_path", Path(__file__).parent / "config.yaml"))
+    checkpoint_path = run_dir / str(cfg.environment.checkpoint_path)
+    checkpoint_present = checkpoint_path.exists()
+    manifest_preexisting = (run_dir / RUN_MANIFEST_FILENAME).exists()
+    effective_config = write_effective_config(
+        agent,
+        distributed_overrides=distributed_overrides,
+    )
+    manifest_payload = build_manifest_payload(
+        run_name=run_name,
+        effective_config=effective_config,
+        launch_mode=launch_mode,
+        repo_root=Path(__file__).resolve().parent,
+        config_path=config_path,
+        argv=argv,
+        resolved_launch=resolved_launch,
+        adopted_existing_run=bool(checkpoint_present and not manifest_preexisting),
+    )
+    manifest_path, manifest_created = ensure_run_manifest(run_dir, manifest_payload)
+    if manifest_created and checkpoint_present:
+        event_type = "legacy_adoption"
+    elif manifest_created:
+        event_type = "start"
+    else:
+        event_type = "resume"
+    phase_id = next_phase_id(run_dir)
+    events_path = append_resume_event(
+        run_dir,
+        event_type=event_type,
+        effective_config=effective_config,
+        launch_mode=launch_mode,
+        repo_root=Path(__file__).resolve().parent,
+        config_path=config_path,
+        checkpoint_present=checkpoint_present,
+        phase_id=phase_id,
+        argv=argv,
+        resolved_launch=resolved_launch,
+    )
+    print(
+        f"Run provenance: {manifest_path.name} "
+        f"({'created' if manifest_created else 'preserved'}); "
+        f"appended {events_path.name} ({event_type}, phase={phase_id}).",
+    )
+    _ACTIVE_PHASE_ID = int(phase_id)
+    return manifest_path, events_path, phase_id
 
 
 def save_initial_config():
-    """Save the raw config.yaml content to the run directory at start."""
+    """Save the birth config once; never rewrite it during resume."""
     src_config = Path(getattr(cfg, "config_path", Path(__file__).parent / "config.yaml"))
     if src_config.exists():
-        dst_config = _run_path("config.yaml")
+        dst_config = Path(_run_path("config.yaml"))
+        if dst_config.exists():
+            print(f"Initial config preserved at {dst_config}")
+            return
         shutil.copy2(src_config, dst_config)
         print(f"Initial config saved to {dst_config}")
     else:
@@ -384,10 +504,11 @@ def run_eval_sweep(
     training resets; the single-process caller leaves it None.
     """
     rewards = []
+    episode_results = []
     was_training = agent.policy.training
     agent.policy.eval()
     try:
-        for _ in range(episodes):
+        for episode_number in range(episodes):
             if reset_lock is not None:
                 with reset_lock():
                     obs = env.reset()[0]
@@ -396,15 +517,40 @@ def run_eval_sweep(
             agent.reset()
             ep_reward = 0.0
             steps = 0
+            action_counts = {
+                "policy_no_op_count": 0,
+                "policy_left_click_count": 0,
+                "policy_right_click_count": 0,
+            }
             while True:
-                action_func = agent.step(obs, deterministic=deterministic)[0]
+                step_result = agent.step(obs, deterministic=deterministic)
+                action_func, action_id = step_result[0], step_result[1]
+                action_key = {
+                    POLICY_ACTION_NO_OP: "policy_no_op_count",
+                    POLICY_ACTION_LEFT_CLICK: "policy_left_click_count",
+                    POLICY_ACTION_RIGHT_CLICK: "policy_right_click_count",
+                }.get(None if action_id is None else int(action_id))
+                if action_key is not None:
+                    action_counts[action_key] += 1
                 next_obs = env.step([action_func])[0]
                 steps += 1
                 ep_reward += float(next_obs.reward)
                 obs = next_obs
-                if next_obs.last() or steps >= steps_per_episode:
+                terminated = bool(next_obs.last())
+                truncated = bool(steps >= steps_per_episode and not terminated)
+                if terminated or truncated:
                     break
             rewards.append(ep_reward)
+            episode_results.append(
+                {
+                    "episode_number": int(episode_number),
+                    "native_reward": float(ep_reward),
+                    "steps": int(steps),
+                    "terminated": terminated,
+                    "truncated": truncated,
+                    **action_counts,
+                }
+            )
     finally:
         if was_training:
             agent.policy.train()
@@ -417,6 +563,7 @@ def run_eval_sweep(
         "min_reward": float(rewards_arr.min()) if len(rewards) else 0.0,
         "max_reward": float(rewards_arr.max()) if len(rewards) else 0.0,
         "deterministic": bool(deterministic),
+        "episode_results": episode_results,
     }
 
 
@@ -431,12 +578,11 @@ def maybe_run_policy_update(agent, log_queue, episode_index):
         return None
     stats = agent.update_policy(fragments=fragments)
     if stats is not None:
-        policy_version = int(
-            stats.get("policy_version", stats.get("global_update_index", 0)) or 0
-        )
+        policy_version = int(stats.get("policy_version", stats.get("global_update_index", 0)) or 0)
         log_queue.put(
             {
                 "type": "UPDATE",
+                "phase_id": current_phase_id(),
                 "internal_ep": episode_index - 1,
                 "episode_index": episode_index,
                 "policy_version": policy_version,
@@ -470,12 +616,20 @@ def train_agent(env, agent, observation_extractor, log_queue):
         agent.reward_function.calculate_reward(obs, None)
 
         episode_reward = 0.0
+        episode_native_reward = 0.0
+        episode_reward_components = {}
+        episode_action_counts = {
+            "policy_no_op_count": 0,
+            "policy_left_click_count": 0,
+            "policy_right_click_count": 0,
+        }
         cumulative_reward = 0.0
         step_count = 0
 
         log_queue.put(
             {
                 "type": "EPISODE_START",
+                "phase_id": current_phase_id(),
                 "internal_ep": episode,
                 "actor_id": 0,
                 "policy_version": policy_version,
@@ -496,6 +650,7 @@ def train_agent(env, agent, observation_extractor, log_queue):
             ) = agent.step(obs)
 
             next_obs = env.step([action_func])[0]
+            episode_native_reward += float(next_obs.reward)
 
             step_count += 1
             env_done = next_obs.last()
@@ -580,6 +735,13 @@ def train_agent(env, agent, observation_extractor, log_queue):
 
             episode_reward += raw_reward
             cumulative_reward += raw_reward
+            action_key = {
+                POLICY_ACTION_NO_OP: "policy_no_op_count",
+                POLICY_ACTION_LEFT_CLICK: "policy_left_click_count",
+                POLICY_ACTION_RIGHT_CLICK: "policy_right_click_count",
+            }.get(None if action_id is None else int(action_id))
+            if action_key is not None:
+                episode_action_counts[action_key] += 1
 
             log_queue.put(
                 {
@@ -600,6 +762,16 @@ def train_agent(env, agent, observation_extractor, log_queue):
 
             reward_info = agent.reward_function.get_last_reward_components()
             if reward_info:
+                for name, value in reward_info.items():
+                    if isinstance(value, torch.Tensor):
+                        value = value.item()
+                    try:
+                        numeric = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    episode_reward_components[name] = (
+                        episode_reward_components.get(name, 0.0) + numeric
+                    )
                 log_queue.put(
                     {
                         "type": "REWARD_COMP",
@@ -630,10 +802,17 @@ def train_agent(env, agent, observation_extractor, log_queue):
         log_queue.put(
             {
                 "type": "EPISODE_END",
+                "phase_id": current_phase_id(),
                 "internal_ep": episode,
                 "total": float(episode_reward),
+                "shaped_reward": float(episode_reward),
+                "native_reward": float(episode_native_reward),
                 "avg": float(avg_reward),
                 "steps": step_count,
+                "terminated": bool(env_done),
+                "truncated": bool(time_cap and not env_done),
+                "reward_components": episode_reward_components,
+                **episode_action_counts,
             }
         )
 
@@ -657,6 +836,7 @@ def train_agent(env, agent, observation_extractor, log_queue):
             log_queue.put(
                 {
                     "type": "EVAL",
+                    "phase_id": current_phase_id(),
                     "episode_index": episode + 1,
                     "policy_version": int(getattr(agent.ppo, "update_count", 0)),
                     "policy_protocol_version": POLICY_PROTOCOL_VERSION,
@@ -730,7 +910,9 @@ def main(argv):
             visualize=False,
             use_action_printer=cfg.environment.use_action_printer,
             use_available_actions_diagnostics=getattr(
-                cfg.environment, "use_available_actions_diagnostics", False,
+                cfg.environment,
+                "use_available_actions_diagnostics",
+                False,
             ),
             available_actions_diagnostics_output_path=getattr(
                 cfg.environment,
@@ -738,10 +920,14 @@ def main(argv):
                 "analysis_results/available_actions_diagnostics.jsonl",
             ),
             available_actions_diagnostics_every_n_steps=getattr(
-                cfg.environment, "available_actions_diagnostics_every_n_steps", 1,
+                cfg.environment,
+                "available_actions_diagnostics_every_n_steps",
+                1,
             ),
             use_last_action_diagnostics=getattr(
-                cfg.environment, "use_last_action_diagnostics", False,
+                cfg.environment,
+                "use_last_action_diagnostics",
+                False,
             ),
             last_action_diagnostics_output_path=getattr(
                 cfg.environment,
@@ -749,10 +935,14 @@ def main(argv):
                 "analysis_results/last_action_diagnostics.jsonl",
             ),
             last_action_diagnostics_every_n_steps=getattr(
-                cfg.environment, "last_action_diagnostics_every_n_steps", 1,
+                cfg.environment,
+                "last_action_diagnostics_every_n_steps",
+                1,
             ),
             use_score_diagnostics=getattr(
-                cfg.environment, "use_score_diagnostics", False,
+                cfg.environment,
+                "use_score_diagnostics",
+                False,
             ),
             score_diagnostics_output_path=getattr(
                 cfg.environment,
@@ -760,10 +950,14 @@ def main(argv):
                 "analysis_results/score_diagnostics.jsonl",
             ),
             score_diagnostics_every_n_steps=getattr(
-                cfg.environment, "score_diagnostics_every_n_steps", 1,
+                cfg.environment,
+                "score_diagnostics_every_n_steps",
+                1,
             ),
             use_observation_inspector=getattr(
-                cfg.environment, "use_observation_inspector", False,
+                cfg.environment,
+                "use_observation_inspector",
+                False,
             ),
             observation_inspector_output_path=getattr(
                 cfg.environment,
@@ -771,13 +965,19 @@ def main(argv):
                 "analysis_results/observation_space.jsonl",
             ),
             observation_inspector_every_n_steps=getattr(
-                cfg.environment, "observation_inspector_every_n_steps", 10,
+                cfg.environment,
+                "observation_inspector_every_n_steps",
+                10,
             ),
             observation_inspector_max_unit_samples=getattr(
-                cfg.environment, "observation_inspector_max_unit_samples", 5,
+                cfg.environment,
+                "observation_inspector_max_unit_samples",
+                5,
             ),
             use_policy_input_diagnostics=getattr(
-                cfg.environment, "use_policy_input_diagnostics", False,
+                cfg.environment,
+                "use_policy_input_diagnostics",
+                False,
             ),
             policy_input_diagnostics_output_path=getattr(
                 cfg.environment,
@@ -785,7 +985,9 @@ def main(argv):
                 "analysis_results/policy_input_diagnostics.jsonl",
             ),
             policy_input_diagnostics_every_n_steps=getattr(
-                cfg.environment, "policy_input_diagnostics_every_n_steps", 1,
+                cfg.environment,
+                "policy_input_diagnostics_every_n_steps",
+                1,
             ),
             policy_input_diagnostics_max_entity_samples=getattr(
                 cfg.environment,
@@ -815,7 +1017,11 @@ def main(argv):
             vector_input_dim=vector_dim,
             action_dim=cfg.model.action_dim,
         )
-        write_effective_config(agent)
+        initialize_run_provenance(
+            agent,
+            launch_mode="single_process",
+            resolved_launch={"run_name": str(cfg.environment.run_name)},
+        )
 
         print("Starting Async PPO training...")
         best_reward = train_agent(
