@@ -182,7 +182,7 @@ class RolloutActor:
         serialize_resets = bool(self.worker.serialize_env_resets)
         try:
             with torch.no_grad():
-                return run_eval_sweep(
+                summary = run_eval_sweep(
                     self.env,
                     self.agent,
                     int(episodes),
@@ -192,11 +192,21 @@ class RolloutActor:
                         enabled=serialize_resets,
                     ),
                 )
+                for episode in summary.get("episode_results", []):
+                    episode["actor_id"] = int(self.actor_id)
+                return summary
         finally:
             self.agent.ppo._clear_rollout_cache()
             self.worker.current_obs = None
             self.worker.step_count = 0
             self.worker.episode_reward = 0.0
+            self.worker.episode_native_reward = 0.0
+            self.worker.episode_reward_components = {}
+            self.worker.episode_action_counts = {
+                "policy_no_op_count": 0,
+                "policy_left_click_count": 0,
+                "policy_right_click_count": 0,
+            }
             self.worker.cumulative_reward = 0.0
             self.agent.snn_state = self.agent.policy.init_concrete_state(
                 batch_size=1,

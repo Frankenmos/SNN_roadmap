@@ -2,8 +2,8 @@ from collections import deque
 
 import pytest
 import torch
-
 from MockedEnv.policy_batch import make_dummy_state_from_shape, make_policy_batch
+
 from agent_core.policy_protocol import TOTAL_TOKEN_COUNT
 from distributed.learner import cpu_state_dict, validate_fragment_batch
 from distributed.protocol import EpisodeSummary, RolloutFragment
@@ -101,7 +101,9 @@ class _FakePPO:
         return None
 
     def finalize_fragment(self, *, actor_id, fragment_id, policy_version, **_kwargs):
-        fragment = _make_fragment(length=len(self.memory), policy_version=policy_version)
+        fragment = _make_fragment(
+            length=len(self.memory), policy_version=policy_version
+        )
         object.__setattr__(fragment, "actor_id", int(actor_id))
         object.__setattr__(fragment, "fragment_id", int(fragment_id))
         self.pending_fragments.append(fragment)
@@ -218,6 +220,9 @@ def test_log_episode_summaries_uses_stable_actor_episode_key():
         terminated=False,
         truncated=True,
         policy_version=7,
+        native_reward=2.0,
+        reward_components={"engagement_reward": 3.0},
+        action_counts={"policy_right_click_count": 5},
     )
     object.__setattr__(fragment, "episode_summaries", (summary,))
 
@@ -233,6 +238,10 @@ def test_log_episode_summaries_uses_stable_actor_episode_key():
     assert queue.items[0]["actor_id"] == 2
     assert queue.items[0]["policy_version"] == 7
     assert queue.items[1]["total"] == 11.0
+    assert queue.items[1]["native_reward"] == 2.0
+    assert queue.items[1]["truncated"] is True
+    assert queue.items[1]["reward_components"] == {"engagement_reward": 3.0}
+    assert queue.items[1]["policy_right_click_count"] == 5
     assert queue.items[1]["avg"] == 11.0
 
 

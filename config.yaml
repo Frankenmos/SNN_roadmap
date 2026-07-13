@@ -119,9 +119,10 @@ distributed:
   # (~3.5 MiB each; not resume points). Two-tier cadence: dense every
   # `dense` updates until update `until`, then sparse every `sparse`.
   # Off by default - uncomment to enable. Inspect with tools/registry.
-  # snapshot_dense_every_updates: 5
-  # snapshot_dense_until_update: 200
-  # snapshot_sparse_every_updates: 25
+  # Immutable Model Git cadence: dense early history, sparse long-run history.
+  snapshot_dense_every_updates: 5
+  snapshot_dense_until_update: 200
+  snapshot_sparse_every_updates: 25
 
 model:
   spatial_input_shape: [27, 84, 84]

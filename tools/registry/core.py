@@ -25,6 +25,17 @@ from tools.analysis.analyze_pth import (
     collect_time_constant_rows,
     pick_state_dict,
 )
+from Utility.model_git import (
+    INDEX_FILE,
+    MODEL_GIT_DIR,
+    OBJECTS_DIR,
+    TAGS_FILE,
+    create_tag,
+    initialize_fork,
+    read_jsonl,
+    sha256_file,
+    verify_run,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODELS_DIR = _REPO_ROOT / "models"
@@ -40,6 +51,8 @@ class RegistryEntry:
     metadata: dict = field(default_factory=dict)
     eval_mean: float | None = None
     eval_policy_version: int | None = None
+    artifact_sha256: str | None = None
+    parent_sha256: str | None = None
 
     @property
     def name(self) -> str:
@@ -116,13 +129,32 @@ def list_run_entries(
         raise FileNotFoundError(f"run directory not found: {run_dir}")
 
     entries: list[RegistryEntry] = []
-    snapshot_dir = run_dir / "snapshots"
-    if snapshot_dir.is_dir():
+    model_git_events = read_jsonl(run_dir / MODEL_GIT_DIR / INDEX_FILE)
+    snapshot_events = [
+        row for row in model_git_events if row.get("event") == "snapshot"
+    ]
+    if snapshot_events:
+        for event in snapshot_events:
+            path = run_dir / MODEL_GIT_DIR / str(event["object"])
+            entry = _entry_from_path(path, "snapshot")
+            entry.artifact_sha256 = str(event.get("artifact_sha256"))
+            entry.parent_sha256 = event.get("parent_sha256")
+            entry.metadata.update(
+                {
+                    "phase_id": event.get("phase_id"),
+                    "parent_sha256": event.get("parent_sha256"),
+                    "artifact_sha256": event.get("artifact_sha256"),
+                },
+            )
+            entries.append(entry)
+    else:
+        snapshot_dir = run_dir / "snapshots"
         snapshots = []
-        for path in snapshot_dir.iterdir():
-            match = SNAPSHOT_FILE_RE.match(path.name)
-            if match:
-                snapshots.append((int(match.group(1)), path))
+        if snapshot_dir.is_dir():
+            for path in snapshot_dir.iterdir():
+                match = SNAPSHOT_FILE_RE.match(path.name)
+                if match:
+                    snapshots.append((int(match.group(1)), path))
         for _version, path in sorted(snapshots):
             entries.append(_entry_from_path(path, "snapshot"))
     for filename, kind in (
@@ -168,8 +200,47 @@ def resolve_ref(
     elif selector == "best":
         path = run_dir / "best_checkpoint.pth"
     elif selector.startswith("u") and selector[1:].isdigit():
+        version = int(selector[1:])
+        matches = [
+            row
+            for row in read_jsonl(run_dir / MODEL_GIT_DIR / INDEX_FILE)
+            if row.get("event") == "snapshot"
+            and int(row.get("policy_version", -1)) == version
+        ]
+        if matches:
+            return run_dir / MODEL_GIT_DIR / str(matches[-1]["object"])
         path = run_dir / "snapshots" / f"policy_{selector}.pth"
+    elif selector.startswith("sha/"):
+        prefix = selector[4:]
+        matches = [
+            row
+            for row in read_jsonl(run_dir / MODEL_GIT_DIR / INDEX_FILE)
+            if str(row.get("artifact_sha256", "")).startswith(prefix)
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"sha prefix '{prefix}' matched {len(matches)} objects")
+        return run_dir / MODEL_GIT_DIR / str(matches[0]["object"])
+    elif selector.startswith("tag/"):
+        tag = selector[4:]
+        matches = [
+            row
+            for row in read_jsonl(run_dir / MODEL_GIT_DIR / TAGS_FILE)
+            if row.get("tag") == tag
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"tag '{tag}' matched {len(matches)} refs")
+        return resolve_ref(
+            f"{run_name}:sha/{matches[0]['artifact_sha256']}",
+            models_dir=models_dir,
+        )
     elif selector == "latest":
+        indexed = [
+            row
+            for row in read_jsonl(run_dir / MODEL_GIT_DIR / INDEX_FILE)
+            if row.get("event") == "snapshot"
+        ]
+        if indexed:
+            return run_dir / MODEL_GIT_DIR / str(indexed[-1]["object"])
         snapshot_dir = run_dir / "snapshots"
         candidates = []
         if snapshot_dir.is_dir():
@@ -206,12 +277,24 @@ def show_entry(path: str | Path) -> dict:
     path = Path(path)
     ckpt = _load_checkpoint(path)
     state_dict = pick_state_dict(ckpt) or {}
+    artifact_sha256 = sha256_file(path)
+    run_dir = _run_dir_for(path)
+    lineage = next(
+        (
+            row
+            for row in read_jsonl(run_dir / MODEL_GIT_DIR / INDEX_FILE)
+            if row.get("artifact_sha256") == artifact_sha256
+        ),
+        None,
+    )
     return {
         "path": str(path),
         "metadata": collect_checkpoint_metadata(ckpt),
         "module_param_counts": _module_param_counts(state_dict),
         "time_constants": collect_time_constant_rows(state_dict),
         "extractor": collect_extractor_state_rows(ckpt),
+        "artifact_sha256": artifact_sha256,
+        "lineage": lineage,
     }
 
 
@@ -219,9 +302,63 @@ def _run_dir_for(path: Path) -> Path:
     """models/<run>/snapshots/x.pth -> models/<run>; models/<run>/x.pth
     -> models/<run>."""
     parent = path.resolve().parent
+    if parent.name == OBJECTS_DIR and parent.parent.name == MODEL_GIT_DIR:
+        return parent.parent.parent
     if parent.name == "snapshots":
         return parent.parent
     return parent
+
+
+def tag_ref(
+    run_name: str,
+    tag: str,
+    ref: str,
+    models_dir: str | Path = DEFAULT_MODELS_DIR,
+) -> dict:
+    path = resolve_ref(ref, models_dir=models_dir)
+    artifact_sha256 = sha256_file(path)
+    indexed = {
+        str(row.get("artifact_sha256"))
+        for row in read_jsonl(Path(models_dir) / run_name / MODEL_GIT_DIR / INDEX_FILE)
+    }
+    if artifact_sha256 not in indexed:
+        raise ValueError(f"{ref} is not an immutable object in run {run_name}")
+    return create_tag(
+        Path(models_dir) / run_name,
+        tag=tag,
+        artifact_sha256=artifact_sha256,
+    )
+
+
+def fork_run_lineage(
+    child_run: str,
+    parent_ref: str,
+    models_dir: str | Path = DEFAULT_MODELS_DIR,
+) -> Path:
+    parent_path = resolve_ref(parent_ref, models_dir=models_dir)
+    parent_sha256 = sha256_file(parent_path)
+    parent_run_dir = _run_dir_for(parent_path)
+    indexed = {
+        str(row.get("artifact_sha256"))
+        for row in read_jsonl(parent_run_dir / MODEL_GIT_DIR / INDEX_FILE)
+    }
+    if parent_sha256 not in indexed:
+        raise ValueError(
+            "Fork ancestry must point to an immutable Model Git object, "
+            f"not {parent_ref}",
+        )
+    return initialize_fork(
+        Path(models_dir) / child_run,
+        parent_sha256=parent_sha256,
+        parent_ref=f"{parent_run_dir.name}:sha/{parent_sha256}",
+    )
+
+
+def verify_run_registry(
+    run_name: str,
+    models_dir: str | Path = DEFAULT_MODELS_DIR,
+) -> dict:
+    return verify_run(Path(models_dir) / run_name)
 
 
 def _flatten_config(value, prefix: str = "") -> dict[str, object]:
@@ -244,12 +381,14 @@ def _config_diff(path_a: Path, path_b: Path) -> dict:
         if not config_path.exists():
             return {}
         try:
-            configs.append(
-                _flatten_config(json.loads(config_path.read_text(encoding="utf-8"))),
-            )
+            configs.append(json.loads(config_path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
             return {}
-    flat_a, flat_b = configs
+    return _mapping_diff(configs[0], configs[1])
+
+
+def _mapping_diff(config_a: dict, config_b: dict) -> dict:
+    flat_a, flat_b = _flatten_config(config_a), _flatten_config(config_b)
     changed = {
         key: (flat_a[key], flat_b[key])
         for key in sorted(set(flat_a) & set(flat_b))
@@ -312,6 +451,15 @@ def diff_entries(path_a: str | Path, path_b: str | Path) -> dict:
         if meta_a.get(key) != meta_b.get(key)
     }
 
+    embedded_config_a = ckpt_a.get("policy_config") if isinstance(ckpt_a, dict) else None
+    embedded_config_b = ckpt_b.get("policy_config") if isinstance(ckpt_b, dict) else None
+    if isinstance(embedded_config_a, dict) and isinstance(embedded_config_b, dict):
+        config_diff = _mapping_diff(embedded_config_a, embedded_config_b)
+        config_diff_source = "snapshot.policy_config"
+    else:
+        config_diff = _config_diff(path_a, path_b)
+        config_diff_source = "run.effective_config.json"
+
     return {
         "path_a": str(path_a),
         "path_b": str(path_b),
@@ -320,7 +468,8 @@ def diff_entries(path_a: str | Path, path_b: str | Path) -> dict:
         "only_in_b": sorted(keys_b - keys_a),
         "shape_mismatches": shape_mismatches,
         "metadata_diff": metadata_diff,
-        "config_diff": _config_diff(path_a, path_b),
+        "config_diff": config_diff,
+        "config_diff_source": config_diff_source,
         "total_l2": float(
             sum(row["l2"] ** 2 for row in layers) ** 0.5,
         ),
@@ -424,7 +573,7 @@ def _update_row_at_version(
         return None
     if row is None:
         return None
-    return dict(zip(wanted, row))
+    return dict(zip(wanted, row, strict=False))
 
 
 def _update_history(
@@ -470,7 +619,7 @@ def _eval_export_rows(conn: sqlite3.Connection) -> list[dict]:
         ).fetchall()
     except sqlite3.Error:
         return []
-    return [dict(zip(wanted, row)) for row in rows]
+    return [dict(zip(wanted, row, strict=False)) for row in rows]
 
 
 def _export_config(run_dir: Path) -> dict:
@@ -507,7 +656,7 @@ def _json_sanitize(value):
     and JSON.parse in the explorer rejects bare NaN tokens."""
     if isinstance(value, dict):
         return {key: _json_sanitize(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_json_sanitize(item) for item in value]
     if isinstance(value, float) and not math.isfinite(value):
         return None

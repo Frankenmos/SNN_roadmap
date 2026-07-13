@@ -12,6 +12,18 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from tools.registry.core import (
+    _json_sanitize,
+    diff_entries,
+    export_run_data,
+    fork_run_lineage,
+    list_run_entries,
+    resolve_ref,
+    show_entry,
+    tag_ref,
+    verify_run_registry,
+    write_run_data_json,
+)
 from Utility.checkpoint_snapshots import (
     SnapshotSchedule,
     build_snapshot_payload,
@@ -19,15 +31,7 @@ from Utility.checkpoint_snapshots import (
     snapshot_path,
 )
 from Utility.logger_utils import initialize_db
-from tools.registry.core import (
-    _json_sanitize,
-    diff_entries,
-    export_run_data,
-    list_run_entries,
-    resolve_ref,
-    show_entry,
-    write_run_data_json,
-)
+from Utility.model_git import sha256_file
 
 
 # ----------------------------------------------------------------------
@@ -181,6 +185,21 @@ def test_save_snapshot_never_raises(tmp_path, capsys):
     assert "snapshot failed" in capsys.readouterr().out
 
 
+def test_snapshot_refuses_to_misattribute_a_missing_phase(tmp_path):
+    (tmp_path / "resume_events.jsonl").write_text(
+        json.dumps({"phase_id": 7, "source": {"git_commit": "abc"}}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="No resume event for phase_id=8"):
+        build_snapshot_payload(
+            _make_agent(),
+            episode=1,
+            run_dir=tmp_path,
+            run_name=tmp_path.name,
+            phase_id=8,
+        )
+
+
 # ----------------------------------------------------------------------
 # Registry: list / resolve / show
 # ----------------------------------------------------------------------
@@ -204,15 +223,17 @@ def test_list_entries_and_eval_join(tmp_path):
     conn.close()
 
     entries = list_run_entries("run_a", models_dir=tmp_path)
+    snapshots = {entry.policy_version: entry for entry in entries if entry.kind == "snapshot"}
     by_name = {entry.name: entry for entry in entries}
-    assert list(by_name) == ["policy_u5.pth", "policy_u10.pth", "checkpoint.pth"]
+    assert set(snapshots) == {5, 10}
+    assert "checkpoint.pth" in by_name
 
-    snap5 = by_name["policy_u5.pth"]
+    snap5 = snapshots[5]
     assert snap5.kind == "snapshot"
     assert snap5.policy_version == 5
     assert snap5.eval_mean == 12.0 and snap5.eval_policy_version == 5
 
-    snap10 = by_name["policy_u10.pth"]
+    snap10 = snapshots[10]
     # nearest eval at or before version 10 is the one at version 9
     assert snap10.eval_mean == 20.0 and snap10.eval_policy_version == 9
 
@@ -224,9 +245,11 @@ def test_resolve_ref_forms(tmp_path):
     run_dir = _write_run(tmp_path, "run_a", versions=[5, 10])
     torch.save({"agent_state": {}}, run_dir / "checkpoint.pth")
 
-    assert resolve_ref("run_a:u5", models_dir=tmp_path).name == "policy_u5.pth"
-    assert resolve_ref("run_a:latest", models_dir=tmp_path).name == "policy_u10.pth"
-    assert resolve_ref("run_a", models_dir=tmp_path).name == "policy_u10.pth"
+    u5 = resolve_ref("run_a:u5", models_dir=tmp_path)
+    latest = resolve_ref("run_a:latest", models_dir=tmp_path)
+    assert torch.load(u5, map_location="cpu", weights_only=False)["policy_version"] == 5
+    assert torch.load(latest, map_location="cpu", weights_only=False)["policy_version"] == 10
+    assert resolve_ref("run_a", models_dir=tmp_path) == latest
     assert (
         resolve_ref("run_a:checkpoint", models_dir=tmp_path).name
         == "checkpoint.pth"
@@ -240,6 +263,120 @@ def test_resolve_ref_forms(tmp_path):
         resolve_ref("no_such_run", models_dir=tmp_path)
     with pytest.raises(FileNotFoundError):
         resolve_ref("run_a:best", models_dir=tmp_path)  # no best file written
+
+
+def test_model_git_hash_tags_forks_and_integrity(tmp_path):
+    parent_dir = _write_run(tmp_path, "parent", versions=[5])
+    parent_path = resolve_ref("parent:u5", models_dir=tmp_path)
+    parent_sha = parent_path.stem
+
+    tag_ref("parent", "stable", "parent:u5", models_dir=tmp_path)
+    assert resolve_ref("parent:tag/stable", models_dir=tmp_path) == parent_path
+    torch.save({"agent_state": {}}, parent_dir / "checkpoint.pth")
+    with pytest.raises(ValueError, match="immutable Model Git object"):
+        fork_run_lineage("bad_child", "parent:checkpoint", models_dir=tmp_path)
+
+    fork_path = fork_run_lineage("child", "parent:u5", models_dir=tmp_path)
+    assert fork_path.exists()
+    _write_run(tmp_path, "child", versions=[1], seed=1)
+    child_entry = next(
+        entry for entry in list_run_entries("child", models_dir=tmp_path)
+        if entry.kind == "snapshot"
+    )
+    assert child_entry.parent_sha256 == parent_sha
+
+    verified = verify_run_registry("child", models_dir=tmp_path)
+    assert verified == {
+        "ok": True,
+        "objects": 1,
+        "index_events": 1,
+        "errors": [],
+    }
+
+    # Corruption is detected against the filename/content digest contract.
+    child_entry.path.write_bytes(child_entry.path.read_bytes() + b"tamper")
+    broken = verify_run_registry("child", models_dir=tmp_path)
+    assert not broken["ok"]
+    assert any("object hash mismatch" in error for error in broken["errors"])
+
+
+def test_same_update_divergence_preserves_compat_ref_and_full_identity(tmp_path):
+    run_dir = tmp_path / "forked_run"
+    run_dir.mkdir()
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps({"schema_version": 1, "run_name": "forked_run"}),
+        encoding="utf-8",
+    )
+    (run_dir / "effective_config.json").write_text(
+        json.dumps({"model": {"attention_embed_dim": 8}}),
+        encoding="utf-8",
+    )
+    (run_dir / "resume_events.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "phase_id": phase,
+                    "effective_config_sha256": f"effective-{phase}",
+                    "source": {"git_commit": f"commit-{phase}", "git_dirty": False},
+                },
+            )
+            for phase in (1, 2)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    first = save_policy_snapshot(
+        _make_agent(seed=0, update_count=5),
+        run_dir=run_dir,
+        episode=50,
+        run_name="forked_run",
+        phase_id=1,
+    )
+    first_compat_sha = sha256_file(first)
+    first_index_bytes = (run_dir / "model_git" / "index.jsonl").read_bytes()
+    checkpoint_path = run_dir / "checkpoint.pth"
+    torch.save({"resume_only": True}, checkpoint_path)
+    checkpoint_sha = sha256_file(checkpoint_path)
+
+    second = save_policy_snapshot(
+        _make_agent(seed=1, update_count=5),
+        run_dir=run_dir,
+        episode=55,
+        run_name="forked_run",
+        phase_id=2,
+    )
+
+    assert second == first
+    assert sha256_file(first) == first_compat_sha
+    assert sha256_file(checkpoint_path) == checkpoint_sha
+    entries = [
+        entry for entry in list_run_entries("forked_run", models_dir=tmp_path)
+        if entry.kind == "snapshot"
+    ]
+    assert len(entries) == 2
+    assert entries[0].artifact_sha256 != entries[1].artifact_sha256
+    assert entries[1].parent_sha256 == entries[0].artifact_sha256
+    assert resolve_ref("forked_run:u5", models_dir=tmp_path) == entries[1].path
+    assert entries[0].metadata["phase_id"] == 1
+    assert entries[1].metadata["phase_id"] == 2
+
+    index_rows = [
+        json.loads(line)
+        for line in (run_dir / "model_git" / "index.jsonl").read_text(
+            encoding="utf-8",
+        ).splitlines()
+    ]
+    assert (run_dir / "model_git" / "index.jsonl").read_bytes().startswith(
+        first_index_bytes,
+    )
+    assert index_rows[0]["source_identity"]["git_commit"] == "commit-1"
+    assert index_rows[1]["source_identity"]["git_commit"] == "commit-2"
+    assert index_rows[0]["phase_effective_config_sha256"] == "effective-1"
+    assert index_rows[1]["phase_effective_config_sha256"] == "effective-2"
+    assert index_rows[0]["config_sha256"]
+    assert index_rows[0]["run_manifest_sha256"]
+    assert verify_run_registry("forked_run", models_dir=tmp_path)["ok"] is True
 
 
 def test_show_entry_param_counts_and_time_constants(tmp_path):

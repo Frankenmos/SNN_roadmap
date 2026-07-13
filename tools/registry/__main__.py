@@ -20,9 +20,12 @@ import argparse
 from tools.registry.core import (
     DEFAULT_MODELS_DIR,
     diff_entries,
+    fork_run_lineage,
     list_run_entries,
     resolve_ref,
     show_entry,
+    tag_ref,
+    verify_run_registry,
     write_run_data_json,
 )
 
@@ -34,7 +37,8 @@ def _cmd_list(args: argparse.Namespace) -> None:
         return
     header = (
         f"{'file':32s} {'kind':10s} {'version':>8s} {'episode':>9s} "
-        f"{'MiB':>7s} {'eval_mean':>10s} {'git':8s} {'config':12s} {'saved':20s}"
+        f"{'MiB':>7s} {'eval_mean':>10s} {'artifact':12s} {'parent':12s} "
+        f"{'phase':>5s} {'saved':20s}"
     )
     print(header)
     print("-" * len(header))
@@ -53,8 +57,9 @@ def _cmd_list(args: argparse.Namespace) -> None:
             f"{str(meta.get('episode', '-')):>9s} "
             f"{entry.size_mib:>7.1f} "
             f"{eval_text:>10s} "
-            f"{str(meta.get('git_commit', '-'))[:8]:8s} "
-            f"{str(meta.get('config_hash', '-')):12s} "
+            f"{str(entry.artifact_sha256 or '-')[:12]:12s} "
+            f"{str(entry.parent_sha256 or '-')[:12]:12s} "
+            f"{str(meta.get('phase_id', '-')):>5s} "
             f"{str(meta.get('wall_time_iso', '-')):20s}"
         )
     print(
@@ -67,6 +72,23 @@ def _cmd_show(args: argparse.Namespace) -> None:
     path = resolve_ref(args.ref, models_dir=args.models_dir)
     info = show_entry(path)
     print(f"=== {info['path']} ===\n")
+    print(f"Artifact SHA-256: {info['artifact_sha256']}")
+    if info["lineage"]:
+        print(f"Parent SHA-256: {info['lineage'].get('parent_sha256')}")
+        print("Lineage identity:")
+        for key in (
+            "run_name",
+            "phase_id",
+            "policy_version",
+            "config_sha256",
+            "phase_effective_config_sha256",
+            "run_manifest_sha256",
+        ):
+            print(f"  {key}: {info['lineage'].get(key)}")
+        source = info["lineage"].get("source_identity") or {}
+        print(f"  source.git_commit: {source.get('git_commit')}")
+        print(f"  source.git_dirty: {source.get('git_dirty')}")
+        print(f"  source.git_diff_sha256: {source.get('git_diff_sha256')}")
 
     print("Metadata:")
     for key in sorted(info["metadata"]):
@@ -112,7 +134,9 @@ def _cmd_diff(args: argparse.Namespace) -> None:
 
     config_diff = diff["config_diff"]
     if config_diff.get("changed") or config_diff.get("only_a") or config_diff.get("only_b"):
-        print("\nConfig differences (effective_config.json, A -> B):")
+        print(
+            f"\nConfig differences ({diff.get('config_diff_source', 'unknown')}, A -> B):",
+        )
         for key, (value_a, value_b) in config_diff.get("changed", {}).items():
             print(f"  {key}: {value_a!r} -> {value_b!r}")
         for key in config_diff.get("only_a", []):
@@ -164,6 +188,37 @@ def _cmd_export(args: argparse.Namespace) -> None:
         "for `npm run preview` re-run `npm run build` (or export with "
         "--out <explorer>/dist/run_data.json).",
     )
+
+
+def _cmd_tag(args: argparse.Namespace) -> None:
+    event = tag_ref(
+        args.run,
+        args.tag,
+        args.ref,
+        models_dir=args.models_dir,
+    )
+    print(f"Tagged {event['artifact_sha256']} as {args.run}:tag/{args.tag}")
+
+
+def _cmd_fork(args: argparse.Namespace) -> None:
+    path = fork_run_lineage(
+        args.child_run,
+        args.parent_ref,
+        models_dir=args.models_dir,
+    )
+    print(f"Initialized immutable fork ancestry at {path}")
+
+
+def _cmd_verify(args: argparse.Namespace) -> None:
+    result = verify_run_registry(args.run, models_dir=args.models_dir)
+    print(
+        f"{'OK' if result['ok'] else 'FAILED'}: {result['objects']} objects, "
+        f"{result['index_events']} index events",
+    )
+    for error in result["errors"]:
+        print(f"  {error}")
+    if not result["ok"]:
+        raise SystemExit(1)
 
 
 def main() -> None:
@@ -219,6 +274,27 @@ def main() -> None:
         help="Max points per history series after downsampling (default 400).",
     )
     export_parser.set_defaults(func=_cmd_export)
+
+    tag_parser = subparsers.add_parser(
+        "tag", help="Create an immutable human-readable tag for an object.",
+    )
+    tag_parser.add_argument("run")
+    tag_parser.add_argument("tag")
+    tag_parser.add_argument("ref")
+    tag_parser.set_defaults(func=_cmd_tag)
+
+    fork_parser = subparsers.add_parser(
+        "fork", help="Set a child run's parent object before its first snapshot.",
+    )
+    fork_parser.add_argument("child_run")
+    fork_parser.add_argument("parent_ref")
+    fork_parser.set_defaults(func=_cmd_fork)
+
+    verify_parser = subparsers.add_parser(
+        "verify", help="Verify append-only index hashes and object contents.",
+    )
+    verify_parser.add_argument("run")
+    verify_parser.set_defaults(func=_cmd_verify)
 
     args = parser.parse_args()
     args.func(args)

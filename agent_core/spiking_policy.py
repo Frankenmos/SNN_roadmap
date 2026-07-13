@@ -1,9 +1,9 @@
 from typing import NamedTuple
 
+import snntorch as snn
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import snntorch as snn
 from snntorch import surrogate
 
 from agent_core.policy_protocol import (
@@ -13,12 +13,11 @@ from agent_core.policy_protocol import (
     CURATED_FEATURE_UNIT_FIELDS,
     MAX_ENTITY_TOKENS,
     MAX_SELECTION_TOKENS,
-    META_AVAILABLE_ACTION_OFFSET,
     META_AVAILABLE_ACTION_DIM,
-    META_LAST_ACTION_INDEX_OFFSET,
+    META_AVAILABLE_ACTION_OFFSET,
     META_LAST_ACTION_INDEX_DIM,
+    META_LAST_ACTION_INDEX_OFFSET,
     META_PLAYER_FEATURE_DIM,
-    PolicyInputBatch,
     POLICY_ACTION_NO_OP,
     SELECTION_FEATURE_DIM,
     SELECTION_UNIT_TYPE_INDEX,
@@ -28,8 +27,9 @@ from agent_core.policy_protocol import (
     TOKEN_TYPE_META,
     TOKEN_TYPE_SELECTION,
     TOKEN_TYPE_SPATIAL,
-    UNKNOWN_LAST_ACTION_INDEX,
     UNIT_TYPE_FEATURE_INDEX,
+    UNKNOWN_LAST_ACTION_INDEX,
+    PolicyInputBatch,
 )
 from agent_core.target_heads import (
     CoarseToFineTargetHead,
@@ -461,6 +461,7 @@ class PolicyNetwork(nn.Module):
                 f"spatial_head_type='coarse_to_fine', got {self._spatial_head_type!r}",
             )
         self._config = {
+            "spatial_input_shape": [int(value) for value in spatial_input_shape],
             "num_steps": self.num_steps,
             "screen_size": self.screen_size,
             "fast_token_snn_alpha": fast_token_snn_alpha,
